@@ -5,12 +5,19 @@ import (
 	"strings"
 	"time"
 
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/LFroesch/sb/internal/ollama"
 	"github.com/LFroesch/sb/internal/scripts"
-	"github.com/LFroesch/sb/internal/workmd"
 )
+
+func truncate(s string, max int) string {
+	if max < 4 {
+		return ""
+	}
+	return xansi.Truncate(s, max, "...")
+}
 
 func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
@@ -65,7 +72,6 @@ func (m model) renderHeader() string {
 		p    page
 	}{
 		{"Dashboard", pageDashboard},
-		{"Project", pageProject},
 		{"Dump", pageDump},
 		{"Scripts", pageScripts},
 	}
@@ -135,12 +141,36 @@ func (m model) renderDashboard() string {
 		leftWidth = 20
 	}
 	innerLeft := leftWidth - 4  // border + padding
-	innerRight := rightWidth - 4
 
-	// --- Left pane: project list ---
+	// --- Left pane: project list or search ---
 	var leftLines []string
-	leftLines = append(leftLines, panelHeaderStyle.Render("Projects"))
-	leftLines = append(leftLines, "")
+	if m.mode == modeSearch {
+		leftLines = append(leftLines, accentStyle.Render("/")+" "+m.searchQuery+dimStyle.Render("█"))
+		leftLines = append(leftLines, "")
+		if len(m.searchMatches) == 0 && m.searchQuery != "" {
+			leftLines = append(leftLines, dimStyle.Render("  no matches"))
+		}
+		for i, match := range m.searchMatches {
+			prefix := "  "
+			if i == m.cursor {
+				prefix = accentStyle.Render("▸ ")
+			}
+			pName := m.projects[match.projectIdx].Name
+			name := pName
+			if i == m.cursor {
+				name = accentStyle.Bold(true).Render(name)
+			} else {
+				name = textStyle.Render(name)
+			}
+			hint := ""
+			if match.line != pName {
+				hint = dimStyle.Render("  " + truncate(match.line, innerLeft-lipgloss.Width(name)-6))
+			}
+			leftLines = append(leftLines, prefix+name+hint)
+		}
+	} else {
+		leftLines = append(leftLines, panelHeaderStyle.Render("Projects"))
+		leftLines = append(leftLines, "")
 
 	// Scrolling for project list
 	maxVisible := panelHeight - 3 // header + blank + bottom padding
@@ -170,28 +200,37 @@ func (m model) renderDashboard() string {
 			name = textStyle.Render(name)
 		}
 
-		// Compact badge
-		var badge string
-		total := p.CurrentCount + p.InboxCount + p.BacklogCount
-		if total > 0 {
-			parts := []string{}
-			if p.CurrentCount > 0 {
-				parts = append(parts, accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)))
-			}
-			if p.InboxCount > 0 {
-				parts = append(parts, warnStyle.Render(fmt.Sprintf("%d", p.InboxCount)))
-			}
-			if p.BacklogCount > 0 {
-				parts = append(parts, dimStyle.Render(fmt.Sprintf("%d", p.BacklogCount)))
-			}
-			badge = " " + dimStyle.Render("· ") + strings.Join(parts, dimStyle.Render("/"))
+		var indicators string
+		if p.InboxCount > 0 {
+			indicators += warnStyle.Render("🚨") + dimStyle.Render(" · ")
+		}
+		if time.Since(p.ModTime) > 30*24*time.Second {
+			indicators += dimStyle.Render("👻") + dimStyle.Render(" · ")
 		}
 
-		line := prefix + name + badge
-		// Truncate if too wide
-		if lipgloss.Width(line) > innerLeft {
-			// Just show prefix + name truncated
+		// Task counts
+		var counts []string
+		if p.CurrentCount > 0 {
+			counts = append(counts, accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)))
+		}
+		if p.InboxCount > 0 {
+			counts = append(counts, warnStyle.Render(fmt.Sprintf("%d", p.InboxCount)))
+		}
+		if p.BacklogCount > 0 {
+			counts = append(counts, dimStyle.Render(fmt.Sprintf("%d", p.BacklogCount)))
+		}
+
+		// Single · separator between name and (indicators + counts)
+		suffix := indicators + strings.Join(counts, dimStyle.Render("/"))
+		var line string
+		if suffix != "" {
+			line = prefix + name + dimStyle.Render(" · ") + suffix
+		} else {
 			line = prefix + name
+		}
+		// Truncate if too wide (xansi handles ANSI codes + wide chars)
+		if lipgloss.Width(line) > innerLeft {
+			line = xansi.Truncate(line, innerLeft, "")
 		}
 		leftLines = append(leftLines, line)
 	}
@@ -204,6 +243,8 @@ func (m model) renderDashboard() string {
 		leftLines = append(leftLines, dimStyle.Render(fmt.Sprintf("  ▼ %d more", len(m.projects)-endIdx)))
 	}
 
+	} // end search/project-list if-else
+
 	// Pad to fill height
 	for len(leftLines) < panelHeight {
 		leftLines = append(leftLines, "")
@@ -212,90 +253,39 @@ func (m model) renderDashboard() string {
 	leftContent := strings.Join(leftLines[:panelHeight], "\n")
 	leftPanel := panelActiveStyle.Width(leftWidth - 2).Render(leftContent)
 
-	// --- Right pane: selected project tasks ---
-	var rightLines []string
-	if m.cursor < len(m.projects) {
-		p := m.projects[m.cursor]
-
-		// Header with project name and
-		header := panelHeaderStyle.Render(p.Name)
-		rightLines = append(rightLines, header)
-		rightLines = append(rightLines, "")
-
-		sections := []struct {
-			key   string
-			label string
-			style lipgloss.Style
-		}{
-			{"current", "Current Tasks", accentStyle},
-			{"inbox", "Inbox", warnStyle},
-			{"backlog", "Backlog", dimStyle},
+	// --- Right pane: rendered WORK.md via viewport ---
+	var rightContent string
+	if m.mode == modeEdit && m.selected == m.cursor {
+		rightContent = m.renderEditMode()
+	} else if (m.mode == modeCleanupWait || m.mode == modeTodoWait) && m.selected == m.cursor {
+		label := "ollama cleaning up..."
+		if m.mode == modeTodoWait {
+			label = "asking ollama what to work on..."
 		}
-
-		hasAnyTasks := false
-		for _, sec := range sections {
-			var secTasks []workmd.Task
-			for _, t := range p.Tasks {
-				if t.Section == sec.key && !t.Done {
-					secTasks = append(secTasks, t)
-				}
-			}
-			if len(secTasks) == 0 {
-				continue
-			}
-			hasAnyTasks = true
-
-			rightLines = append(rightLines, sec.style.Render("── "+sec.label)+
-				dimStyle.Render(fmt.Sprintf(" (%d)", len(secTasks))))
-
-			for j, t := range secTasks {
-				secTasksViewLimit := 20
-				if j >= secTasksViewLimit {
-					rightLines = append(rightLines, dimStyle.Render(fmt.Sprintf("   + %d more", len(secTasks)-secTasksViewLimit)))
-					break
-				}
-				icon := dimStyle.Render("·")
-				if sec.key == "current" {
-					icon = accentStyle.Render("›")
-				} else if sec.key == "inbox" {
-					icon = warnStyle.Render("·")
-				}
-				name := t.Name
-				if len(name) > innerRight-6 && innerRight > 10 {
-					name = name[:innerRight-9] + "..."
-				}
-				rightLines = append(rightLines, fmt.Sprintf("  %s %s", icon, textStyle.Render(name)))
-			}
-			rightLines = append(rightLines, "")
+		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
+			m.spinner.View()+" "+dimStyle.Render(label),
+			"",
+			dimStyle.Render("please wait..."),
+		)
+		rightContent = lipgloss.Place(rightWidth-4, panelHeight, lipgloss.Center, lipgloss.Center, content)
+	} else if m.mode == modeTodoResult && m.selected == m.cursor {
+		var lines []string
+		proj := ""
+		if m.selected < len(m.projects) {
+			proj = m.projects[m.selected].Name
 		}
-
-		if !hasAnyTasks {
-			rightLines = append(rightLines, dimStyle.Render("  No tasks"))
+		lines = append(lines, accentStyle.Render("What to work on: ")+dimStyle.Render(proj), "")
+		for _, l := range strings.Split(m.todoResult, "\n") {
+			lines = append(lines, "  "+textStyle.Render(l))
 		}
+		lines = append(lines, "", dimStyle.Render("  any key to dismiss"))
+		rightContent = strings.Join(lines, "\n")
 	} else {
-		rightLines = append(rightLines, dimStyle.Render("No project selected"))
+		// Size the viewport to fit the right panel
+		m.viewport.Width = rightWidth - 4
+		m.viewport.Height = panelHeight
+		rightContent = m.viewport.View()
 	}
-
-	// Apply scroll to right panel
-	visibleRight := panelHeight
-	if m.dashRightScroll > 0 && len(rightLines) > visibleRight {
-		maxScroll := len(rightLines) - visibleRight
-		scroll := m.dashRightScroll
-		if scroll > maxScroll {
-			scroll = maxScroll
-		}
-		rightLines = rightLines[scroll:]
-	}
-
-	// Pad to fill height
-	for len(rightLines) < panelHeight {
-		rightLines = append(rightLines, "")
-	}
-	if len(rightLines) > panelHeight {
-		rightLines = rightLines[:panelHeight]
-	}
-
-	rightContent := strings.Join(rightLines, "\n")
 	rightPanel := panelStyle.Width(rightWidth - 2).Render(rightContent)
 
 	// Force same height and join
@@ -377,7 +367,7 @@ func (m model) renderDump() string {
 			lines = append(lines, dimStyle.Render("  route to: ")+
 				accentStyle.Render(item.Project)+dimStyle.Render(" / ")+accentStyle.Render(item.Section))
 			lines = append(lines, "")
-			lines = append(lines, dimStyle.Render("  y/enter accept · n skip · esc abort"))
+			lines = append(lines, dimStyle.Render("  y/enter accept · n skip · r reroute · esc abort"))
 		}
 		return strings.Join(lines, "\n")
 
@@ -432,8 +422,25 @@ func (m model) renderDumpSummary() string {
 		lines = append(lines, "")
 	}
 
-	lines = append(lines, dimStyle.Render("  any key to continue"))
-	return strings.Join(lines, "\n")
+	lines = append(lines, dimStyle.Render("  j/k scroll · any other key to continue"))
+
+	visibleH := m.height - 8
+	if visibleH < 5 {
+		visibleH = 5
+	}
+	maxScroll := len(lines) - visibleH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	scroll := m.dumpSummaryScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	end := scroll + visibleH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[scroll:end], "\n")
 }
 
 func isDumpSkipped(item ollama.RouteItem, skipped []ollama.RouteItem) bool {
@@ -502,28 +509,24 @@ func (m model) renderFooter() string {
 
 	switch m.page {
 	case pageDashboard:
-		add("j/k", "navigate")
-		add("enter", "view")
+		add("j/k", "nav")
+		add("enter", "open")
 		add("e", "edit")
-		add("w/s", "scroll right")
-		add("o", "open dir")
 		add("d", "dump")
-		add("x", "scripts")
-		add("r", "refresh")
+		add("y", "copy path")
 	case pageProject:
 		add("j/k", "scroll")
 		add("e", "edit")
-		add("c", "cleanup")
 		add("esc", "back")
 	case pageCleanup:
 		add("y/enter", "accept")
 		add("n/esc", "discard")
-		add("j/k", "scroll")
 	case pageDump:
 		switch m.mode {
 		case modeDumpReview:
 			add("y/enter", "accept")
 			add("n", "skip")
+			add("r", "reroute")
 			add("esc", "abort")
 		case modeDumpClarify:
 			add("enter", "reroute")
@@ -533,7 +536,7 @@ func (m model) renderFooter() string {
 			add("esc", "back")
 		}
 	case pageScripts:
-		add("j/k", "navigate")
+		add("j/k", "nav")
 		add("enter", "run")
 		add("esc", "back")
 	}
@@ -552,21 +555,40 @@ func (m model) renderHelp() string {
 		keys  []struct{ key, desc string }
 	}{
 		{"Dashboard", []struct{ key, desc string }{
-			{"j/k", "Navigate projects (sorted by recently updated)"},
-			{"enter", "View project WORK.md"},
-			{"e", "Edit project WORK.md directly"},
-			{"w/s", "Scroll right panel"},
-			{"o", "Open project directory"},
+			{"j/k", "Navigate projects"},
+			{"g / G", "Jump to top / bottom of list"},
+			{"J/K", "Scroll WORK.md preview"},
+			{"ctrl+d/u", "Half-page scroll preview"},
+			{"pgup/pgdn", "Full-page scroll preview"},
+			{"ctrl+home/end", "Preview top / bottom"},
+			{"enter", "Full-screen project view"},
+			{"e", "Edit WORK.md inline"},
+			{"c", "Cleanup via ollama"},
+			{"t", "Ask ollama what to work on"},
+			{"o", "Open project directory in editor"},
+			{"y", "Copy project dir path to clipboard"},
 			{"d", "Brain dump"},
 			{"x", "Maintenance scripts"},
+			{"/", "Search across all WORK.md files"},
 			{"r", "Refresh (re-scan WORK.md files)"},
 		}},
 		{"Project View", []struct{ key, desc string }{
 			{"j/k", "Scroll"},
+			{"g / G", "Jump to top / bottom"},
+			{"pgup/pgdn", "Full-page scroll"},
+			{"ctrl+home/end", "Top / bottom"},
 			{"e", "Edit inline"},
 			{"ctrl+s", "Save edits"},
 			{"c", "Cleanup via ollama (normalizes format)"},
 			{"esc", "Back / cancel edit"},
+		}},
+		{"Edit Mode", []struct{ key, desc string }{
+			{"ctrl+s", "Save"},
+			{"esc", "Cancel"},
+			{"home / ctrl+a", "Start of line"},
+			{"end / ctrl+e", "End of line"},
+			{"ctrl+d", "Delete current line"},
+			{"ctrl+k", "Delete to end of line"},
 		}},
 		{"Brain Dump", []struct{ key, desc string }{
 			{"ctrl+d", "Route dump via ollama (splits into items)"},

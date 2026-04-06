@@ -26,6 +26,22 @@ func openDir(dir string) {
 	exec.Command("cursor", dir).Start() //nolint:errcheck
 }
 
+// copyToClipboard copies text to the system clipboard.
+// Tries clip.exe (WSL), xclip, xsel in order.
+func copyToClipboard(s string) {
+	for _, args := range [][]string{
+		{"clip.exe"},
+		{"xclip", "-selection", "clipboard"},
+		{"xsel", "--clipboard", "--input"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdin = strings.NewReader(s)
+		if err := cmd.Run(); err == nil {
+			return
+		}
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -34,6 +50,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport = viewport.New(m.width-4, m.height-8)
 		if m.page == pageProject && m.selected < len(m.projects) {
 			m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
+		} else if m.page == pageDashboard && m.cursor < len(m.projects) {
+			rightW := m.width - (m.width*25/100) - 6
+			if rightW < 20 {
+				rightW = 20
+			}
+			m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
 		}
 		// Resize dump textarea to fill available space
 		dumpH := m.height - 10
@@ -45,12 +67,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// ctrl+c always quits regardless of mode
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
 		// In text-input modes, route directly to their handlers (don't intercept q, ?, etc.)
 		if m.mode == modeEdit {
 			return m.updateEdit(msg)
 		}
 		if m.mode == modeDumpInput || m.mode == modeDumpClarify || m.mode == modeDumpSummary {
 			return m.updateDump(msg)
+		}
+
+		// Search mode intercept
+		if m.mode == modeSearch {
+			return m.updateSearch(msg)
 		}
 
 		// Global keys
@@ -113,6 +145,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectsLoadedMsg:
 		m.projects = msg.projects
 		m.loading = false
+		if len(m.projects) > 0 && m.width > 0 {
+			rightW := m.width - (m.width*25/100) - 6
+			if rightW < 20 {
+				rightW = 20
+			}
+			m.viewport.SetContent(markdown.Render(m.projects[0].Content, rightW))
+			m.viewport.GotoTop()
+		}
 		return m, nil
 
 	case tickMsg:
@@ -162,6 +202,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dumpItems[m.dumpCursor] = *msg.item
 		}
 		m.mode = modeDumpReview
+		return m, nil
+
+	case todoResultMsg:
+		if msg.err != nil {
+			m.statusMsg = "todo failed: " + msg.err.Error()
+			m.statusExpiry = time.Now().Add(5 * time.Second)
+			m.mode = modeNormal
+			return m, nil
+		}
+		m.todoResult = msg.result
+		m.mode = modeTodoResult
 		return m, nil
 
 	case cleanupDoneMsg:
@@ -226,30 +277,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // --- Dashboard ---
 
 func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeTodoResult {
+		m.mode = modeNormal
+		return m, nil
+	}
+	if m.mode == modeTodoWait {
+		return m, nil // ignore keys while waiting
+	}
+	prevCursor := m.cursor
 	switch msg.String() {
 	case "j", "down":
 		if m.cursor < len(m.projects)-1 {
 			m.cursor++
-			m.dashRightScroll = 0
 		}
 	case "k", "up":
 		if m.cursor > 0 {
 			m.cursor--
-			m.dashRightScroll = 0
 		}
-	case "s":
-		m.dashRightScroll++
-	case "w":
-		if m.dashRightScroll > 0 {
-			m.dashRightScroll--
-		}
+	case "J", "s":
+		m.viewport.LineDown(3)
+	case "K", "w":
+		m.viewport.LineUp(3)
+	case "ctrl+d":
+		m.viewport.HalfViewDown()
+	case "ctrl+u":
+		m.viewport.HalfViewUp()
+	case "pgdown":
+		m.viewport.ViewDown()
+	case "pgup":
+		m.viewport.ViewUp()
+	case "ctrl+home":
+		m.viewport.GotoTop()
+	case "ctrl+end":
+		m.viewport.GotoBottom()
 	case "g":
 		m.cursor = 0
-		m.dashRightScroll = 0
+		m.viewport.GotoTop()
 	case "G":
 		m.cursor = len(m.projects) - 1
-		m.dashRightScroll = 0
+	case "y":
+		if m.cursor < len(m.projects) {
+			copyToClipboard(m.projects[m.cursor].Dir)
+			m.statusMsg = "copied: " + m.projects[m.cursor].Dir
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+		}
 	case "enter":
+		// Full-screen project view
 		if m.cursor < len(m.projects) {
 			m.selected = m.cursor
 			m.page = pageProject
@@ -259,15 +332,26 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if m.cursor < len(m.projects) {
 			m.selected = m.cursor
-			m.page = pageProject
-			m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
-			m.viewport.GotoTop()
 			m.mode = modeEdit
 			m.editArea.SetValue(m.projects[m.selected].Content)
-			m.editArea.SetWidth(m.width - 4)
-			m.editArea.SetHeight(m.height - 8)
+			rightW := m.width - (m.width*25/100) - 6
+			if rightW < 20 {
+				rightW = 20
+			}
+			m.editArea.SetWidth(rightW - 4)
+			panelH := m.height - 8 // availableHeight - 2 borders
+			m.editArea.SetHeight(panelH - 2) // subtract header + blank line
 			m.editArea.Focus()
 			return m, m.editArea.Cursor.BlinkCmd()
+		}
+	case "c":
+		if m.cursor < len(m.projects) {
+			m.selected = m.cursor
+			m.cleanupOriginal = m.projects[m.selected].Content
+			m.mode = modeCleanupWait
+			m.statusMsg = "asking ollama to clean up..."
+			m.statusExpiry = time.Now().Add(120 * time.Second)
+			return m, tea.Batch(cleanupCmd(m.projects[m.selected].Content), m.spinner.Tick)
 		}
 	case "o":
 		if m.cursor < len(m.projects) {
@@ -282,11 +366,36 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		m.page = pageScripts
 		m.scriptCursor = 0
+	case "/":
+		m.mode = modeSearch
+		m.searchQuery = ""
+		m.searchMatches = nil
+		return m, nil
+	case "t":
+		if m.cursor < len(m.projects) {
+			m.selected = m.cursor
+			m.mode = modeTodoWait
+			m.todoResult = ""
+			m.statusMsg = "asking ollama..."
+			m.statusExpiry = time.Now().Add(60 * time.Second)
+			return m, tea.Batch(todoCmd(m.projects[m.cursor].Content), m.spinner.Tick)
+		}
 	case "r":
 		m.projects = workmd.Discover()
 		m.statusMsg = "refreshed"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 	}
+
+	// Update right-panel viewport when cursor changes
+	if m.cursor != prevCursor && m.cursor < len(m.projects) {
+		rightW := m.width - (m.width*25/100) - 6
+		if rightW < 20 {
+			rightW = 20
+		}
+		m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+		m.viewport.GotoTop()
+	}
+
 	return m, nil
 }
 
@@ -322,13 +431,27 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.HalfViewDown()
 	case "ctrl+u":
 		m.viewport.HalfViewUp()
-	case "g":
+	case "pgdown":
+		m.viewport.ViewDown()
+	case "pgup":
+		m.viewport.ViewUp()
+	case "g", "ctrl+home":
 		m.viewport.GotoTop()
-	case "G":
+	case "G", "ctrl+end":
 		m.viewport.GotoBottom()
 	}
 
 	return m, nil
+}
+
+func todoCmd(content string) tea.Cmd {
+	return func() tea.Msg {
+		client := ollama.New()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		result, err := client.NextTodo(ctx, content)
+		return todoResultMsg{result: result, err: err}
+	}
 }
 
 func cleanupCmd(content string) tea.Cmd {
@@ -363,14 +486,22 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.statusExpiry = time.Now().Add(3 * time.Second)
 		}
-		m.page = pageProject
-		m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
+		m.page = pageDashboard
+		rightW := m.width - (m.width*25/100) - 6
+		if rightW < 20 {
+			rightW = 20
+		}
+		m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, rightW))
 		m.viewport.GotoTop()
 	case "n", "esc", "q":
 		m.statusMsg = "cleanup discarded"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
-		m.page = pageProject
-		m.viewport.SetContent(markdown.Render(m.cleanupOriginal, m.width-4))
+		m.page = pageDashboard
+		rightW := m.width - (m.width*25/100) - 6
+		if rightW < 20 {
+			rightW = 20
+		}
+		m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, rightW))
 		m.viewport.GotoTop()
 	case "j", "down":
 		m.viewport.LineDown(1)
@@ -404,6 +535,21 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeNormal
 		}
 		return m, nil
+	case "ctrl+d":
+		// Delete current line, reposition cursor to same line number
+		value := m.editArea.Value()
+		lineNum := m.editArea.Line()
+		lines := strings.Split(value, "\n")
+		if lineNum < len(lines) {
+			newLines := append(lines[:lineNum], lines[lineNum+1:]...)
+			m.editArea.SetValue(strings.Join(newLines, "\n"))
+			// SetValue leaves cursor at end; move up to target line
+			for i := 0; i < len(newLines)-1-lineNum; i++ {
+				m.editArea.CursorUp()
+			}
+			m.editArea.CursorStart()
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -420,8 +566,17 @@ func (m model) updateDump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeDumpClarify:
 		return m.updateDumpClarify(msg)
 	case modeDumpSummary:
-		// any key dismisses
-		return m.dismissDumpSummary()
+		switch msg.String() {
+		case "j", "down":
+			m.dumpSummaryScroll++
+		case "k", "up":
+			if m.dumpSummaryScroll > 0 {
+				m.dumpSummaryScroll--
+			}
+		default:
+			return m.dismissDumpSummary()
+		}
+		return m, nil
 	}
 
 	// modeDumpInput
@@ -473,6 +628,13 @@ func (m model) updateDumpReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dumpSkipped++
 		m.dumpSkippedList = append(m.dumpSkippedList, item)
 		return m.advanceDumpCursor()
+
+	case "r":
+		// Manual reroute — let user specify which project
+		m.mode = modeDumpClarify
+		m.dumpClarifyArea.Reset()
+		m.dumpClarifyArea.Focus()
+		return m, m.dumpClarifyArea.Cursor.BlinkCmd()
 
 	case "esc":
 		// Abort remaining — show summary of what was already accepted
@@ -577,10 +739,84 @@ func (m model) dismissDumpSummary() (tea.Model, tea.Cmd) {
 	m.dumpAccepted = 0
 	m.dumpSkipped = 0
 	m.dumpResult = ""
+	m.dumpSummaryScroll = 0
 	m.dumpArea.Reset()
 	m.dumpArea.Focus()
 	m.mode = modeDumpInput
 	return m, m.dumpArea.Cursor.BlinkCmd()
+}
+
+func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.mode = modeNormal
+		m.searchQuery = ""
+		m.searchMatches = nil
+		return m, nil
+	case "enter":
+		if len(m.searchMatches) > 0 && m.cursor < len(m.searchMatches) {
+			idx := m.searchMatches[m.cursor].projectIdx
+			m.selected = idx
+			m.cursor = idx
+			m.mode = modeNormal
+			m.searchQuery = ""
+			m.searchMatches = nil
+			rightW := m.width - (m.width*25/100) - 6
+			if rightW < 20 {
+				rightW = 20
+			}
+			m.viewport.SetContent(markdown.Render(m.projects[idx].Content, rightW))
+			m.viewport.GotoTop()
+		}
+		return m, nil
+	case "backspace":
+		if len(m.searchQuery) > 0 {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			m.cursor = 0
+		}
+	case "j", "down":
+		if m.cursor < len(m.searchMatches)-1 {
+			m.cursor++
+		}
+		return m, nil
+	case "k", "up":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+	default:
+		if len(msg.String()) == 1 {
+			m.searchQuery += msg.String()
+			m.cursor = 0
+		}
+	}
+
+	// Recompute matches
+	m.searchMatches = nil
+	if m.searchQuery != "" {
+		q := strings.ToLower(m.searchQuery)
+		seen := map[int]bool{}
+		for i, p := range m.projects {
+			if strings.Contains(strings.ToLower(p.Name), q) && !seen[i] {
+				m.searchMatches = append(m.searchMatches, searchMatch{projectIdx: i, line: p.Name})
+				seen[i] = true
+			}
+		}
+		for i, p := range m.projects {
+			if seen[i] {
+				continue
+			}
+			for _, line := range strings.Split(p.Content, "\n") {
+				if strings.Contains(strings.ToLower(line), q) {
+					m.searchMatches = append(m.searchMatches, searchMatch{projectIdx: i, line: strings.TrimSpace(line)})
+					seen[i] = true
+					break
+				}
+			}
+		}
+	}
+
+	return m, nil
 }
 
 func routeDumpCmd(text string, projects []workmd.Project) tea.Cmd {

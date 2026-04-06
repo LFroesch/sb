@@ -43,34 +43,29 @@ type RouteItem struct {
 }
 
 // CleanupPrompt is the system prompt for WORK.md normalization.
-const CleanupPrompt = `You are cleaning up a WORK.md file. Preserve ALL content — do not drop any tasks, notes, plans, or prose. Losing ANY content is a complete failure.
+const CleanupPrompt = `Clean up this WORK.md file. Rules:
 
-Standard sections (normalize tasks INTO these):
-
-## Current Tasks
-
-- important/blockers/big features currently working out/bugs
-
-## Backlog / Feature Ideas
-
-- solid ideas that aren't blockers/important
-
-## Inbox
-
-- plain items
-
-Rules: [ YOU CANNOT BREAK THESE ]
-- Move free-text TASK lines into the correct section (Current Tasks / Backlog / Inbox)
-- Keep Current Tasks short; overflow/nonimportant tasks go to Backlog
-- Inbox is ONLY for items that were already in Inbox or completely unclassified loose text. Do NOT move Backlog items to Inbox.
-- Remove table formatting/priority emojis+status — convert to plain lists with descriptions
-- When converting table rows to list items, use " — " (em dash) to separate the task name from its description. Example: "- Task name — description here"
-- Bare text lines floating outside any list are loose tasks/notes — add "- " prefix and sort them into the appropriate section (Current Tasks, Backlog, or Inbox)
-- Output ONLY the cleaned markdown, no commentary, no code fences
-- Do NOT duplicate items. Each item from the input should appear exactly ONCE in the output.
-- EVERY item in the input MUST appear in the output. Even short/vague items — keep them as-is
-- Any section that is NOT "Current Tasks", "Backlog / Feature Ideas", or "Inbox" SHOULD BE UNCHANGED — same heading, same body, same position relative to other sections. Examples: "## Current Phase", "## --schema Plan", "## Design Notes", "## API Spec". Do NOT drop, summarize, or merge them.
-- If you aren't sure whether something is a task or a note, KEEP IT as-is in its original location`
+1. NEVER DROP CONTENT. Every task, note, bullet, and line must appear exactly once in the output. Losing even one item is failure. If unsure where something goes, put it in ## Unsorted.
+2. Keep the "# WORK - slug" title as the very first line.
+3. Canonical sections IN THIS ORDER (create only if items belong there):
+   ## Current Phase    (one-liner: what the project is doing right now)
+   ## Current Tasks    (active work, in-progress items)
+   ## Bugs + Blockers  (bugs, blockers, broken things)
+   ## Updates + Features (enhancements, improvements, planned features)
+   ## Backlog          (ideas, low-priority, not urgent)
+   ## Unsorted         (anything that doesn't fit above)
+4. MERGE old/variant headers into canonical ones:
+   Backlog, Feature Ideas, Ideas, Wishlist, Nice to Have → ## Backlog
+   Bugs, Blockers, Issues, Known Issues, Broken → ## Bugs + Blockers
+   Updates, Features, Enhancements, Improvements, Planned → ## Updates + Features
+   Inbox, Unsorted, Misc, Notes, Dump, TODO → ## Unsorted
+   Current, Active, In Progress, Doing, Sprint → ## Current Tasks
+   Phase, Status, Current Phase → ## Current Phase
+   Any section that doesn't map to the above is TRULY non-canonical (## Design Notes, ## API Spec, etc.) — keep those as-is after the canonical sections.
+5. Always leave a blank line after every ## heading.
+6. Convert tables or emoji-status lists to plain "- item" bullet lists.
+7. Deduplicate exact duplicates only. If two items are similar but not identical, keep both.
+8. Output ONLY the cleaned markdown. No commentary, no code fences.`
 
 // cleanupLog writes a cleanup request/response pair to /tmp/sb-cleanup.log for tuning.
 func cleanupLog(prompt, response string) {
@@ -136,9 +131,10 @@ func (c *Client) Route(ctx context.Context, text string, projectNames []string) 
 
 Available projects: %s
 
-If the text doesn't clearly belong to any specific project, route to "SECOND_BRAIN" with section "inbox". main means the main SECOND BRAIN WORK.md, not the project "main" which doesnt exist, drop the "- main" or "- project" if the intent is just to communicate to you where it should go
+If the text doesn't clearly belong to any specific project, route to "SECOND_BRAIN" with section "current_tasks". "main" means the main SECOND_BRAIN WORK.md, not a project called "main".
 
-Respond with ONLY valid JSON: {"project": "name", "section": "inbox"}
+Valid sections: current_tasks, bugs_blockers, updates_features, backlog, unsorted
+Respond with ONLY valid JSON: {"project": "name", "section": "current_tasks"}
 
 Brain dump: %s`, strings.Join(projectNames, ", "), text)
 
@@ -207,12 +203,13 @@ Special targets:
 - "SECOND_BRAIN" — catch-all for general notes
 - "CLARIFY" — ONLY use this when you genuinely cannot determine which project an item belongs to. Most items should be routable.
 
-Valid sections: inbox, backlog, current_tasks
+Valid sections: current_tasks, bugs_blockers, updates_features, backlog, unsorted
+If you're unsure where an item goes, default to project "SECOND_BRAIN" section "current_tasks".
 
-Respond with ONLY a valid JSON array. Each element: {"text": "the extracted item", "project": "name", "section": "inbox"}
+Respond with ONLY a valid JSON array. Each element: {"text": "the extracted item", "project": "name", "section": "current_tasks"}
 
 Example input: "need to fix the login bug in gather, also had an idea for a new tui app called radar, and sb needs better diff views"
-Example output: [{"text":"fix the login bug","project":"gather","section":"current_tasks"},{"text":"new tui app idea: radar","project":"IDEAS","section":"inbox"},{"text":"sb needs better diff views","project":"sb","section":"inbox"}]
+Example output: [{"text":"fix the login bug","project":"gather","section":"bugs_blockers"},{"text":"new tui app idea: radar","project":"IDEAS","section":"backlog"},{"text":"sb needs better diff views","project":"sb","section":"updates_features"}]
 
 Brain dump:
 %s`, strings.Join(projectNames, ", "), text)
@@ -263,8 +260,52 @@ Brain dump:
 		return nil, fmt.Errorf("parse routes: %w (raw: %s)", err, chatResp.Message.Content)
 	}
 
+	for i := range items {
+		items[i].Project = strings.TrimSpace(strings.TrimPrefix(items[i].Project, "#"))
+	}
+
 	routeLog(text, chatResp.Message.Content, items)
 	return items, nil
+}
+
+// NextTodo asks ollama to suggest what to work on next given a WORK.md.
+func (c *Client) NextTodo(ctx context.Context, content string) (string, error) {
+	prompt := `You are a helpful assistant reviewing a WORK.md task file. Based on the Current Tasks and Inbox sections, give a short, direct answer: what are the 2-3 most important things to work on right now? Be specific and actionable. No fluff.
+
+WORK.md:
+` + content
+
+	body := map[string]any{
+		"model":  c.model,
+		"stream": false,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	data, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var chatResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return "", fmt.Errorf("ollama decode: %w", err)
+	}
+	return strings.TrimSpace(chatResp.Message.Content), nil
 }
 
 // routeLog writes a routing request/response pair to /tmp/sb-route.log for debugging.
@@ -289,10 +330,10 @@ func (c *Client) RerouteSingle(ctx context.Context, text, clarification string, 
 	prompt := fmt.Sprintf(`Route this item to a project. The user clarified: "%s"
 
 Available projects: %s
-Special: "IDEAS" for ideas not tied to a project, "SECOND_BRAIN" for general notes.
-Valid sections: inbox, backlog, current_tasks
+Special: "IDEAS" for ideas not tied to a project, "SECOND_BRAIN" for general notes (default to current_tasks if unsure).
+Valid sections: current_tasks, bugs_blockers, updates_features, backlog, unsorted
 
-Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section": "inbox"}
+Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section": "current_tasks"}
 
 Item: %s`, clarification, strings.Join(projectNames, ", "), text)
 
@@ -341,5 +382,6 @@ Item: %s`, clarification, strings.Join(projectNames, ", "), text)
 		return nil, fmt.Errorf("parse reroute: %w (raw: %s)", err, chatResp.Message.Content)
 	}
 
+	item.Project = strings.TrimSpace(strings.TrimPrefix(item.Project, "#"))
 	return &item, nil
 }

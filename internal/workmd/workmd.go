@@ -139,7 +139,7 @@ func AppendToSection(path, section, text string) error {
 	}
 
 	// Section not found — append it
-	addition := "\n" + target + "\n" + entry + "\n"
+	addition := "\n" + target + "\n\n" + entry + "\n"
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
@@ -152,15 +152,19 @@ func AppendToSection(path, section, text string) error {
 // sectionHeader maps a loose section name to a ## heading.
 func sectionHeader(section string) string {
 	switch strings.ToLower(strings.ReplaceAll(section, "_", " ")) {
-	case "inbox":
-		return "## Inbox"
+	case "current tasks", "current":
+		return "## Current Tasks"
+	case "bugs blockers", "bugs", "blockers":
+		return "## Bugs + Blockers"
+	case "updates features", "updates", "features":
+		return "## Updates + Features"
 	case "backlog":
 		return "## Backlog"
-	case "current tasks":
-		return "## Current Tasks"
+	case "unsorted", "inbox":
+		return "## Unsorted"
 	default:
 		if section == "" {
-			return "## Inbox"
+			return "## Current Tasks"
 		}
 		return "## " + strings.ToUpper(section[:1]) + section[1:]
 	}
@@ -200,6 +204,12 @@ func deriveName(path, root string) string {
 	// Shorten common prefixes
 	rel = strings.TrimPrefix(rel, "active/daily_use/")
 	rel = strings.TrimPrefix(rel, "tui-hub/apps/")
+
+	// SECOND_BRAIN root → "Main", subprojects → drop prefix
+	if rel == "SECOND_BRAIN" {
+		return "Main"
+	}
+	rel = strings.TrimPrefix(rel, "SECOND_BRAIN/")
 
 	// Use last component if it's still long
 	parts := strings.Split(rel, "/")

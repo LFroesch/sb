@@ -13,6 +13,11 @@ import (
 	"github.com/LFroesch/sb/internal/workmd"
 )
 
+type searchMatch struct {
+	projectIdx int
+	line       string
+}
+
 type projectsLoadedMsg struct {
 	projects []workmd.Project
 }
@@ -42,6 +47,9 @@ const (
 	modeDumpRouting  // ollama is classifying
 	modeDumpConfirm  // showing route result, waiting for y/n
 	modeCleanupWait   // ollama is cleaning up
+	modeTodoWait      // ollama is generating next todo
+	modeTodoResult    // showing next todo result
+	modeSearch        // fuzzy search across WORK.md content
 	modeDumpReview    // stepping through routed items
 	modeDumpClarify   // asking user to clarify unclear item
 	modeDumpSummary   // post-dump summary, esc to dismiss
@@ -77,13 +85,21 @@ type model struct {
 	dumpCursor      int             // which item we're reviewing
 	dumpAccepted    int               // count of accepted items
 	dumpSkipped     int               // count of skipped items
-	dumpSkippedList []ollama.RouteItem // items that were skipped
-	dumpClarifyArea textarea.Model    // textarea for clarification input
-	dumpResult      string            // last status message for display
+	dumpSkippedList    []ollama.RouteItem // items that were skipped
+	dumpClarifyArea   textarea.Model    // textarea for clarification input
+	dumpResult        string            // last status message for display
+	dumpSummaryScroll int               // scroll offset for summary screen
 
 	// Cleanup
 	cleanupOriginal string // original content before cleanup
 	cleanupResult   string // ollama-cleaned content
+
+	// Todo
+	todoResult string // ollama next-todo response
+
+	// Search
+	searchQuery   string
+	searchMatches []searchMatch
 
 	// Scripts
 	scriptCursor int
@@ -154,6 +170,11 @@ func (m model) Init() tea.Cmd {
 
 type tickMsg time.Time
 type statusClearMsg struct{}
+
+type todoResultMsg struct {
+	result string
+	err    error
+}
 
 type dumpRoutedMsg struct {
 	items []ollama.RouteItem
