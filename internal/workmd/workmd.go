@@ -354,8 +354,8 @@ func extractTasks(content string) []Task {
 			continue
 		}
 
-		// Plain dash items — pick up in inbox and backlog
-		if strings.HasPrefix(trimmed, "- ") && topSection != "current" {
+		// Plain dash items
+		if strings.HasPrefix(trimmed, "- ") {
 			name := strings.TrimSpace(trimmed[2:])
 			if name == "" || strings.HasPrefix(name, "[") {
 				continue

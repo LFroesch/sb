@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/LFroesch/sb/internal/ollama"
 	"github.com/LFroesch/sb/internal/scripts"
 	"github.com/LFroesch/sb/internal/workmd"
 )
@@ -88,12 +88,7 @@ func (m model) renderHeader() string {
 	var right string
 	if m.page == pageProject && m.selected < len(m.projects) {
 		p := m.projects[m.selected]
-		slug := p.Path
-		// trim home prefix for brevity
-		if home, err := os.UserHomeDir(); err == nil {
-			slug = strings.TrimPrefix(slug, home+"/")
-		}
-		right = panelHeaderStyle.Render(slug) + dimStyle.Render("  ·  ") +
+		right = panelHeaderStyle.Render(p.Name) + dimStyle.Render("  ·  ") +
 			accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)) + dimStyle.Render(" cur · ") +
 			warnStyle.Render(fmt.Sprintf("%d", p.InboxCount)) + dimStyle.Render(" inbox · ") +
 			dimStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount))
@@ -121,6 +116,9 @@ func (m model) renderHeader() string {
 // --- Dashboard ---
 
 func (m model) renderDashboard() string {
+	if m.loading {
+		return m.renderEmpty(m.spinner.View()+" scanning ~/projects…", "")
+	}
 	if len(m.projects) == 0 {
 		return m.renderEmpty("No WORK.md files found", "Check ~/projects")
 	}
@@ -319,7 +317,16 @@ func (m model) renderProject() string {
 	}
 
 	if m.mode == modeCleanupWait {
-		return m.renderEmpty("ollama cleaning up...", "please wait, this may take a minute.")
+		h := m.height - 8
+		if h < 5 {
+			h = 5
+		}
+		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
+			m.spinner.View()+" "+dimStyle.Render("ollama cleaning up..."),
+			"",
+			dimStyle.Render("please wait, this may take a minute."),
+		)
+		return lipgloss.Place(m.width-4, h, lipgloss.Center, lipgloss.Center, content)
 	}
 
 	return m.viewport.View()
@@ -330,8 +337,8 @@ func (m model) renderCleanup() string {
 	if m.selected < len(m.projects) {
 		p = m.projects[m.selected].Name
 	}
-	banner := warnStyle.Render("CLEANUP PREVIEW") +
-		dimStyle.Render(" — "+p+" · y/enter accept · n/esc discard")
+	banner := warnStyle.Render("CLEANUP DIFF") +
+		dimStyle.Render(" — "+p+" · y/enter accept · n/esc discard · j/k scroll")
 	return lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
 }
 
@@ -346,49 +353,96 @@ func (m model) renderDump() string {
 	var lines []string
 	lines = append(lines, titleStyle.Render("Brain Dump"), "")
 
-	if m.mode == modeDumpRouting {
-		lines = append(lines, dimStyle.Render("  routing via ollama..."))
-		// Show truncated preview of what's being routed
+	switch m.mode {
+	case modeDumpSummary:
+		return m.renderDumpSummary()
+	case modeDumpRouting:
+		lines = append(lines, "  "+m.spinner.View()+" "+dimStyle.Render("routing via ollama..."))
 		preview := m.dumpText
 		if len(preview) > 120 {
 			preview = preview[:117] + "..."
 		}
 		lines = append(lines, "", dimStyle.Render("  \""+preview+"\""))
 		return strings.Join(lines, "\n")
-	}
 
-	if m.mode == modeDumpConfirm {
-		lines = append(lines, warnStyle.Render("  Route to: ")+
-			accentStyle.Render(m.dumpRoute)+" / "+accentStyle.Render(m.dumpSection))
-		lines = append(lines, "")
-		// Show the dump text (truncated if huge)
-		preview := m.dumpText
-		previewLines := strings.Split(preview, "\n")
-		maxPreview := m.height - 12
-		if maxPreview < 5 {
-			maxPreview = 5
+	case modeDumpReview:
+		if m.dumpCursor < len(m.dumpItems) {
+			item := m.dumpItems[m.dumpCursor]
+			progress := fmt.Sprintf("(%d/%d)", m.dumpCursor+1, len(m.dumpItems))
+
+			lines = append(lines, warnStyle.Render("  REVIEW ")+dimStyle.Render(progress))
+			lines = append(lines, "")
+			lines = append(lines, accentStyle.Render("  "+item.Text))
+			lines = append(lines, "")
+			lines = append(lines, dimStyle.Render("  route to: ")+
+				accentStyle.Render(item.Project)+dimStyle.Render(" / ")+accentStyle.Render(item.Section))
+			lines = append(lines, "")
+			lines = append(lines, dimStyle.Render("  y/enter accept · n skip · esc abort"))
 		}
-		if len(previewLines) > maxPreview {
-			previewLines = previewLines[:maxPreview]
-			previewLines = append(previewLines, fmt.Sprintf("  ... +%d more lines", len(strings.Split(m.dumpText, "\n"))-maxPreview))
+		return strings.Join(lines, "\n")
+
+	case modeDumpClarify:
+		if m.dumpCursor < len(m.dumpItems) {
+			item := m.dumpItems[m.dumpCursor]
+			progress := fmt.Sprintf("(%d/%d)", m.dumpCursor+1, len(m.dumpItems))
+
+			lines = append(lines, warnStyle.Render("  CLARIFY ")+dimStyle.Render(progress))
+			lines = append(lines, "")
+			lines = append(lines, accentStyle.Render("  "+item.Text))
+			lines = append(lines, "")
+			lines = append(lines, dimStyle.Render("  which project does this belong to?"))
+			lines = append(lines, "")
+			lines = append(lines, m.dumpClarifyArea.View())
+			lines = append(lines, "")
+			lines = append(lines, dimStyle.Render("  enter to reroute · esc to skip"))
 		}
-		for _, l := range previewLines {
-			lines = append(lines, dimStyle.Render("  "+l))
-		}
-		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("  y/enter accept · n/esc reject & re-edit"))
 		return strings.Join(lines, "\n")
 	}
 
+	// modeDumpInput (default)
 	lines = append(lines, m.dumpArea.View(), "")
 	lines = append(lines, dimStyle.Render("  ctrl+d to route · esc to cancel"))
+	return strings.Join(lines, "\n")
+}
 
-	if m.dumpResult != "" {
+func (m model) renderDumpSummary() string {
+	var lines []string
+	lines = append(lines, titleStyle.Render("Brain Dump — Done"), "")
+
+	accepted := fmt.Sprintf("%d routed", m.dumpAccepted)
+	skipped := fmt.Sprintf("%d skipped", m.dumpSkipped)
+	lines = append(lines, "  "+accentStyle.Render(accepted)+"  "+dimStyle.Render(skipped), "")
+
+	if m.dumpAccepted > 0 {
+		lines = append(lines, primaryStyle.Render("  Routed:"))
+		for _, it := range m.dumpItems {
+			// dumpItems at this point are all items; accepted = those not in skippedList
+			if !isDumpSkipped(it, m.dumpSkippedList) {
+				lines = append(lines, dimStyle.Render(fmt.Sprintf("    • %s → %s / %s", it.Text, it.Project, it.Section)))
+			}
+		}
 		lines = append(lines, "")
-		lines = append(lines, primaryStyle.Render("  "+m.dumpResult))
 	}
 
+	if len(m.dumpSkippedList) > 0 {
+		lines = append(lines, warnStyle.Render("  Skipped:"))
+		for _, it := range m.dumpSkippedList {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("    • %s → %s / %s", it.Text, it.Project, it.Section)))
+		}
+		lines = append(lines, "")
+	}
+
+	lines = append(lines, dimStyle.Render("  any key to continue"))
 	return strings.Join(lines, "\n")
+}
+
+func isDumpSkipped(item ollama.RouteItem, skipped []ollama.RouteItem) bool {
+	for _, s := range skipped {
+		if s.Text == item.Text {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Scripts ---
@@ -466,10 +520,15 @@ func (m model) renderFooter() string {
 		add("n/esc", "discard")
 		add("j/k", "scroll")
 	case pageDump:
-		if m.mode == modeDumpConfirm {
+		switch m.mode {
+		case modeDumpReview:
 			add("y/enter", "accept")
-			add("n/esc", "reject")
-		} else {
+			add("n", "skip")
+			add("esc", "abort")
+		case modeDumpClarify:
+			add("enter", "reroute")
+			add("esc", "skip")
+		default:
 			add("ctrl+d", "route")
 			add("esc", "back")
 		}
@@ -510,9 +569,10 @@ func (m model) renderHelp() string {
 			{"esc", "Back / cancel edit"},
 		}},
 		{"Brain Dump", []struct{ key, desc string }{
-			{"enter", "Newline"},
-			{"ctrl+d", "Route to project via ollama"},
-			{"esc", "Cancel"},
+			{"ctrl+d", "Route dump via ollama (splits into items)"},
+			{"y/enter", "Accept routed item"},
+			{"n", "Skip item"},
+			{"esc", "Cancel / abort remaining"},
 		}},
 		{"Scripts", []struct{ key, desc string }{
 			{"enter", "Run script"},

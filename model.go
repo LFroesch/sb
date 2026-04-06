@@ -3,12 +3,19 @@ package main
 import (
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"github.com/LFroesch/sb/internal/ollama"
 	"github.com/LFroesch/sb/internal/workmd"
 )
+
+type projectsLoadedMsg struct {
+	projects []workmd.Project
+}
 
 // --- Pages ---
 
@@ -34,7 +41,10 @@ const (
 	modeDumpInput    // typing a brain dump
 	modeDumpRouting  // ollama is classifying
 	modeDumpConfirm  // showing route result, waiting for y/n
-	modeCleanupWait  // ollama is cleaning up
+	modeCleanupWait   // ollama is cleaning up
+	modeDumpReview    // stepping through routed items
+	modeDumpClarify   // asking user to clarify unclear item
+	modeDumpSummary   // post-dump summary, esc to dismiss
 )
 
 // --- Model ---
@@ -61,11 +71,15 @@ type model struct {
 	editSection string // which section is being edited
 
 	// Brain dump
-	dumpArea    textarea.Model
-	dumpText    string
-	dumpRoute   string // ollama's suggested project
-	dumpSection string // ollama's suggested section
-	dumpResult  string // last route result message for display
+	dumpArea        textarea.Model
+	dumpText        string          // raw input text
+	dumpItems       []ollama.RouteItem // multi-routed items from ollama
+	dumpCursor      int             // which item we're reviewing
+	dumpAccepted    int               // count of accepted items
+	dumpSkipped     int               // count of skipped items
+	dumpSkippedList []ollama.RouteItem // items that were skipped
+	dumpClarifyArea textarea.Model    // textarea for clarification input
+	dumpResult      string            // last status message for display
 
 	// Cleanup
 	cleanupOriginal string // original content before cleanup
@@ -74,6 +88,12 @@ type model struct {
 	// Scripts
 	scriptCursor int
 	scriptOutput string
+
+	// Spinner
+	spinner spinner.Model
+
+	// Loading
+	loading bool
 
 	// Status
 	statusMsg    string
@@ -85,7 +105,7 @@ type model struct {
 	helpScroll      int
 }
 
-func newModel(projects []workmd.Project) model {
+func newModel() model {
 	dump := textarea.New()
 	dump.Placeholder = "brain dump — type an idea, thought, or task... (ctrl+d to route)"
 	dump.SetWidth(80)
@@ -97,13 +117,25 @@ func newModel(projects []workmd.Project) model {
 	edit.SetHeight(20)
 	edit.CharLimit = 0 // no limit
 
+	clarify := textarea.New()
+	clarify.Placeholder = "which project is this for? (type name or description)"
+	clarify.SetWidth(80)
+	clarify.SetHeight(3)
+	clarify.CharLimit = 500
+
 	vp := viewport.New(80, 20)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.MiniDot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C6CCA"))
+
 	return model{
-		projects: projects,
-		dumpArea: dump,
-		editArea: edit,
-		viewport: vp,
+		loading:         true,
+		dumpArea:        dump,
+		dumpClarifyArea: clarify,
+		editArea:        edit,
+		viewport:        vp,
+		spinner:         sp,
 	}
 }
 
@@ -111,6 +143,10 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.SetWindowTitle("sb"),
 		tickCmd(),
+		m.spinner.Tick,
+		func() tea.Msg {
+			return projectsLoadedMsg{projects: workmd.Discover()}
+		},
 	)
 }
 
@@ -120,9 +156,13 @@ type tickMsg time.Time
 type statusClearMsg struct{}
 
 type dumpRoutedMsg struct {
-	project string
-	section string
-	err     error
+	items []ollama.RouteItem
+	err   error
+}
+
+type dumpReroutedMsg struct {
+	item *ollama.RouteItem
+	err  error
 }
 
 type cleanupDoneMsg struct {
