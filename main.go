@@ -6,9 +6,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/LFroesch/sb/internal/config"
 )
 
 func main() {
+	_ = config.WriteDefaults() // create ~/.config/sb/config.json on first run
 	m := newModel()
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

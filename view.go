@@ -96,18 +96,15 @@ func (m model) renderHeader() string {
 		p := m.projects[m.selected]
 		var parts []string
 		parts = append(parts, panelHeaderStyle.Render(p.Name))
-		parts = append(parts, accentStyle.Render(fmt.Sprintf("%d cur", p.CurrentCount)))
+		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", p.CurrentCount)))
 		if p.BugsCount > 0 {
 			parts = append(parts, warnStyle.Render(fmt.Sprintf("%d bugs", p.BugsCount)))
 		}
 		if p.UnsortedCount > 0 {
-			parts = append(parts, warnStyle.Render(fmt.Sprintf("🚨 %d unsorted", p.UnsortedCount)))
+			parts = append(parts, unsortedStyle.Render(fmt.Sprintf("%d unsorted", p.UnsortedCount)))
 		}
-		if p.NonListCount > 0 {
-			parts = append(parts, warnStyle.Render(fmt.Sprintf("❌ %d unclean", p.NonListCount)))
-		}
-		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount)))
-		right = strings.Join(parts, dimStyle.Render("  ·  "))
+		parts = append(parts, backlogStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount)))
+		right = strings.Join(parts, dimStyle.Render(" · "))
 	} else {
 		var totalCur, totalBugs, totalUnsorted, totalNonList, totalBacklog int
 		for _, p := range m.projects {
@@ -118,19 +115,16 @@ func (m model) renderHeader() string {
 			totalBacklog += p.BacklogCount
 		}
 		var parts []string
-		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d projects", len(m.projects))))
-		parts = append(parts, accentStyle.Render(fmt.Sprintf("%d current", totalCur)))
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d files", len(m.projects))))
+		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", totalCur)))
 		if totalBugs > 0 {
 			parts = append(parts, warnStyle.Render(fmt.Sprintf("%d bugs", totalBugs)))
 		}
 		if totalUnsorted > 0 {
-			parts = append(parts, warnStyle.Render(fmt.Sprintf("🚨 %d unsorted", totalUnsorted)))
+			parts = append(parts, unsortedStyle.Render(fmt.Sprintf("%d unsorted", totalUnsorted)))
 		}
-		if totalNonList > 0 {
-			parts = append(parts, warnStyle.Render(fmt.Sprintf("❌ %d unclean", totalNonList)))
-		}
-		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d backlog", totalBacklog)))
-		right = strings.Join(parts, dimStyle.Render("  ·  "))
+		parts = append(parts, backlogStyle.Render(fmt.Sprintf("%d backlog", totalBacklog)))
+		right = strings.Join(parts, dimStyle.Render(" · "))
 	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
@@ -200,52 +194,78 @@ func (m model) renderDashboard() string {
 		}
 
 		// renderProjectRow builds a single project line for the left panel.
+		// Counts are right-aligned to the panel edge so columns stay consistent.
+		// Cursor row gets a subtle background across the full width.
 		renderProjectRow := func(i int, innerW int) string {
 			p := m.projects[i]
-			prefix := "  "
-			if i == m.cursor {
-				prefix = accentStyle.Render("▸ ")
+			isCursor := i == m.cursor
+			const prefixW = 2
+
+			// bg applies cursor background to any style
+			bg := func(s lipgloss.Style) lipgloss.Style {
+				if isCursor {
+					return s.Background(colorCursorBg)
+				}
+				return s
 			}
-			name := p.Name
-			if i == m.cursor {
-				name = accentStyle.Bold(true).Render(name)
-			} else {
-				name = textStyle.Render(name)
+
+			styledPrefix := bg(dimStyle).Render("  ")
+			if isCursor {
+				styledPrefix = bg(accentStyle).Render("▸ ")
 			}
-			var indicators string
+
+			// Build styled counts + raw string for width calculation
+			sep := bg(dimStyle).Render("/")
+			var styledParts []string
+			var rawParts []string
 			if m.selectedProjects[p.Path] {
-				indicators += accentStyle.Render("●") + dimStyle.Render(" · ")
+				styledParts = append(styledParts, bg(accentStyle).Render("●"))
+				rawParts = append(rawParts, "●")
+			}
+			if p.CurrentCount > 0 {
+				styledParts = append(styledParts, bg(currentStyle).Render(fmt.Sprintf("%d", p.CurrentCount)))
+				rawParts = append(rawParts, fmt.Sprintf("%d", p.CurrentCount))
 			}
 			if p.UnsortedCount > 0 {
-				indicators += warnStyle.Render("🚨") + dimStyle.Render(" · ")
-			}
-			if p.NonListCount > 0 {
-				indicators += warnStyle.Render("❌") + dimStyle.Render(" · ")
-			}
-			if time.Since(p.ModTime) > 30*24*time.Hour {
-				indicators += dimStyle.Render("👻") + dimStyle.Render(" · ")
-			}
-			var counts []string
-			if p.CurrentCount > 0 {
-				counts = append(counts, accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)))
+				styledParts = append(styledParts, bg(unsortedStyle).Render(fmt.Sprintf("%d", p.UnsortedCount)))
+				rawParts = append(rawParts, fmt.Sprintf("%d", p.UnsortedCount))
 			}
 			if p.BugsCount > 0 {
-				counts = append(counts, warnStyle.Render(fmt.Sprintf("%d", p.BugsCount)))
+				styledParts = append(styledParts, bg(warnStyle).Render(fmt.Sprintf("%d", p.BugsCount)))
+				rawParts = append(rawParts, fmt.Sprintf("%d", p.BugsCount))
 			}
 			if p.BacklogCount > 0 {
-				counts = append(counts, dimStyle.Render(fmt.Sprintf("%d", p.BacklogCount)))
+				styledParts = append(styledParts, bg(backlogStyle).Render(fmt.Sprintf("%d", p.BacklogCount)))
+				rawParts = append(rawParts, fmt.Sprintf("%d", p.BacklogCount))
 			}
-			suffix := indicators + strings.Join(counts, dimStyle.Render("/"))
-			var line string
-			if suffix != "" {
-				line = prefix + name + dimStyle.Render(" · ") + suffix
-			} else {
-				line = prefix + name
+
+			nameStyle := bg(textStyle)
+			if isCursor {
+				nameStyle = bg(accentStyle).Bold(true)
 			}
-			if lipgloss.Width(line) > innerW {
-				line = xansi.Truncate(line, innerW, "")
+
+			if len(rawParts) == 0 {
+				rawName := xansi.Truncate(p.Name, innerW-prefixW, "")
+				gap := innerW - prefixW - len(rawName)
+				return styledPrefix + nameStyle.Render(rawName) + bg(lipgloss.NewStyle()).Render(strings.Repeat(" ", gap))
 			}
-			return line
+
+			styledSuffix := strings.Join(styledParts, sep)
+			rawSuffix := strings.Join(rawParts, "/")
+			suffixW := len(rawSuffix)
+
+			// Right-align suffix: name fills left, counts flush to right edge
+			nameAvail := innerW - prefixW - 1 - suffixW
+			if nameAvail < 3 {
+				nameAvail = 3
+			}
+			rawName := xansi.Truncate(p.Name, nameAvail, "")
+
+			gap := innerW - prefixW - len(rawName) - suffixW
+			if gap < 1 {
+				gap = 1
+			}
+			return styledPrefix + nameStyle.Render(rawName) + bg(lipgloss.NewStyle()).Render(strings.Repeat(" ", gap)) + styledSuffix
 		}
 
 		// --- Pinned section (always visible, not scrolled) ---
@@ -555,7 +575,8 @@ func (m model) renderChainCleanupSummary() string {
 
 func (m model) renderEditMode() string {
 	header := warnStyle.Render("EDITING") + dimStyle.Render(" — ctrl+s save · esc cancel")
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", m.editArea.View())
+	hints := dimStyle.Render("  ctrl+d del line · ctrl+k del to eol · home/end line start/end · ctrl+a/e alt line nav")
+	return lipgloss.JoinVertical(lipgloss.Left, header, hints, "", m.editArea.View())
 }
 
 // --- Brain dump ---

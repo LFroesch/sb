@@ -21,7 +21,19 @@ sb              # launch TUI
 - **Brain dump** — type a thought, ollama routes it to the right project
 - **Scripts** — run maintenance scripts (knowledge-index, obsidian-sync, workmd-audit, devlog-split, etc.)
 
-## Environment
+## Config
 
-- `OLLAMA_HOST` — ollama API (default: localhost:11434)
-- `SB_MODEL` — model for brain dump routing (default: qwen2.5:7b)
+`~/.config/sb/config.json` is created on first run:
+
+```json
+{
+  "model": "qwen2.5:7b",
+  "ollama_host": "http://localhost:11434"
+}
+```
+
+Env vars `SB_MODEL` / `OLLAMA_HOST` override the config file.
+
+## Roadmap
+
+- **Multi-provider LLM support** — `provider` + `api_key` fields in config to support Anthropic/OpenAI alongside Ollama. Prompts are already provider-agnostic; needs a common interface + per-provider HTTP client.

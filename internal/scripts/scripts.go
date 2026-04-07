@@ -21,7 +21,7 @@ type DoneMsg struct {
 	Err    error
 }
 
-var brainDir = filepath.Join(os.Getenv("HOME"), "projects/active/daily_use/SECOND_BRAIN")
+var brainDir = filepath.Join(os.Getenv("HOME"), "projects/active/SECOND_BRAIN")
 
 // Available returns all maintenance scripts sb knows about.
 func Available() []Script {
@@ -43,7 +43,7 @@ func Available() []Script {
 		},
 		{
 			Name:        "daily-git-digest",
-			Description: "Today's commits across all repos NOTE: work on this",
+			Description: "Git Digest of Today/Yesterday/Last Week",
 			Path:        filepath.Join(brainDir, "claude/scripts/daily-git-digest.sh"),
 		},
 		{

@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/LFroesch/sb/internal/config"
 )
 
 type Client struct {
@@ -17,17 +19,8 @@ type Client struct {
 }
 
 func New() *Client {
-	host := os.Getenv("OLLAMA_HOST")
-	if host == "" {
-		host = "http://localhost:11434"
-	} else if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
-		host = "http://" + host
-	}
-	model := os.Getenv("SB_MODEL")
-	if model == "" {
-		model = "qwen2.5:7b"
-	}
-	return &Client{host: host, model: model}
+	cfg := config.Load()
+	return &Client{host: cfg.OllamaHost, model: cfg.Model}
 }
 
 type RouteResult struct {
@@ -122,12 +115,14 @@ func (c *Client) Cleanup(ctx context.Context, content string) (string, error) {
 
 	cleanupLog(prompt, chatResp.Message.Content)
 
+	project := projectNameFromContent(content)
 	cleaned := strings.TrimSpace(chatResp.Message.Content)
 	// Strip accidental code fences
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
 	cleaned = strings.TrimSuffix(cleaned, "```")
 	cleaned = normalizeContent(strings.TrimSpace(cleaned))
+	cleaned = stripProjectTagsFromBullets(cleaned, project)
 	cleaned = reconcileMissingBullets(content, cleaned)
 	cleaned = ensureHeaderNewlines(cleaned)
 	return cleaned + "\n", nil
@@ -173,11 +168,13 @@ func (c *Client) CleanupWithFeedback(ctx context.Context, content, feedback stri
 
 	cleanupLog(prompt, chatResp.Message.Content)
 
+	project := projectNameFromContent(content)
 	cleaned := strings.TrimSpace(chatResp.Message.Content)
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
 	cleaned = strings.TrimSuffix(cleaned, "```")
 	cleaned = normalizeContent(strings.TrimSpace(cleaned))
+	cleaned = stripProjectTagsFromBullets(cleaned, project)
 	cleaned = reconcileMissingBullets(content, cleaned)
 	cleaned = ensureHeaderNewlines(cleaned)
 	return cleaned + "\n", nil
@@ -326,6 +323,7 @@ Brain dump:
 
 	for i := range items {
 		items[i].Project = strings.TrimSpace(strings.TrimPrefix(items[i].Project, "#"))
+		items[i].Text = stripProjectTag(items[i].Text, items[i].Project)
 	}
 
 	routeLog(text, chatResp.Message.Content, items)
@@ -653,6 +651,55 @@ func normalizeContent(content string) string {
 	return strings.Join(out, "\n")
 }
 
+// stripProjectTag removes patterns like "projectName - text" or "text - projectName"
+// that the model sometimes adds to tell where the item should be filed.
+func stripProjectTag(text, project string) string {
+	text = strings.TrimSpace(text)
+	if project == "" {
+		return text
+	}
+	lc := strings.ToLower(text)
+	lp := strings.ToLower(project)
+
+	if strings.HasPrefix(lc, lp+" - ") {
+		return strings.TrimSpace(text[len(lp)+3:])
+	}
+	if strings.HasSuffix(lc, " - "+lp) {
+		return strings.TrimSpace(text[:len(text)-len(lp)-3])
+	}
+	return text
+}
+
+// projectNameFromContent extracts the slug from a "# WORK - slug" title line.
+func projectNameFromContent(content string) string {
+	for _, line := range strings.SplitN(content, "\n", 5) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# WORK - ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# WORK - "))
+		}
+		if strings.HasPrefix(line, "# WORK") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# WORK"))
+		}
+	}
+	return ""
+}
+
+// stripProjectTagsFromBullets applies stripProjectTag to every bullet line in content.
+func stripProjectTagsFromBullets(content, project string) string {
+	if project == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			cleaned := stripProjectTag(trimmed[2:], project)
+			lines[i] = "- " + cleaned
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // routeLog writes a routing request/response pair to /tmp/sb-route.log for debugging.
 func routeLog(input, raw string, items []RouteItem) {
 	f, err := os.OpenFile("/tmp/sb-route.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -728,5 +775,6 @@ Item: %s`, clarification, strings.Join(projectNames, ", "), text)
 	}
 
 	item.Project = strings.TrimSpace(strings.TrimPrefix(item.Project, "#"))
+	item.Text = stripProjectTag(item.Text, item.Project)
 	return &item, nil
 }

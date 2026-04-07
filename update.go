@@ -60,9 +60,25 @@ func sortWithFavorites(projects []workmd.Project, fav map[string]bool) {
 	})
 }
 
-// openInCursor opens a directory in Cursor editor.
-func openDir(dir string) {
-	exec.Command("cursor", dir).Start() //nolint:errcheck
+// openInEditor opens a path in the best available editor.
+// Priority: cursor → code → nvim → vim → nano → vi
+func openInEditor(path string) tea.Cmd {
+	guiEditors := []string{"cursor", "code"}
+	termEditors := []string{"nvim", "vim", "nano", "vi"}
+
+	for _, e := range guiEditors {
+		if _, err := exec.LookPath(e); err == nil {
+			exec.Command(e, path).Start() //nolint:errcheck
+			return nil
+		}
+	}
+	for _, e := range termEditors {
+		if _, err := exec.LookPath(e); err == nil {
+			cmd := exec.Command(e, path)
+			return tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
+		}
+	}
+	return nil
 }
 
 // copyToClipboard copies text to the system clipboard.
@@ -543,7 +559,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(planCmd(sources), m.spinner.Tick)
 	case "o":
 		if m.cursor < len(m.projects) {
-			openDir(m.projects[m.cursor].Dir)
+			return m, openInEditor(m.projects[m.cursor].Dir)
 		}
 	case "d":
 		m.page = pageDump
@@ -1088,14 +1104,14 @@ func (m model) writeDumpItem(item ollama.RouteItem) error {
 	// IDEAS target
 	if projLower == "ideas" {
 		home, _ := os.UserHomeDir()
-		ideasPath := filepath.Join(home, "projects/active/daily_use/SECOND_BRAIN/ideas/WORK.md")
+		ideasPath := filepath.Join(home, "projects/active/SECOND_BRAIN/ideas/WORK.md")
 		return workmd.AppendToSection(ideasPath, "inbox", item.Text)
 	}
 
 	// SECOND_BRAIN catch-all → main SECOND_BRAIN WORK.md
 	if projLower == "second_brain" || projLower == "second brain" {
 		home, _ := os.UserHomeDir()
-		sbPath := filepath.Join(home, "projects/active/daily_use/SECOND_BRAIN/WORK.md")
+		sbPath := filepath.Join(home, "projects/active/SECOND_BRAIN/WORK.md")
 		return workmd.AppendToSection(sbPath, item.Section, item.Text)
 	}
 

@@ -117,7 +117,7 @@ func Discover() []Project {
 
 // discoverIdeaFiles loads individual .md files from SECOND_BRAIN/ideas/tui/ as projects.
 func discoverIdeaFiles(root string) []Project {
-	tuiDir := filepath.Join(root, "active/daily_use/SECOND_BRAIN/ideas/tui")
+	tuiDir := filepath.Join(root, "active/SECOND_BRAIN/ideas/tui")
 	entries, err := os.ReadDir(tuiDir)
 	if err != nil {
 		return nil
@@ -277,8 +277,8 @@ func deriveName(path, root string) string {
 	rel = strings.TrimSuffix(rel, "/WORK.md")
 
 	// Shorten common prefixes
-	rel = strings.TrimPrefix(rel, "active/daily_use/")
-	rel = strings.TrimPrefix(rel, "tui-hub/apps/")
+	rel = strings.TrimPrefix(rel, "active/tui-suite/")
+	rel = strings.TrimPrefix(rel, "active/")
 
 	// SECOND_BRAIN root → "Main", subprojects → drop prefix
 	if rel == "SECOND_BRAIN" {

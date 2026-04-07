@@ -1,8 +1,6 @@
-run:
-	go run .
-
 build:
-	go build -o sb .
+	go build -o sb
+cp:
+	cp sb ~/.local/bin/
 
-install:
-	go build -o sb . && mv sb ~/go/bin/sb
+install: build cp
