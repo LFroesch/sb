@@ -43,29 +43,34 @@ type RouteItem struct {
 }
 
 // CleanupPrompt is the system prompt for WORK.md normalization.
-const CleanupPrompt = `Clean up this WORK.md file. Rules:
+const CleanupPrompt = `You are a WORK.md file organizer. Your only job is to reorganize existing content into canonical sections. You must not add, remove, rewrite, or invent anything.
 
-1. NEVER DROP CONTENT. Every task, note, bullet, and line must appear exactly once in the output. Losing even one item is failure. If unsure where something goes, put it in ## Unsorted.
-2. Keep the "# WORK - slug" title as the very first line.
-3. Canonical sections IN THIS ORDER (create only if items belong there):
-   ## Current Phase    (one-liner: what the project is doing right now)
-   ## Current Tasks    (active work, in-progress items)
-   ## Bugs + Blockers  (bugs, blockers, broken things)
-   ## Updates + Features (enhancements, improvements, planned features)
-   ## Backlog          (ideas, low-priority, not urgent)
-   ## Unsorted         (anything that doesn't fit above)
-4. MERGE old/variant headers into canonical ones:
-   Backlog, Feature Ideas, Ideas, Wishlist, Nice to Have → ## Backlog
-   Bugs, Blockers, Issues, Known Issues, Broken → ## Bugs + Blockers
-   Updates, Features, Enhancements, Improvements, Planned → ## Updates + Features
-   Inbox, Unsorted, Misc, Notes, Dump, TODO → ## Unsorted
-   Current, Active, In Progress, Doing, Sprint → ## Current Tasks
-   Phase, Status, Current Phase → ## Current Phase
-   Any section that doesn't map to the above is TRULY non-canonical (## Design Notes, ## API Spec, etc.) — keep those as-is after the canonical sections.
-5. Always leave a blank line after every ## heading.
-6. Convert tables or emoji-status lists to plain "- item" bullet lists.
-7. Deduplicate exact duplicates only. If two items are similar but not identical, keep both.
-8. Output ONLY the cleaned markdown. No commentary, no code fences.`
+ABSOLUTE RULES — violating any of these is total failure:
+- DO NOT add any text that is not in the input. No "None noted", no summaries, nothing invented.
+- DO NOT drop any item. Every bullet, note, and line from the input must appear in the output.
+- DO NOT rewrite or rephrase task text. Copy each bullet word-for-word, character-for-character.
+- Each item appears EXACTLY ONCE. Never repeat an item in multiple sections.
+
+Structure rules:
+1. First line: keep the "# WORK - slug" title exactly as-is.
+2. Canonical sections in this order (only create a section if items belong there):
+   ## Current Phase
+   ## Current Tasks
+   ## Bugs + Blockers
+   ## Updates + Features
+   ## Backlog
+   ## Unsorted
+3. Merge variant headers into canonical ones:
+   Backlog / Feature Ideas / Ideas / Wishlist → ## Backlog
+   Bugs / Blockers / Issues / Known Issues → ## Bugs + Blockers
+   Updates / Features / Enhancements / Planned → ## Updates + Features
+   Inbox / Unsorted / Misc / Notes / Dump / TODO → ## Unsorted
+   Current / Active / In Progress / Sprint → ## Current Tasks
+   Phase / Status / Current Phase → ## Current Phase
+   Truly non-canonical headers (Design Notes, API Spec, etc.) — keep as-is, place after canonical sections.
+4. Blank line after every ## heading.
+5. Convert table rows to plain bullets: "- task text" (drop priority/status columns, keep the task description verbatim).
+6. Output ONLY the cleaned markdown. No commentary, no code fences.`
 
 // cleanupLog writes a cleanup request/response pair to /tmp/sb-cleanup.log for tuning.
 func cleanupLog(prompt, response string) {
@@ -122,7 +127,60 @@ func (c *Client) Cleanup(ctx context.Context, content string) (string, error) {
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
 	cleaned = strings.TrimSuffix(cleaned, "```")
-	return strings.TrimSpace(cleaned) + "\n", nil
+	cleaned = normalizeContent(strings.TrimSpace(cleaned))
+	cleaned = reconcileMissingBullets(content, cleaned)
+	cleaned = ensureHeaderNewlines(cleaned)
+	return cleaned + "\n", nil
+}
+
+// CleanupWithFeedback is like Cleanup but appends user feedback so the model can course-correct.
+func (c *Client) CleanupWithFeedback(ctx context.Context, content, feedback string) (string, error) {
+	prompt := CleanupPrompt + "\n\nHere is the WORK.md to clean up:\n\n" + content +
+		"\n\nUser feedback on the previous cleanup attempt: " + feedback +
+		"\nPlease address this feedback in your cleanup."
+
+	body := map[string]any{
+		"model":  c.model,
+		"stream": false,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	data, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var chatResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return "", fmt.Errorf("ollama decode: %w", err)
+	}
+
+	cleanupLog(prompt, chatResp.Message.Content)
+
+	cleaned := strings.TrimSpace(chatResp.Message.Content)
+	cleaned = strings.TrimPrefix(cleaned, "```markdown")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	cleaned = normalizeContent(strings.TrimSpace(cleaned))
+	cleaned = reconcileMissingBullets(content, cleaned)
+	cleaned = ensureHeaderNewlines(cleaned)
+	return cleaned + "\n", nil
 }
 
 // Route classifies a brain dump and returns the target project + section.
@@ -203,7 +261,13 @@ Special targets:
 - "SECOND_BRAIN" — catch-all for general notes
 - "CLARIFY" — ONLY use this when you genuinely cannot determine which project an item belongs to. Most items should be routable.
 
-Valid sections: current_tasks, bugs_blockers, updates_features, backlog, unsorted
+Section guide (pick the most accurate):
+- current_tasks: active work in progress right now (default if unsure between this and bugs_blockers)
+- bugs_blockers: something broken, failing, crashing, or actively blocking progress — only if it clearly needs an urgent fix
+- updates_features: planned improvements, enhancements, new features
+- backlog: future ideas, someday/maybe items, low priority
+- unsorted: genuinely unclear
+
 If you're unsure where an item goes, default to project "SECOND_BRAIN" section "current_tasks".
 
 Respond with ONLY a valid JSON array. Each element: {"text": "the extracted item", "project": "name", "section": "current_tasks"}
@@ -270,7 +334,9 @@ Brain dump:
 
 // NextTodo asks ollama to suggest what to work on next given a WORK.md.
 func (c *Client) NextTodo(ctx context.Context, content string) (string, error) {
-	prompt := `You are a helpful assistant reviewing a WORK.md task file. Based on the Current Tasks and Inbox sections, give a short, direct answer: what are the 2-3 most important things to work on right now? Be specific and actionable. No fluff.
+	prompt := `You are a helpful assistant reviewing a WORK.md task file. Give a short, direct answer: what are the 2-3 most important things to work on right now? Be specific and actionable. No fluff.
+
+Priority order: Bugs + Blockers first (these are urgent), then Current Tasks, then Inbox. If there are bugs/blockers, always lead with those.
 
 WORK.md:
 ` + content
@@ -308,6 +374,285 @@ WORK.md:
 	return strings.TrimSpace(chatResp.Message.Content), nil
 }
 
+// DailyPlan asks ollama to group tasks from multiple projects by theme and suggest a day plan.
+func (c *Client) DailyPlan(ctx context.Context, taskSummary string) (string, error) {
+	prompt := `You are a daily planning assistant. Given current tasks from multiple projects, group similar tasks by context/theme and create a focused plan for today.
+
+Rules:
+- Create 2-4 context groups (e.g. "job search", "tooling / second brain", "active dev")
+- Pick 1-3 specific tasks per group that would move the needle today
+- Be brief — each task is one line, attribute project in parens
+- Bugs + Blockers are URGENT — if any exist, surface them first under a "🔥 Bugs + Blockers" group regardless of project
+- Lead with highest-impact group (bugs/blockers group always first if present)
+
+Format:
+## [Context Name]
+- task description (project)
+
+Current tasks:
+` + taskSummary
+
+	body := map[string]any{
+		"model":  c.model,
+		"stream": false,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	data, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var chatResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return "", fmt.Errorf("ollama decode: %w", err)
+	}
+	return strings.TrimSpace(chatResp.Message.Content), nil
+}
+
+// reconcileMissingBullets checks that every bullet from the original content appears in the
+// cleaned output. Any missing bullets are appended to ## Unsorted as a safety net.
+func reconcileMissingBullets(original, cleaned string) string {
+	extractBullets := func(s string) []string {
+		var bullets []string
+		for _, line := range strings.Split(s, "\n") {
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, "- ") {
+				bullets = append(bullets, strings.ToLower(strings.TrimSpace(t[2:])))
+			}
+		}
+		return bullets
+	}
+
+	outBullets := extractBullets(cleaned)
+
+	outSet := make(map[string]bool, len(outBullets))
+	for _, b := range outBullets {
+		outSet[b] = true
+	}
+
+	// Collect original lines for missing bullets (preserve exact text)
+	var missing []string
+	for _, line := range strings.Split(original, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "- ") {
+			key := strings.ToLower(strings.TrimSpace(t[2:]))
+			if !outSet[key] {
+				missing = append(missing, t)
+				outSet[key] = true // don't add twice
+			}
+		}
+	}
+
+	if len(missing) == 0 {
+		return cleaned
+	}
+
+	// Append to existing ## Unsorted or add the section
+	unsortedHeader := "## Unsorted"
+	if strings.Contains(cleaned, unsortedHeader) {
+		// Insert after the ## Unsorted header line
+		lines := strings.Split(cleaned, "\n")
+		out := make([]string, 0, len(lines)+len(missing)+1)
+		inserted := false
+		for i, line := range lines {
+			out = append(out, line)
+			if !inserted && strings.TrimSpace(line) == unsortedHeader {
+				// skip blank line after header if present, then insert
+				if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
+					out = append(out, lines[i+1])
+					i++ // will be incremented by loop but we already appended
+					_ = i
+				}
+				for _, m := range missing {
+					out = append(out, m)
+				}
+				inserted = true
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+
+	// No ## Unsorted section — append it
+	result := strings.TrimRight(cleaned, "\n") + "\n\n## Unsorted\n\n"
+	for _, m := range missing {
+		result += m + "\n"
+	}
+	return result
+}
+
+// ensureHeaderNewlines guarantees a blank line after every ## heading.
+func ensureHeaderNewlines(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines)+4)
+	for i, line := range lines {
+		out = append(out, line)
+		if strings.HasPrefix(strings.TrimSpace(line), "##") {
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != "" {
+				out = append(out, "")
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// normalizeContent converts table rows and emoji-priority lists to plain bullets.
+// Strips priority emoji (🔴🟡🟢🔵⚪🟠) and status columns, leaving task + optional note.
+func normalizeContent(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	priorityEmoji := []string{"🔴", "🟡", "🟢", "🔵", "⚪", "🟠"}
+	priorityWords := []string{"high", "med", "medium", "low", "critical"}
+
+	stripPriority := func(s string) string {
+		s = strings.TrimSpace(s)
+		for _, e := range priorityEmoji {
+			s = strings.TrimPrefix(s, e)
+			s = strings.TrimSpace(s)
+		}
+		// Strip trailing priority word that got left (e.g. "High" after emoji)
+		lower := strings.ToLower(s)
+		for _, w := range priorityWords {
+			if lower == w || strings.HasPrefix(lower, w+" ") {
+				s = strings.TrimSpace(s[len(w):])
+				break
+			}
+		}
+		return strings.TrimSpace(s)
+	}
+
+	isStatusWord := func(s string) bool {
+		lower := strings.ToLower(strings.TrimSpace(s))
+		return lower == "done" || lower == "todo" || lower == "in progress" ||
+			lower == "blocked" || lower == "wip" || lower == "pending" ||
+			lower == "high" || lower == "med" || lower == "medium" || lower == "low"
+	}
+
+	isPriorityCol := func(s string) bool {
+		s = strings.TrimSpace(s)
+		for _, e := range priorityEmoji {
+			if strings.HasPrefix(s, e) {
+				return true
+			}
+		}
+		return false
+	}
+
+	tableColToPlain := func(trimmed string) (string, bool) {
+		if !strings.HasPrefix(trimmed, "|") {
+			return "", false
+		}
+		cols := strings.Split(trimmed, "|")
+		var parts []string
+		for _, c := range cols {
+			if s := strings.TrimSpace(c); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) == 0 {
+			return "", true // skip
+		}
+		// Skip header rows
+		for _, p := range parts {
+			lower := strings.ToLower(p)
+			if lower == "task" || lower == "status" || lower == "priority" ||
+				lower == "item" || lower == "#" || lower == "notes" {
+				return "", true
+			}
+		}
+		// Collect meaningful columns: skip priority/status cols
+		var meaningful []string
+		for _, p := range parts {
+			p = stripPriority(p)
+			if p == "" || isStatusWord(p) || isPriorityCol(p) {
+				continue
+			}
+			meaningful = append(meaningful, p)
+		}
+		if len(meaningful) == 0 {
+			return "", true
+		}
+		if len(meaningful) == 1 {
+			return "- " + meaningful[0], true
+		}
+		// task — note
+		return "- " + meaningful[0] + " — " + strings.Join(meaningful[1:], ", "), true
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip table separator rows
+		if strings.HasPrefix(trimmed, "|--") || strings.HasPrefix(trimmed, "| --") ||
+			strings.HasPrefix(trimmed, "|:-") || strings.HasPrefix(trimmed, "| :-") {
+			continue
+		}
+
+		// Convert table rows to plain bullets
+		if strings.HasPrefix(trimmed, "|") {
+			if result, ok := tableColToPlain(trimmed); ok {
+				if result != "" {
+					out = append(out, result)
+				}
+			} else {
+				out = append(out, line)
+			}
+			continue
+		}
+
+		// Handle bullet items (including indented): strip emoji priority and pipe residue
+		isBullet := strings.HasPrefix(trimmed, "- ")
+		if isBullet {
+			item := trimmed[2:]
+			// Strip priority emoji + word prefix
+			item = stripPriority(item)
+			// If item still contains pipes (model converted table row to bullet but kept pipes)
+			if strings.Contains(item, "|") {
+				cols := strings.Split(item, "|")
+				var parts []string
+				for _, c := range cols {
+					c = strings.TrimSpace(c)
+					if c == "" || isStatusWord(c) || isPriorityCol(c) {
+						continue
+					}
+					parts = append(parts, c)
+				}
+				if len(parts) == 0 {
+					continue
+				} else if len(parts) == 1 {
+					item = parts[0]
+				} else {
+					item = parts[0] + " — " + strings.Join(parts[1:], ", ")
+				}
+			}
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			out = append(out, "- "+item)
+			continue
+		}
+
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // routeLog writes a routing request/response pair to /tmp/sb-route.log for debugging.
 func routeLog(input, raw string, items []RouteItem) {
 	f, err := os.OpenFile("/tmp/sb-route.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -331,7 +676,7 @@ func (c *Client) RerouteSingle(ctx context.Context, text, clarification string, 
 
 Available projects: %s
 Special: "IDEAS" for ideas not tied to a project, "SECOND_BRAIN" for general notes (default to current_tasks if unsure).
-Valid sections: current_tasks, bugs_blockers, updates_features, backlog, unsorted
+Sections: current_tasks (active work, default), bugs_blockers (broken/actively blocking), updates_features (planned improvements), backlog (future/low-prio), unsorted (unclear)
 
 Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section": "current_tasks"}
 

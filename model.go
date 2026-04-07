@@ -13,6 +13,11 @@ import (
 	"github.com/LFroesch/sb/internal/workmd"
 )
 
+type chainResult struct {
+	name   string
+	action string // "accepted", "skipped", "error"
+}
+
 type searchMatch struct {
 	projectIdx int
 	line       string
@@ -53,6 +58,16 @@ const (
 	modeDumpReview    // stepping through routed items
 	modeDumpClarify   // asking user to clarify unclear item
 	modeDumpSummary   // post-dump summary, esc to dismiss
+
+	modeChainCleanupWait     // ollama running on current project in chain
+	modeChainCleanupReview   // reviewing diff for current project
+	modeChainCleanupFeedback // user typing correction hint for regen
+	modeChainCleanupSummary  // chain done — show results
+
+	modeCleanupFeedback // single-project cleanup: user typing feedback for regen
+
+	modePlanWait   // ollama generating daily plan
+	modePlanResult // showing daily plan result
 )
 
 // --- Model ---
@@ -94,6 +109,22 @@ type model struct {
 	cleanupOriginal string // original content before cleanup
 	cleanupResult   string // ollama-cleaned content
 
+	// Chain cleanup
+	chainQueue          []int
+	chainCursor         int
+	chainAccepted       int
+	chainSkipped        int
+	chainFeedback       textarea.Model
+	chainResults        []chainResult
+	chainSummaryScroll  int
+
+	// Project selection (for chain cleanup / plan)
+	selectedProjects map[string]bool // keyed by project path
+
+	// Daily plan
+	planResult string
+	planScroll int
+
 	// Todo
 	todoResult string // ollama next-todo response
 
@@ -114,6 +145,9 @@ type model struct {
 	// Status
 	statusMsg    string
 	statusExpiry time.Time
+
+	// Favorites
+	favorites map[string]bool
 
 	// Scroll
 	dashScroll      int
@@ -139,6 +173,12 @@ func newModel() model {
 	clarify.SetHeight(3)
 	clarify.CharLimit = 500
 
+	chainFB := textarea.New()
+	chainFB.Placeholder = "what needs fixing? (e.g. 'don't merge Updates + Features')"
+	chainFB.SetWidth(80)
+	chainFB.SetHeight(3)
+	chainFB.CharLimit = 500
+
 	vp := viewport.New(80, 20)
 
 	sp := spinner.New()
@@ -146,12 +186,15 @@ func newModel() model {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C6CCA"))
 
 	return model{
-		loading:         true,
-		dumpArea:        dump,
-		dumpClarifyArea: clarify,
-		editArea:        edit,
-		viewport:        vp,
-		spinner:         sp,
+		loading:          true,
+		dumpArea:         dump,
+		dumpClarifyArea:  clarify,
+		chainFeedback:    chainFB,
+		editArea:         edit,
+		viewport:         vp,
+		spinner:          sp,
+		selectedProjects: make(map[string]bool),
+		favorites:        loadFavorites(),
 	}
 }
 
@@ -187,6 +230,11 @@ type dumpReroutedMsg struct {
 }
 
 type cleanupDoneMsg struct {
+	result string
+	err    error
+}
+
+type planResultMsg struct {
 	result string
 	err    error
 }

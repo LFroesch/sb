@@ -26,6 +26,8 @@ var (
 // Ported from unrot's renderMarkdown.
 func Render(content string, w int) string {
 	var b strings.Builder
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
 	lines := strings.Split(content, "\n")
 	inCodeBlock := false
 
@@ -72,19 +74,19 @@ func Render(content string, w int) string {
 
 		case strings.HasPrefix(trimmed, "- "):
 			inner := strings.TrimPrefix(trimmed, "- ")
-			b.WriteString(textStyle.Width(w).PaddingLeft(4).Render("· " + renderInline(inner)))
+			b.WriteString(textStyle.PaddingLeft(4).Render("· " + renderInline(inner)))
 			b.WriteString("\n")
 
 		case strings.HasPrefix(trimmed, "* "):
 			inner := strings.TrimPrefix(trimmed, "* ")
-			b.WriteString(textStyle.Width(w).PaddingLeft(4).Render("· " + renderInline(inner)))
+			b.WriteString(textStyle.PaddingLeft(4).Render("· " + renderInline(inner)))
 			b.WriteString("\n")
 
 		case trimmed == "":
 			b.WriteString("\n")
 
 		default:
-			b.WriteString(textStyle.Width(w).PaddingLeft(2).Render(renderInline(line)))
+			b.WriteString(textStyle.PaddingLeft(2).Render(renderInline(line)))
 			b.WriteString("\n")
 		}
 	}

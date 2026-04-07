@@ -17,17 +17,19 @@ type Task struct {
 }
 
 type Project struct {
-	Name         string
-	Path         string // absolute path to WORK.md
-	Dir          string // directory containing WORK.md
-	Content      string
-	Phase        string
-	Tasks        []Task
-	TaskCount    int // non-done tasks
-	CurrentCount int
-	InboxCount   int
-	BacklogCount int
-	ModTime      time.Time
+	Name          string
+	Path          string // absolute path to WORK.md
+	Dir           string // directory containing WORK.md
+	Content       string
+	Phase         string
+	Tasks         []Task
+	TaskCount     int // non-done tasks
+	CurrentCount  int
+	BugsCount     int
+	UnsortedCount int
+	BacklogCount  int
+	NonListCount  int // plain-text lines in sections (not list items)
+	ModTime       time.Time
 }
 
 // Discover finds all WORK.md files under ~/projects.
@@ -63,7 +65,7 @@ func Discover() []Project {
 		name := deriveName(line, root)
 		tasks := extractTasks(text)
 
-		var cur, inbox, backlog int
+		var cur, bugs, unsorted, backlog int
 		for _, t := range tasks {
 			if t.Done {
 				continue
@@ -71,12 +73,16 @@ func Discover() []Project {
 			switch t.Section {
 			case "current":
 				cur++
-			case "inbox":
-				inbox++
+			case "bugs":
+				bugs++
+			case "unsorted":
+				unsorted++
 			case "backlog":
 				backlog++
 			}
 		}
+
+		nonList := countNonListLines(text)
 
 		var modTime time.Time
 		if info, err := os.Stat(line); err == nil {
@@ -84,24 +90,91 @@ func Discover() []Project {
 		}
 
 		projects = append(projects, Project{
-			Name:         name,
-			Path:         line,
-			Dir:          filepath.Dir(line),
-			Content:      text,
-			Tasks:        tasks,
-			TaskCount:    cur + inbox + backlog,
-			CurrentCount: cur,
-			InboxCount:   inbox,
-			BacklogCount: backlog,
-			ModTime:      modTime,
+			Name:          name,
+			Path:          line,
+			Dir:           filepath.Dir(line),
+			Content:       text,
+			Tasks:         tasks,
+			TaskCount:     cur + bugs + unsorted + backlog,
+			CurrentCount:  cur,
+			BugsCount:     bugs,
+			UnsortedCount: unsorted,
+			BacklogCount:  backlog,
+			NonListCount:  nonList,
+			ModTime:       modTime,
 		})
 	}
+
+	// Also pick up concept sketches from ideas/tui/
+	projects = append(projects, discoverIdeaFiles(root)...)
 
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].ModTime.After(projects[j].ModTime)
 	})
 
 	return projects
+}
+
+// discoverIdeaFiles loads individual .md files from SECOND_BRAIN/ideas/tui/ as projects.
+func discoverIdeaFiles(root string) []Project {
+	tuiDir := filepath.Join(root, "active/daily_use/SECOND_BRAIN/ideas/tui")
+	entries, err := os.ReadDir(tuiDir)
+	if err != nil {
+		return nil
+	}
+
+	var ideas []Project
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
+			continue
+		}
+		path := filepath.Join(tuiDir, e.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		text := string(content)
+		name := "idea/" + strings.TrimSuffix(e.Name(), ".md")
+		tasks := extractTasks(text)
+
+		var cur, bugs, unsorted, backlog int
+		for _, t := range tasks {
+			if t.Done {
+				continue
+			}
+			switch t.Section {
+			case "current":
+				cur++
+			case "bugs":
+				bugs++
+			case "unsorted":
+				unsorted++
+			case "backlog":
+				backlog++
+			}
+		}
+
+		var modTime time.Time
+		if info, err := os.Stat(path); err == nil {
+			modTime = info.ModTime()
+		}
+
+		ideas = append(ideas, Project{
+			Name:         name,
+			Path:         path,
+			Dir:          tuiDir,
+			Content:      text,
+			Tasks:        tasks,
+			TaskCount:    cur + bugs + unsorted + backlog,
+			CurrentCount: cur,
+			BugsCount:    bugs,
+			UnsortedCount: unsorted,
+			BacklogCount: backlog,
+			NonListCount: countNonListLines(text),
+			ModTime:      modTime,
+		})
+	}
+	return ideas
 }
 
 // Save writes content to a WORK.md file.
@@ -125,13 +198,15 @@ func AppendToSection(path, section, text string) error {
 
 	for i, line := range lines {
 		if strings.TrimSpace(line) == target {
-			// Find insertion point: skip blank lines right after header
+			// Skip blank lines right after header to find first content line
 			insert := i + 1
 			for insert < len(lines) && strings.TrimSpace(lines[insert]) == "" {
 				insert++
 			}
-			result := make([]string, 0, len(lines)+1)
-			result = append(result, lines[:insert]...)
+			// Always emit: header, blank line, new entry, then remaining content
+			result := make([]string, 0, len(lines)+2)
+			result = append(result, lines[:i+1]...)
+			result = append(result, "")
 			result = append(result, entry)
 			result = append(result, lines[insert:]...)
 			return os.WriteFile(path, []byte(strings.Join(result, "\n")), 0644)
@@ -226,11 +301,13 @@ func sectionType(heading string) string {
 	switch {
 	case strings.Contains(h, "current task") || h == "tasks" || h == "todo":
 		return "current"
-	case strings.Contains(h, "inbox"):
-		return "inbox"
+	case strings.Contains(h, "bugs") || strings.Contains(h, "blockers"):
+		return "bugs"
+	case strings.Contains(h, "inbox") || strings.Contains(h, "unsorted"):
+		return "unsorted"
 	case strings.Contains(h, "backlog") || strings.Contains(h, "feature") ||
 		strings.Contains(h, "ideas") || strings.Contains(h, "someday") ||
-		strings.Contains(h, "bugs") || strings.Contains(h, "polish") ||
+		strings.Contains(h, "polish") ||
 		strings.Contains(h, "p1") || strings.Contains(h, "p2") ||
 		strings.Contains(h, "high impact") || strings.Contains(h, "maybe"):
 		return "backlog"
@@ -380,4 +457,92 @@ func extractTasks(content string) []Task {
 	}
 
 	return tasks
+}
+
+// skipPlaceholder returns true for common "None." placeholder lines.
+func skipPlaceholder(s string) bool {
+	switch strings.ToLower(strings.TrimRight(s, ".")) {
+	case "none", "none identified", "none noted", "none known", "n/a", "tbd":
+		return true
+	}
+	return false
+}
+
+// isContentLine returns true for lines that are not list/table/heading/blank.
+func isContentLine(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "#") ||
+		strings.HasPrefix(trimmed, "- ") ||
+		strings.HasPrefix(trimmed, "* ") ||
+		strings.HasPrefix(trimmed, "> ") ||
+		strings.HasPrefix(trimmed, "|") ||
+		strings.HasPrefix(trimmed, "**") {
+		return false
+	}
+	return !skipPlaceholder(trimmed)
+}
+
+// countNonListLines returns the number of plain-text lines inside sections
+// that are not list items (these should ideally be converted to list items).
+func countNonListLines(content string) int {
+	lines := strings.Split(content, "\n")
+	count := 0
+	inSection := false
+	inCode := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") ||
+			strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "#### ") {
+			inSection = true
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if isContentLine(trimmed) {
+			count++
+		}
+	}
+	return count
+}
+
+// FixNonListLines converts plain-text lines within sections to "- " list items.
+func FixNonListLines(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	inSection := false
+	inCode := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCode = !inCode
+			out = append(out, line)
+			continue
+		}
+		if inCode {
+			out = append(out, line)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") ||
+			strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "#### ") {
+			inSection = true
+			out = append(out, line)
+			continue
+		}
+		if inSection && isContentLine(trimmed) {
+			out = append(out, "- "+trimmed)
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }

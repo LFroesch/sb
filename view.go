@@ -94,21 +94,43 @@ func (m model) renderHeader() string {
 	var right string
 	if m.page == pageProject && m.selected < len(m.projects) {
 		p := m.projects[m.selected]
-		right = panelHeaderStyle.Render(p.Name) + dimStyle.Render("  ·  ") +
-			accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)) + dimStyle.Render(" cur · ") +
-			warnStyle.Render(fmt.Sprintf("%d", p.InboxCount)) + dimStyle.Render(" inbox · ") +
-			dimStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount))
+		var parts []string
+		parts = append(parts, panelHeaderStyle.Render(p.Name))
+		parts = append(parts, accentStyle.Render(fmt.Sprintf("%d cur", p.CurrentCount)))
+		if p.BugsCount > 0 {
+			parts = append(parts, warnStyle.Render(fmt.Sprintf("%d bugs", p.BugsCount)))
+		}
+		if p.UnsortedCount > 0 {
+			parts = append(parts, warnStyle.Render(fmt.Sprintf("🚨 %d unsorted", p.UnsortedCount)))
+		}
+		if p.NonListCount > 0 {
+			parts = append(parts, warnStyle.Render(fmt.Sprintf("❌ %d unclean", p.NonListCount)))
+		}
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount)))
+		right = strings.Join(parts, dimStyle.Render("  ·  "))
 	} else {
-		var totalCur, totalInbox, totalBacklog int
+		var totalCur, totalBugs, totalUnsorted, totalNonList, totalBacklog int
 		for _, p := range m.projects {
 			totalCur += p.CurrentCount
-			totalInbox += p.InboxCount
+			totalBugs += p.BugsCount
+			totalUnsorted += p.UnsortedCount
+			totalNonList += p.NonListCount
 			totalBacklog += p.BacklogCount
 		}
-		right = dimStyle.Render(fmt.Sprintf(
-			"%d projects · %d current · %d inbox · %d backlog",
-			len(m.projects), totalCur, totalInbox, totalBacklog,
-		))
+		var parts []string
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d projects", len(m.projects))))
+		parts = append(parts, accentStyle.Render(fmt.Sprintf("%d current", totalCur)))
+		if totalBugs > 0 {
+			parts = append(parts, warnStyle.Render(fmt.Sprintf("%d bugs", totalBugs)))
+		}
+		if totalUnsorted > 0 {
+			parts = append(parts, warnStyle.Render(fmt.Sprintf("🚨 %d unsorted", totalUnsorted)))
+		}
+		if totalNonList > 0 {
+			parts = append(parts, warnStyle.Render(fmt.Sprintf("❌ %d unclean", totalNonList)))
+		}
+		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d backlog", totalBacklog)))
+		right = strings.Join(parts, dimStyle.Render("  ·  "))
 	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
@@ -169,79 +191,119 @@ func (m model) renderDashboard() string {
 			leftLines = append(leftLines, prefix+name+hint)
 		}
 	} else {
+		// Count pinned projects (sorted to front by sortWithFavorites)
+		nFav := 0
+		for _, p := range m.projects {
+			if m.favorites[p.Path] {
+				nFav++
+			}
+		}
+
+		// renderProjectRow builds a single project line for the left panel.
+		renderProjectRow := func(i int, innerW int) string {
+			p := m.projects[i]
+			prefix := "  "
+			if i == m.cursor {
+				prefix = accentStyle.Render("▸ ")
+			}
+			name := p.Name
+			if i == m.cursor {
+				name = accentStyle.Bold(true).Render(name)
+			} else {
+				name = textStyle.Render(name)
+			}
+			var indicators string
+			if m.selectedProjects[p.Path] {
+				indicators += accentStyle.Render("●") + dimStyle.Render(" · ")
+			}
+			if p.UnsortedCount > 0 {
+				indicators += warnStyle.Render("🚨") + dimStyle.Render(" · ")
+			}
+			if p.NonListCount > 0 {
+				indicators += warnStyle.Render("❌") + dimStyle.Render(" · ")
+			}
+			if time.Since(p.ModTime) > 30*24*time.Hour {
+				indicators += dimStyle.Render("👻") + dimStyle.Render(" · ")
+			}
+			var counts []string
+			if p.CurrentCount > 0 {
+				counts = append(counts, accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)))
+			}
+			if p.BugsCount > 0 {
+				counts = append(counts, warnStyle.Render(fmt.Sprintf("%d", p.BugsCount)))
+			}
+			if p.BacklogCount > 0 {
+				counts = append(counts, dimStyle.Render(fmt.Sprintf("%d", p.BacklogCount)))
+			}
+			suffix := indicators + strings.Join(counts, dimStyle.Render("/"))
+			var line string
+			if suffix != "" {
+				line = prefix + name + dimStyle.Render(" · ") + suffix
+			} else {
+				line = prefix + name
+			}
+			if lipgloss.Width(line) > innerW {
+				line = xansi.Truncate(line, innerW, "")
+			}
+			return line
+		}
+
+		// --- Pinned section (always visible, not scrolled) ---
+		// pinnedDisplayLines: header(1) + blank(1) + nFav items + sep(1) + blank(1)
+		pinnedDisplayLines := 0
+		if nFav > 0 {
+			pinnedDisplayLines = nFav + 4
+			leftLines = append(leftLines, accentStyle.Render("★ Pinned"))
+			leftLines = append(leftLines, "")
+			for i := 0; i < nFav; i++ {
+				leftLines = append(leftLines, renderProjectRow(i, innerLeft))
+			}
+			leftLines = append(leftLines, dimStyle.Render(strings.Repeat("─", innerLeft)))
+			leftLines = append(leftLines, "")
+		}
+
+		// --- Scrollable rest ---
+		projectsHeaderIdx := len(leftLines)
 		leftLines = append(leftLines, panelHeaderStyle.Render("Projects"))
 		leftLines = append(leftLines, "")
+		projectsBlankIdx := len(leftLines) - 1
 
-	// Scrolling for project list
-	maxVisible := panelHeight - 3 // header + blank + bottom padding
-	if maxVisible < 3 {
-		maxVisible = 3
-	}
-	startIdx := 0
-	if m.cursor >= maxVisible {
-		startIdx = m.cursor - maxVisible + 1
-	}
-	endIdx := startIdx + maxVisible
-	if endIdx > len(m.projects) {
-		endIdx = len(m.projects)
-	}
-
-	for i := startIdx; i < endIdx; i++ {
-		p := m.projects[i]
-		prefix := "  "
-		if i == m.cursor {
-			prefix = accentStyle.Render("▸ ")
+		// Available rows for non-pinned project rows
+		// panelHeight - pinnedDisplayLines - 2 (header+blank) - 1 (bottom padding)
+		maxVisible := panelHeight - pinnedDisplayLines - 3
+		if maxVisible < 3 {
+			maxVisible = 3
 		}
 
-		name := p.Name
-		if i == m.cursor {
-			name = accentStyle.Bold(true).Render(name)
+		// Auto-scroll: when cursor is on a non-pinned item, scroll to show it
+		scrollCursor := m.cursor - nFav
+		if scrollCursor < 0 {
+			scrollCursor = 0
+		}
+		startIdx := nFav
+		if scrollCursor >= maxVisible {
+			startIdx = nFav + scrollCursor - maxVisible + 1
+		}
+		endIdx := startIdx + maxVisible
+		if endIdx > len(m.projects) {
+			endIdx = len(m.projects)
+		}
+
+		// Suppress "Projects" header when all projects are pinned
+		if nFav >= len(m.projects) {
+			leftLines = leftLines[:projectsHeaderIdx] // remove header + blank
 		} else {
-			name = textStyle.Render(name)
+			for i := startIdx; i < endIdx; i++ {
+				leftLines = append(leftLines, renderProjectRow(i, innerLeft))
+			}
+			// Scroll indicators
+			if startIdx > nFav {
+				leftLines[projectsBlankIdx] = dimStyle.Render(fmt.Sprintf("  ▲ %d more", startIdx-nFav))
+			}
+			if endIdx < len(m.projects) {
+				leftLines = append(leftLines, dimStyle.Render(fmt.Sprintf("  ▼ %d more", len(m.projects)-endIdx)))
+			}
 		}
-
-		var indicators string
-		if p.InboxCount > 0 {
-			indicators += warnStyle.Render("🚨") + dimStyle.Render(" · ")
-		}
-		if time.Since(p.ModTime) > 30*24*time.Second {
-			indicators += dimStyle.Render("👻") + dimStyle.Render(" · ")
-		}
-
-		// Task counts
-		var counts []string
-		if p.CurrentCount > 0 {
-			counts = append(counts, accentStyle.Render(fmt.Sprintf("%d", p.CurrentCount)))
-		}
-		if p.InboxCount > 0 {
-			counts = append(counts, warnStyle.Render(fmt.Sprintf("%d", p.InboxCount)))
-		}
-		if p.BacklogCount > 0 {
-			counts = append(counts, dimStyle.Render(fmt.Sprintf("%d", p.BacklogCount)))
-		}
-
-		// Single · separator between name and (indicators + counts)
-		suffix := indicators + strings.Join(counts, dimStyle.Render("/"))
-		var line string
-		if suffix != "" {
-			line = prefix + name + dimStyle.Render(" · ") + suffix
-		} else {
-			line = prefix + name
-		}
-		// Truncate if too wide (xansi handles ANSI codes + wide chars)
-		if lipgloss.Width(line) > innerLeft {
-			line = xansi.Truncate(line, innerLeft, "")
-		}
-		leftLines = append(leftLines, line)
-	}
-
-	// Scroll indicators
-	if startIdx > 0 {
-		leftLines[1] = dimStyle.Render(fmt.Sprintf("  ▲ %d more", startIdx))
-	}
-	if endIdx < len(m.projects) {
-		leftLines = append(leftLines, dimStyle.Render(fmt.Sprintf("  ▼ %d more", len(m.projects)-endIdx)))
-	}
 
 	} // end search/project-list if-else
 
@@ -268,6 +330,18 @@ func (m model) renderDashboard() string {
 			dimStyle.Render("please wait..."),
 		)
 		rightContent = lipgloss.Place(rightWidth-4, panelHeight, lipgloss.Center, lipgloss.Center, content)
+	} else if m.mode == modePlanWait {
+		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
+			m.spinner.View()+" "+dimStyle.Render("generating daily plan..."),
+			"",
+			dimStyle.Render("please wait..."),
+		)
+		rightContent = lipgloss.Place(rightWidth-4, panelHeight, lipgloss.Center, lipgloss.Center, content)
+	} else if m.mode == modePlanResult {
+		m.viewport.Width = rightWidth - 4
+		m.viewport.Height = panelHeight - 2
+		banner := warnStyle.Render("DAILY PLAN") + dimStyle.Render("  ·  j/k scroll  ·  any key dismiss")
+		rightContent = lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
 	} else if m.mode == modeTodoResult && m.selected == m.cursor {
 		var lines []string
 		proj := ""
@@ -323,13 +397,160 @@ func (m model) renderProject() string {
 }
 
 func (m model) renderCleanup() string {
+	switch m.mode {
+	case modeChainCleanupWait:
+		return m.renderChainCleanupWait()
+	case modeChainCleanupReview:
+		return m.renderChainCleanupReview()
+	case modeChainCleanupFeedback:
+		return m.renderChainCleanupFeedback()
+	case modeChainCleanupSummary:
+		return m.renderChainCleanupSummary()
+	case modeCleanupFeedback:
+		return m.renderSingleCleanupFeedback()
+	case modeCleanupWait:
+		h := m.height - 8
+		if h < 5 {
+			h = 5
+		}
+		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
+			m.spinner.View()+" "+dimStyle.Render("regenerating with feedback..."),
+			"", dimStyle.Render("please wait..."),
+		)
+		return lipgloss.Place(m.width-4, h, lipgloss.Center, lipgloss.Center, content)
+	}
+	// Single-project cleanup diff
 	p := ""
 	if m.selected < len(m.projects) {
 		p = m.projects[m.selected].Name
 	}
 	banner := warnStyle.Render("CLEANUP DIFF") +
-		dimStyle.Render(" — "+p+" · y/enter accept · n/esc discard · j/k scroll")
+		dimStyle.Render(" — "+p+" · y accept · r feedback · n/esc discard · j/k scroll")
 	return lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
+}
+
+func (m model) renderSingleCleanupFeedback() string {
+	p := ""
+	if m.selected < len(m.projects) {
+		p = m.projects[m.selected].Name
+	}
+	banner := warnStyle.Render("FEEDBACK") +
+		dimStyle.Render(" — "+p+" · enter regenerate · esc cancel")
+	vpH := m.height - 14
+	if vpH < 5 {
+		vpH = 5
+	}
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = vpH
+	return lipgloss.JoinVertical(lipgloss.Left,
+		banner, "",
+		m.viewport.View(),
+		"",
+		dimStyle.Render("  What needs fixing?"),
+		m.chainFeedback.View(),
+	)
+}
+
+func (m model) chainProjectName() string {
+	if m.chainCursor < len(m.chainQueue) {
+		idx := m.chainQueue[m.chainCursor]
+		if idx < len(m.projects) {
+			return m.projects[idx].Name
+		}
+	}
+	return ""
+}
+
+func (m model) renderChainCleanupWait() string {
+	total := len(m.chainQueue)
+	pos := m.chainCursor + 1
+	h := m.height - 8
+	if h < 5 {
+		h = 5
+	}
+	progress := fmt.Sprintf("%d / %d", pos, total)
+	content := lipgloss.JoinVertical(lipgloss.Center, "", "",
+		warnStyle.Render("CHAIN CLEANUP")+" "+dimStyle.Render(progress),
+		"",
+		m.spinner.View()+" "+dimStyle.Render("cleaning: "+m.chainProjectName()),
+		"",
+		dimStyle.Render("please wait..."),
+	)
+	return lipgloss.Place(m.width-4, h, lipgloss.Center, lipgloss.Center, content)
+}
+
+func (m model) renderChainCleanupReview() string {
+	total := len(m.chainQueue)
+	pos := m.chainCursor + 1
+	progress := fmt.Sprintf("%d/%d", pos, total)
+	banner := warnStyle.Render("CHAIN CLEANUP") +
+		dimStyle.Render(" "+progress+" — "+m.chainProjectName()+" · y accept · n skip · r feedback · j/k scroll")
+	vpH := m.height - 8
+	if vpH < 5 {
+		vpH = 5
+	}
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = vpH
+	return lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
+}
+
+func (m model) renderChainCleanupFeedback() string {
+	total := len(m.chainQueue)
+	pos := m.chainCursor + 1
+	progress := fmt.Sprintf("%d/%d", pos, total)
+	banner := warnStyle.Render("FEEDBACK") +
+		dimStyle.Render(" "+progress+" — "+m.chainProjectName()+" · enter regenerate · esc cancel")
+	vpH := m.height - 14
+	if vpH < 5 {
+		vpH = 5
+	}
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = vpH
+	return lipgloss.JoinVertical(lipgloss.Left,
+		banner, "",
+		m.viewport.View(),
+		"",
+		dimStyle.Render("  What needs fixing?"),
+		m.chainFeedback.View(),
+	)
+}
+
+func (m model) renderChainCleanupSummary() string {
+	var lines []string
+	lines = append(lines, titleStyle.Render("Chain Cleanup — Done"), "")
+	lines = append(lines, fmt.Sprintf("  %s  %s",
+		accentStyle.Render(fmt.Sprintf("%d accepted", m.chainAccepted)),
+		dimStyle.Render(fmt.Sprintf("%d skipped", m.chainSkipped)),
+	), "")
+	for _, r := range m.chainResults {
+		switch r.action {
+		case "accepted":
+			lines = append(lines, accentStyle.Render("  + "+r.name))
+		case "skipped":
+			lines = append(lines, dimStyle.Render("  - "+r.name+"  (skipped)"))
+		case "error":
+			lines = append(lines, warnStyle.Render("  ! "+r.name+"  (error)"))
+		}
+	}
+	lines = append(lines, "", dimStyle.Render("  j/k scroll · any other key to continue"))
+
+	visibleH := m.height - 8
+	if visibleH < 5 {
+		visibleH = 5
+	}
+	maxScroll := len(lines) - visibleH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	scroll := m.chainSummaryScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	end := scroll + visibleH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[scroll:end], "\n")
 }
 
 func (m model) renderEditMode() string {
@@ -478,19 +699,26 @@ func (m model) renderScripts() string {
 	}
 
 	if m.scriptOutput != "" {
-		lines = append(lines, "", dimStyle.Render(strings.Repeat("─", m.width-4)), "")
-		// Show last N lines of output
-		outLines := strings.Split(m.scriptOutput, "\n")
-		maxOut := m.height - len(available) - 10
-		if maxOut < 5 {
-			maxOut = 5
+		lines = append(lines, "", dimStyle.Render(strings.Repeat("─", m.width-4)))
+		header := strings.Join(lines, "\n")
+
+		listH := len(lines) + 1 // +1 for the sep line itself
+		vpH := m.height - 6 - listH
+		if vpH < 3 {
+			vpH = 3
 		}
-		if len(outLines) > maxOut {
-			outLines = outLines[len(outLines)-maxOut:]
+		m.viewport.Width = m.width - 4
+		m.viewport.Height = vpH
+
+		scrollPct := ""
+		if m.viewport.TotalLineCount() > vpH {
+			pct := int(m.viewport.ScrollPercent() * 100)
+			scrollPct = dimStyle.Render(fmt.Sprintf("  %d%%  J/K scroll · c clear", pct))
+		} else {
+			scrollPct = dimStyle.Render("  c clear")
 		}
-		for _, l := range outLines {
-			lines = append(lines, "  "+dimStyle.Render(l))
-		}
+
+		return lipgloss.JoinVertical(lipgloss.Left, header, m.viewport.View(), scrollPct)
 	}
 
 	return strings.Join(lines, "\n")
@@ -511,16 +739,38 @@ func (m model) renderFooter() string {
 	case pageDashboard:
 		add("j/k", "nav")
 		add("enter", "open")
+		add("f", "pin")
+		add("space", "select")
 		add("e", "edit")
 		add("d", "dump")
-		add("y", "copy path")
+
+		add("P", "plan")
+		if len(m.selectedProjects) > 0 {
+			add("C", fmt.Sprintf("cleanup (%d)", len(m.selectedProjects)))
+		} else {
+			add("C", "cleanup all")
+		}
 	case pageProject:
 		add("j/k", "scroll")
 		add("e", "edit")
 		add("esc", "back")
 	case pageCleanup:
-		add("y/enter", "accept")
-		add("n/esc", "discard")
+		switch m.mode {
+		case modeChainCleanupReview:
+			add("y/enter", "accept")
+			add("n/esc", "skip")
+			add("r", "feedback")
+			add("j/k", "scroll")
+		case modeChainCleanupFeedback, modeCleanupFeedback:
+			add("enter", "regenerate")
+			add("esc", "cancel")
+		case modeChainCleanupSummary:
+			add("any key", "continue")
+		default:
+			add("y/enter", "accept")
+			add("r", "feedback")
+			add("n/esc", "discard")
+		}
 	case pageDump:
 		switch m.mode {
 		case modeDumpReview:
@@ -538,6 +788,10 @@ func (m model) renderFooter() string {
 	case pageScripts:
 		add("j/k", "nav")
 		add("enter", "run")
+		if m.scriptOutput != "" {
+			add("J/K", "scroll output")
+			add("c", "clear")
+		}
 		add("esc", "back")
 	}
 
@@ -562,8 +816,13 @@ func (m model) renderHelp() string {
 			{"pgup/pgdn", "Full-page scroll preview"},
 			{"ctrl+home/end", "Preview top / bottom"},
 			{"enter", "Full-screen project view"},
+			{"f", "Pin / unpin project (sticky at top)"},
+			{"space", "Toggle project selection (for C/P)"},
 			{"e", "Edit WORK.md inline"},
-			{"c", "Cleanup via ollama"},
+			{"-", "Fix non-list lines (save in-place)"},
+			{"c", "Cleanup via ollama (single)"},
+			{"C", "Chain cleanup selected (or all)"},
+			{"P", "Daily plan via ollama (grouped tasks)"},
 			{"t", "Ask ollama what to work on"},
 			{"o", "Open project directory in editor"},
 			{"y", "Copy project dir path to clipboard"},
@@ -597,7 +856,10 @@ func (m model) renderHelp() string {
 			{"esc", "Cancel / abort remaining"},
 		}},
 		{"Scripts", []struct{ key, desc string }{
+			{"j/k", "Navigate scripts"},
 			{"enter", "Run script"},
+			{"J/K", "Scroll output"},
+			{"c", "Clear output"},
 			{"esc", "Back"},
 		}},
 	}

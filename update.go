@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,44 @@ import (
 	"github.com/LFroesch/sb/internal/scripts"
 	"github.com/LFroesch/sb/internal/workmd"
 )
+
+// --- Favorites ---
+
+func favoritesPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "sb", "favorites")
+}
+
+func loadFavorites() map[string]bool {
+	fav := make(map[string]bool)
+	data, err := os.ReadFile(favoritesPath())
+	if err != nil {
+		return fav
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			fav[line] = true
+		}
+	}
+	return fav
+}
+
+func saveFavorites(fav map[string]bool) {
+	p := favoritesPath()
+	os.MkdirAll(filepath.Dir(p), 0755) //nolint:errcheck
+	var lines []string
+	for k := range fav {
+		lines = append(lines, k)
+	}
+	sort.Strings(lines)
+	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0644) //nolint:errcheck
+}
+
+func sortWithFavorites(projects []workmd.Project, fav map[string]bool) {
+	sort.SliceStable(projects, func(i, j int) bool {
+		return fav[projects[i].Path] && !fav[projects[j].Path]
+	})
+}
 
 // openInCursor opens a directory in Cursor editor.
 func openDir(dir string) {
@@ -78,6 +117,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mode == modeDumpInput || m.mode == modeDumpClarify || m.mode == modeDumpSummary {
 			return m.updateDump(msg)
+		}
+		if m.mode == modeChainCleanupFeedback || m.mode == modeChainCleanupReview || m.mode == modeChainCleanupSummary {
+			return m.updateCleanup(msg)
 		}
 
 		// Search mode intercept
@@ -144,6 +186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case projectsLoadedMsg:
 		m.projects = msg.projects
+		sortWithFavorites(m.projects, m.favorites)
 		m.loading = false
 		if len(m.projects) > 0 && m.width > 0 {
 			rightW := m.width - (m.width*25/100) - 6
@@ -217,6 +260,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cleanupDoneMsg:
 		if msg.err != nil {
+			if m.mode == modeChainCleanupWait {
+				if m.chainCursor < len(m.chainQueue) {
+					idx := m.chainQueue[m.chainCursor]
+					m.chainResults = append(m.chainResults, chainResult{name: m.projects[idx].Name, action: "error"})
+					m.chainSkipped++
+				}
+				return m.advanceChainCursor()
+			}
 			m.statusMsg = "cleanup failed: " + msg.err.Error()
 			m.statusExpiry = time.Now().Add(5 * time.Second)
 			m.mode = modeNormal
@@ -224,9 +275,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.cleanupResult = msg.result
-		m.page = pageCleanup
-		m.mode = modeNormal
-		// Compute diff for the viewport
+		// Compute diff for viewport (shared by single and chain)
 		diffLines := diff.Unified(m.cleanupOriginal, msg.result)
 		addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#a6e3a1"))
 		removeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8"))
@@ -243,6 +292,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.SetContent(strings.Join(rendered, "\n"))
 		m.viewport.GotoTop()
+		if m.mode == modeChainCleanupWait {
+			m.mode = modeChainCleanupReview
+			return m, nil
+		}
+		m.page = pageCleanup
+		m.mode = modeNormal
+		return m, nil
+
+	case planResultMsg:
+		if msg.err != nil {
+			m.statusMsg = "plan failed: " + msg.err.Error()
+			m.statusExpiry = time.Now().Add(5 * time.Second)
+			m.mode = modeNormal
+			return m, nil
+		}
+		m.planResult = msg.result
+		rightW := m.width - (m.width*25/100) - 6
+		if rightW < 20 {
+			rightW = 20
+		}
+		m.viewport.SetContent(msg.result)
+		m.viewport.GotoTop()
+		m.mode = modePlanResult
 		return m, nil
 
 	case scripts.DoneMsg:
@@ -253,6 +325,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.Name + " done"
 		}
 		m.statusExpiry = time.Now().Add(3 * time.Second)
+		// Load output into viewport for scrollable view
+		available := scripts.Available()
+		listH := len(available) + 3 // title + blank + scripts + separator
+		vpH := m.height - 6 - listH
+		if vpH < 3 {
+			vpH = 3
+		}
+		m.viewport.Width = m.width - 4
+		m.viewport.Height = vpH
+		m.viewport.SetContent(msg.Output)
+		m.viewport.GotoTop()
 		return m, nil
 	}
 
@@ -270,6 +353,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dumpClarifyArea, cmd = m.dumpClarifyArea.Update(msg)
 		return m, cmd
 	}
+	if m.mode == modeChainCleanupFeedback {
+		m.chainFeedback, cmd = m.chainFeedback.Update(msg)
+		return m, cmd
+	}
 
 	return m, nil
 }
@@ -277,6 +364,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // --- Dashboard ---
 
 func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modePlanResult {
+		switch msg.String() {
+		case "j", "down", "J", "s":
+			m.viewport.LineDown(3)
+		case "k", "up", "K", "w":
+			m.viewport.LineUp(3)
+		case "ctrl+d":
+			m.viewport.HalfViewDown()
+		case "ctrl+u":
+			m.viewport.HalfViewUp()
+		default:
+			m.mode = modeNormal
+			rightW := m.width - (m.width*25/100) - 6
+			if rightW < 20 {
+				rightW = 20
+			}
+			if m.cursor < len(m.projects) {
+				m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+			}
+			m.viewport.GotoTop()
+		}
+		return m, nil
+	}
+	if m.mode == modePlanWait {
+		return m, nil
+	}
 	if m.mode == modeTodoResult {
 		m.mode = modeNormal
 		return m, nil
@@ -344,6 +457,37 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.editArea.Focus()
 			return m, m.editArea.Cursor.BlinkCmd()
 		}
+	case " ":
+		if m.cursor < len(m.projects) {
+			path := m.projects[m.cursor].Path
+			m.selectedProjects[path] = !m.selectedProjects[path]
+			if !m.selectedProjects[path] {
+				delete(m.selectedProjects, path)
+			}
+		}
+	case "-":
+		if m.cursor < len(m.projects) {
+			proj := m.projects[m.cursor]
+			fixed := workmd.FixNonListLines(proj.Content)
+			if fixed == proj.Content {
+				m.statusMsg = "no non-list lines found"
+			} else {
+				if err := workmd.Save(proj.Path, fixed); err != nil {
+					m.statusMsg = "save failed: " + err.Error()
+				} else {
+					m.projects[m.cursor].Content = fixed
+					m.projects[m.cursor].NonListCount = 0
+					m.statusMsg = "non-list lines fixed"
+					rightW := m.width - (m.width*25/100) - 6
+					if rightW < 20 {
+						rightW = 20
+					}
+					m.viewport.SetContent(markdown.Render(fixed, rightW))
+					m.viewport.GotoTop()
+				}
+			}
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+		}
 	case "c":
 		if m.cursor < len(m.projects) {
 			m.selected = m.cursor
@@ -353,6 +497,50 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(120 * time.Second)
 			return m, tea.Batch(cleanupCmd(m.projects[m.selected].Content), m.spinner.Tick)
 		}
+	case "C":
+		var queue []int
+		if len(m.selectedProjects) > 0 {
+			for i, p := range m.projects {
+				if m.selectedProjects[p.Path] {
+					queue = append(queue, i)
+				}
+			}
+		}
+		if len(queue) == 0 {
+			queue = make([]int, len(m.projects))
+			for i := range m.projects {
+				queue[i] = i
+			}
+		}
+		if len(queue) > 0 {
+			m.chainQueue = queue
+			m.chainCursor = 0
+			m.chainAccepted = 0
+			m.chainSkipped = 0
+			m.chainResults = nil
+			m.chainSummaryScroll = 0
+			m.selected = m.chainQueue[0]
+			m.cleanupOriginal = m.projects[m.selected].Content
+			m.page = pageCleanup
+			m.mode = modeChainCleanupWait
+			return m, tea.Batch(cleanupCmd(m.cleanupOriginal), m.spinner.Tick)
+		}
+	case "P":
+		var sources []workmd.Project
+		if len(m.selectedProjects) > 0 {
+			for _, p := range m.projects {
+				if m.selectedProjects[p.Path] {
+					sources = append(sources, p)
+				}
+			}
+		} else {
+			sources = m.projects
+		}
+		m.mode = modePlanWait
+		m.planScroll = 0
+		m.statusMsg = "generating daily plan..."
+		m.statusExpiry = time.Now().Add(90 * time.Second)
+		return m, tea.Batch(planCmd(sources), m.spinner.Tick)
 	case "o":
 		if m.cursor < len(m.projects) {
 			openDir(m.projects[m.cursor].Dir)
@@ -380,8 +568,30 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(60 * time.Second)
 			return m, tea.Batch(todoCmd(m.projects[m.cursor].Content), m.spinner.Tick)
 		}
+	case "f":
+		if m.cursor < len(m.projects) {
+			path := m.projects[m.cursor].Path
+			if m.favorites[path] {
+				delete(m.favorites, path)
+				m.statusMsg = "unfavorited"
+			} else {
+				m.favorites[path] = true
+				m.statusMsg = "favorited ★"
+			}
+			saveFavorites(m.favorites)
+			sortWithFavorites(m.projects, m.favorites)
+			// Re-find cursor position after re-sort
+			for i, p := range m.projects {
+				if p.Path == path {
+					m.cursor = i
+					break
+				}
+			}
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+		}
 	case "r":
 		m.projects = workmd.Discover()
+		sortWithFavorites(m.projects, m.favorites)
 		m.statusMsg = "refreshed"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 	}
@@ -463,9 +673,29 @@ func cleanupCmd(content string) tea.Cmd {
 }
 
 func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeChainCleanupReview:
+		return m.updateChainCleanupReview(msg)
+	case modeChainCleanupFeedback:
+		return m.updateChainCleanupFeedback(msg)
+	case modeChainCleanupSummary:
+		switch msg.String() {
+		case "j", "down":
+			m.chainSummaryScroll++
+		case "k", "up":
+			if m.chainSummaryScroll > 0 {
+				m.chainSummaryScroll--
+			}
+		default:
+			return m.dismissChainCleanupSummary()
+		}
+		return m, nil
+	case modeCleanupFeedback:
+		return m.updateSingleCleanupFeedback(msg)
+	}
+	// Single-project cleanup diff review
 	switch msg.String() {
 	case "y", "enter":
-		// Write cleaned content
 		if m.selected < len(m.projects) {
 			err := workmd.Save(m.projects[m.selected].Path, m.cleanupResult)
 			if err != nil {
@@ -474,7 +704,6 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				savedPath := m.projects[m.selected].Path
 				m.projects[m.selected].Content = m.cleanupResult
 				m.projects = workmd.Discover()
-				// Re-find project by path since Discover may reorder
 				for i, p := range m.projects {
 					if p.Path == savedPath {
 						m.selected = i
@@ -493,6 +722,10 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, rightW))
 		m.viewport.GotoTop()
+	case "r":
+		m.chainFeedback.Reset()
+		m.chainFeedback.Focus()
+		m.mode = modeCleanupFeedback
 	case "n", "esc", "q":
 		m.statusMsg = "cleanup discarded"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -513,6 +746,183 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.HalfViewUp()
 	}
 	return m, nil
+}
+
+func (m model) updateSingleCleanupFeedback(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		feedback := strings.TrimSpace(m.chainFeedback.Value())
+		if feedback == "" {
+			m.mode = modeNormal
+			return m, nil
+		}
+		m.mode = modeCleanupWait
+		return m, tea.Batch(cleanupWithFeedbackCmd(m.cleanupOriginal, feedback), m.spinner.Tick)
+	case "esc":
+		m.mode = modeNormal
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.chainFeedback, cmd = m.chainFeedback.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateChainCleanupReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		if m.chainCursor < len(m.chainQueue) {
+			idx := m.chainQueue[m.chainCursor]
+			err := workmd.Save(m.projects[idx].Path, m.cleanupResult)
+			if err != nil {
+				m.chainResults = append(m.chainResults, chainResult{name: m.projects[idx].Name, action: "error"})
+			} else {
+				m.projects[idx].Content = m.cleanupResult
+				m.chainAccepted++
+				m.chainResults = append(m.chainResults, chainResult{name: m.projects[idx].Name, action: "accepted"})
+			}
+		}
+		return m.advanceChainCursor()
+	case "n", "esc":
+		if m.chainCursor < len(m.chainQueue) {
+			idx := m.chainQueue[m.chainCursor]
+			m.chainSkipped++
+			m.chainResults = append(m.chainResults, chainResult{name: m.projects[idx].Name, action: "skipped"})
+		}
+		return m.advanceChainCursor()
+	case "q":
+		// Abort — mark remaining as skipped and show summary
+		for i := m.chainCursor; i < len(m.chainQueue); i++ {
+			idx := m.chainQueue[i]
+			m.chainResults = append(m.chainResults, chainResult{name: m.projects[idx].Name, action: "skipped"})
+			m.chainSkipped++
+		}
+		if m.chainAccepted > 0 {
+			m.projects = workmd.Discover()
+		}
+		m.mode = modeChainCleanupSummary
+		return m, nil
+	case "r":
+		m.mode = modeChainCleanupFeedback
+		m.chainFeedback.Reset()
+		m.chainFeedback.Focus()
+		return m, m.chainFeedback.Cursor.BlinkCmd()
+	case "j", "down":
+		m.viewport.LineDown(1)
+	case "k", "up":
+		m.viewport.LineUp(1)
+	case "ctrl+d":
+		m.viewport.HalfViewDown()
+	case "ctrl+u":
+		m.viewport.HalfViewUp()
+	case "pgdown":
+		m.viewport.ViewDown()
+	case "pgup":
+		m.viewport.ViewUp()
+	}
+	return m, nil
+}
+
+func (m model) updateChainCleanupFeedback(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeChainCleanupReview
+		return m, nil
+	case "enter":
+		feedback := m.chainFeedback.Value()
+		if feedback == "" {
+			m.mode = modeChainCleanupReview
+			return m, nil
+		}
+		m.mode = modeChainCleanupWait
+		return m, tea.Batch(cleanupWithFeedbackCmd(m.cleanupOriginal, feedback), m.spinner.Tick)
+	}
+	var cmd tea.Cmd
+	m.chainFeedback, cmd = m.chainFeedback.Update(msg)
+	return m, cmd
+}
+
+func (m model) advanceChainCursor() (tea.Model, tea.Cmd) {
+	m.chainCursor++
+	if m.chainCursor >= len(m.chainQueue) {
+		if m.chainAccepted > 0 {
+			m.projects = workmd.Discover()
+		}
+		m.mode = modeChainCleanupSummary
+		return m, nil
+	}
+	idx := m.chainQueue[m.chainCursor]
+	m.selected = idx
+	m.cleanupOriginal = m.projects[idx].Content
+	m.mode = modeChainCleanupWait
+	return m, tea.Batch(cleanupCmd(m.cleanupOriginal), m.spinner.Tick)
+}
+
+func (m model) dismissChainCleanupSummary() (tea.Model, tea.Cmd) {
+	m.chainQueue = nil
+	m.chainCursor = 0
+	m.chainAccepted = 0
+	m.chainSkipped = 0
+	m.chainResults = nil
+	m.chainSummaryScroll = 0
+	m.page = pageDashboard
+	m.mode = modeNormal
+	rightW := m.width - (m.width*25/100) - 6
+	if rightW < 20 {
+		rightW = 20
+	}
+	if m.cursor < len(m.projects) {
+		m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+	}
+	m.viewport.GotoTop()
+	return m, nil
+}
+
+func planCmd(projects []workmd.Project) tea.Cmd {
+	return func() tea.Msg {
+		var sb strings.Builder
+		for _, p := range projects {
+			var bugs, cur []string
+			for _, t := range p.Tasks {
+				if t.Done {
+					continue
+				}
+				switch t.Section {
+				case "bugs":
+					bugs = append(bugs, t.Name)
+				case "current":
+					cur = append(cur, t.Name)
+				}
+			}
+			if len(bugs) == 0 && len(cur) == 0 {
+				continue
+			}
+			sb.WriteString("Project: " + p.Name + "\n")
+			for _, t := range bugs {
+				sb.WriteString("  [BUG] " + t + "\n")
+			}
+			for _, t := range cur {
+				sb.WriteString("  - " + t + "\n")
+			}
+			sb.WriteString("\n")
+		}
+		summary := sb.String()
+		if summary == "" {
+			return planResultMsg{result: "No current tasks found across projects.", err: nil}
+		}
+		client := ollama.New()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		result, err := client.DailyPlan(ctx, summary)
+		return planResultMsg{result: result, err: err}
+	}
+}
+
+func cleanupWithFeedbackCmd(content, feedback string) tea.Cmd {
+	return func() tea.Msg {
+		client := ollama.New()
+		result, err := client.CleanupWithFeedback(context.Background(), content, feedback)
+		return cleanupDoneMsg{result: result, err: err}
+	}
 }
 
 func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -678,7 +1088,7 @@ func (m model) writeDumpItem(item ollama.RouteItem) error {
 	// IDEAS target
 	if projLower == "ideas" {
 		home, _ := os.UserHomeDir()
-		ideasPath := filepath.Join(home, "projects/active/daily_use/SECOND_BRAIN/ideas/IDEAS.md")
+		ideasPath := filepath.Join(home, "projects/active/daily_use/SECOND_BRAIN/ideas/WORK.md")
 		return workmd.AppendToSection(ideasPath, "inbox", item.Text)
 	}
 
@@ -854,6 +1264,7 @@ func (m model) updateScripts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
 		m.page = pageDashboard
+		m.scriptOutput = ""
 		return m, nil
 	case "j", "down":
 		if m.scriptCursor < len(available)-1 {
@@ -863,9 +1274,20 @@ func (m model) updateScripts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.scriptCursor > 0 {
 			m.scriptCursor--
 		}
+	case "J":
+		m.viewport.LineDown(3)
+	case "K":
+		m.viewport.LineUp(3)
+	case "pgdn":
+		m.viewport.HalfViewDown()
+	case "pgup":
+		m.viewport.HalfViewUp()
+	case "c":
+		m.scriptOutput = ""
 	case "enter":
 		if m.scriptCursor < len(available) {
 			s := available[m.scriptCursor]
+			m.scriptOutput = ""
 			m.statusMsg = "running " + s.Name + "..."
 			m.statusExpiry = time.Now().Add(30 * time.Second)
 			return m, scripts.RunCmd(s)

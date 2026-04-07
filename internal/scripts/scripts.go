@@ -46,6 +46,11 @@ func Available() []Script {
 			Description: "Today's commits across all repos NOTE: work on this",
 			Path:        filepath.Join(brainDir, "claude/scripts/daily-git-digest.sh"),
 		},
+		{
+			Name:        "symlink-check",
+			Description: "Verify symlinks point to live targets",
+			Path:        filepath.Join(brainDir, "claude/scripts/symlink-check.sh"),
+		},
 	}
 	// Note: per-project cleanup is done with 'c' in project view (uses ollama inline)
 }
