@@ -31,12 +31,6 @@ Command:
 ```bash
 sb
 ```
-## Install
-
-```bash
-cd sb && make install
-```
-
 ## Usage
 
 ```bash
