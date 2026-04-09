@@ -4,6 +4,8 @@ Second Brain control plane. TUI for managing WORK.md files across projects — b
 
 ## Quick Install
 
+Supported platforms: Linux and macOS. On Windows, use WSL.
+
 Recommended (installs to `~/.local/bin`):
 
 ```bash
