@@ -31,11 +31,6 @@ Command:
 ```bash
 sb
 ```
-## Usage
-
-```bash
-sb              # launch TUI
-```
 
 ## Config
 
@@ -119,3 +114,7 @@ Full keybind reference is available in-app with `?`.
 ## Roadmap
 
 - **Multi-provider LLM support** — `provider` + `api_key` fields in config for Anthropic/OpenAI alongside Ollama
+
+## License
+
+[AGPL-3.0](LICENSE)
