@@ -39,11 +39,12 @@ sb
 ```json
 {
   "model": "qwen2.5:7b",
-  "ollama_host": "http://localhost:11434"
+  "ollama_host": "http://localhost:11434",
+  "editor": "cursor"
 }
 ```
 
-Env vars `SB_MODEL` / `OLLAMA_HOST` override config.
+Env vars `SB_MODEL` / `OLLAMA_HOST` / `EDITOR` override config. The `editor` field sets which editor `o` uses to open project directories. If unset, falls back to `$EDITOR`, then probes for cursor, code, nvim, vim, nano.
 
 ---
 

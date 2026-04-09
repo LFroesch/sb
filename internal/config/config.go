@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Model      string `json:"model"`
 	OllamaHost string `json:"ollama_host"`
+	Editor     string `json:"editor"`
 }
 
 const defaultModel = "qwen2.5:7b"
@@ -29,6 +30,9 @@ func Load() *Config {
 		}
 	}
 
+	if v := os.Getenv("EDITOR"); v != "" && cfg.Editor == "" {
+		cfg.Editor = v
+	}
 	if v := os.Getenv("SB_MODEL"); v != "" {
 		cfg.Model = v
 	}
