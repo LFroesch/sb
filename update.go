@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/diff"
 	"github.com/LFroesch/sb/internal/markdown"
 	"github.com/LFroesch/sb/internal/ollama"
@@ -62,37 +61,34 @@ func sortWithFavorites(projects []workmd.Project, fav map[string]bool) {
 }
 
 // openInEditor opens a path in the best available editor.
-// Priority: config editor → $EDITOR → cursor → code → nvim → vim → nano → vi
+// Priority: $VISUAL → $EDITOR → cursor → code → nvim → vim → nano → vi
 func openInEditor(path string) tea.Cmd {
-	cfg := config.Load()
-
 	terminalEditors := map[string]bool{
 		"vim": true, "vi": true, "nvim": true, "nano": true,
 		"micro": true, "helix": true, "hx": true, "emacs": true,
 	}
 
-	// If editor is configured (config file or $EDITOR), use it directly
-	if cfg.Editor != "" {
-		if _, err := exec.LookPath(cfg.Editor); err == nil {
-			if terminalEditors[cfg.Editor] {
-				return tea.ExecProcess(exec.Command(cfg.Editor, path), func(err error) tea.Msg { return nil })
+	// Check env vars first
+	for _, env := range []string{"VISUAL", "EDITOR"} {
+		if e := os.Getenv(env); e != "" {
+			if _, err := exec.LookPath(e); err == nil {
+				if terminalEditors[e] {
+					return tea.ExecProcess(exec.Command(e, path), func(err error) tea.Msg { return nil })
+				}
+				exec.Command(e, path).Start() //nolint:errcheck
+				return nil
 			}
-			exec.Command(cfg.Editor, path).Start() //nolint:errcheck
-			return nil
 		}
 	}
 
 	// Fallback: probe for available editors
-	guiEditors := []string{"cursor", "code"}
-	termEditors := []string{"nvim", "vim", "nano", "vi"}
-
-	for _, e := range guiEditors {
+	for _, e := range []string{"cursor", "code"} {
 		if _, err := exec.LookPath(e); err == nil {
 			exec.Command(e, path).Start() //nolint:errcheck
 			return nil
 		}
 	}
-	for _, e := range termEditors {
+	for _, e := range []string{"nvim", "vim", "nano", "vi"} {
 		if _, err := exec.LookPath(e); err == nil {
 			return tea.ExecProcess(exec.Command(e, path), func(err error) tea.Msg { return nil })
 		}

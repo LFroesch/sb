@@ -39,12 +39,16 @@ sb
 ```json
 {
   "model": "qwen2.5:7b",
-  "ollama_host": "http://localhost:11434",
-  "editor": "cursor"
+  "ollama_host": "http://localhost:11434"
 }
 ```
 
-Env vars `SB_MODEL` / `OLLAMA_HOST` / `EDITOR` override config. The `editor` field sets which editor `o` uses to open project directories. If unset, falls back to `$EDITOR`, then probes for cursor, code, nvim, vim, nano.
+Env vars `SB_MODEL` and `OLLAMA_HOST` override config. The `o` key opens project directories in your editor — set `$VISUAL` (GUI) or `$EDITOR` (terminal) to control which one. Falls back to probing for cursor, code, nvim, vim, nano.
+
+```bash
+export EDITOR=nvim      # terminal editor
+export VISUAL=cursor    # GUI editor (checked first)
+```
 
 ---
 
