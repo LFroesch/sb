@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/ollama"
 	"github.com/LFroesch/sb/internal/workmd"
 )
@@ -146,6 +147,9 @@ type model struct {
 	statusMsg    string
 	statusExpiry time.Time
 
+	// Config
+	cfg *config.Config
+
 	// Favorites
 	favorites map[string]bool
 
@@ -185,8 +189,11 @@ func newModel() model {
 	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C6CCA"))
 
+	cfg := config.Load()
+
 	return model{
 		loading:          true,
+		cfg:              cfg,
 		dumpArea:         dump,
 		dumpClarifyArea:  clarify,
 		chainFeedback:    chainFB,
@@ -204,7 +211,11 @@ func (m model) Init() tea.Cmd {
 		tickCmd(),
 		m.spinner.Tick,
 		func() tea.Msg {
-			return projectsLoadedMsg{projects: workmd.Discover()}
+			return projectsLoadedMsg{projects: workmd.Discover(
+				m.cfg.ExpandedScanDirs(),
+				m.cfg.FilePatterns,
+				m.cfg.ExpandedIdeaDirs(),
+			)}
 		},
 	)
 }

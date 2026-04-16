@@ -1,13 +1,29 @@
 package workmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// fileKey returns a device:inode string that uniquely identifies a file,
+// catching both symlinks and hard links pointing to the same data.
+func fileKey(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return path // fallback to path if stat fails
+	}
+	sys, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return path
+	}
+	return fmt.Sprintf("%d:%d", sys.Dev, sys.Ino)
+}
 
 type Task struct {
 	Name    string
@@ -32,81 +48,72 @@ type Project struct {
 	ModTime       time.Time
 }
 
-// Discover finds all WORK.md files under ~/projects.
-func Discover() []Project {
+// Discover finds markdown files under scanDirs matching filePatterns, plus
+// all .md files in ideaDirs (flat, non-recursive).
+// Pass nil/empty slices to use the legacy defaults.
+func Discover(scanDirs, filePatterns, ideaDirs []string) []Project {
 	home, _ := os.UserHomeDir()
-	root := filepath.Join(home, "projects")
+	if len(scanDirs) == 0 {
+		scanDirs = []string{filepath.Join(home, "projects")}
+	}
+	if len(filePatterns) == 0 {
+		filePatterns = []string{"WORK.md"}
+	}
 
+	// seenEntry tracks which projects slice index holds a given resolved path,
+	// plus its path depth. When a shallower path for the same file is found,
+	// we replace the existing entry.
+	type seenEntry struct {
+		idx   int
+		depth int
+	}
+	seen := map[string]seenEntry{} // keyed by resolved (symlink-free) path
 	var projects []Project
 
-	// Use find for speed — skip node_modules, .git, vendor
-	cmd := exec.Command("find", root,
-		"-name", "WORK.md",
-		"-not", "-path", "*/node_modules/*",
-		"-not", "-path", "*/.git/*",
-		"-not", "-path", "*/vendor/*",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return projects
+	addOrReplace := func(path, root string) {
+		resolved := fileKey(path)
+		depth := strings.Count(path, string(filepath.Separator))
+		if entry, exists := seen[resolved]; exists {
+			if depth < entry.depth {
+				// Shallower path wins — replace the existing project in-place
+				if p, ok := loadProject(path, root); ok {
+					projects[entry.idx] = p
+					seen[resolved] = seenEntry{idx: entry.idx, depth: depth}
+				}
+			}
+			return
+		}
+		if p, ok := loadProject(path, root); ok {
+			seen[resolved] = seenEntry{idx: len(projects), depth: depth}
+			projects = append(projects, p)
+		}
 	}
 
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-
-		content, err := os.ReadFile(line)
-		if err != nil {
-			continue
-		}
-
-		text := string(content)
-		name := deriveName(line, root)
-		tasks := extractTasks(text)
-
-		var cur, bugs, unsorted, backlog int
-		for _, t := range tasks {
-			if t.Done {
+	for _, root := range scanDirs {
+		for _, pattern := range filePatterns {
+			args := []string{root,
+				"-name", pattern,
+				"-not", "-path", "*/node_modules/*",
+				"-not", "-path", "*/.git/*",
+				"-not", "-path", "*/vendor/*",
+			}
+			cmd := exec.Command("find", args...)
+			out, err := cmd.Output()
+			if err != nil {
 				continue
 			}
-			switch t.Section {
-			case "current":
-				cur++
-			case "bugs":
-				bugs++
-			case "unsorted":
-				unsorted++
-			case "backlog":
-				backlog++
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				if line != "" {
+					addOrReplace(line, root)
+				}
 			}
 		}
-
-		nonList := countNonListLines(text)
-
-		var modTime time.Time
-		if info, err := os.Stat(line); err == nil {
-			modTime = info.ModTime()
-		}
-
-		projects = append(projects, Project{
-			Name:          name,
-			Path:          line,
-			Dir:           filepath.Dir(line),
-			Content:       text,
-			Tasks:         tasks,
-			TaskCount:     cur + bugs + unsorted + backlog,
-			CurrentCount:  cur,
-			BugsCount:     bugs,
-			UnsortedCount: unsorted,
-			BacklogCount:  backlog,
-			NonListCount:  nonList,
-			ModTime:       modTime,
-		})
 	}
 
-	// Also pick up concept sketches from ideas/tui/
-	projects = append(projects, discoverIdeaFiles(root)...)
+	// Flat idea dirs — load all .md files directly (non-recursive)
+	for _, dir := range ideaDirs {
+		discoverFlatDir(dir, addOrReplace)
+	}
 
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].ModTime.After(projects[j].ModTime)
@@ -115,66 +122,68 @@ func Discover() []Project {
 	return projects
 }
 
-// discoverIdeaFiles loads individual .md files from SECOND_BRAIN/ideas/tui/ as projects.
-func discoverIdeaFiles(root string) []Project {
-	tuiDir := filepath.Join(root, "active/SECOND_BRAIN/ideas/tui")
-	entries, err := os.ReadDir(tuiDir)
+// loadProject reads a markdown file at path and builds a Project.
+// root is used only for deriving the display name.
+func loadProject(path, root string) (Project, bool) {
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return Project{}, false
+	}
+	text := string(content)
+	name := deriveName(path, root)
+	tasks := extractTasks(text)
+
+	var cur, bugs, unsorted, backlog int
+	for _, t := range tasks {
+		if t.Done {
+			continue
+		}
+		switch t.Section {
+		case "current":
+			cur++
+		case "bugs":
+			bugs++
+		case "unsorted":
+			unsorted++
+		case "backlog":
+			backlog++
+		}
 	}
 
-	var ideas []Project
+	var modTime time.Time
+	if info, err := os.Stat(path); err == nil {
+		modTime = info.ModTime()
+	}
+
+	return Project{
+		Name:          name,
+		Path:          path,
+		Dir:           filepath.Dir(path),
+		Content:       text,
+		Tasks:         tasks,
+		TaskCount:     cur + bugs + unsorted + backlog,
+		CurrentCount:  cur,
+		BugsCount:     bugs,
+		UnsortedCount: unsorted,
+		BacklogCount:  backlog,
+		NonListCount:  countNonListLines(text),
+		ModTime:       modTime,
+	}, true
+}
+
+// discoverFlatDir loads all .md files from dir (non-recursive), deduplicating
+// against already-found projects via addOrReplace.
+func discoverFlatDir(dir string, addOrReplace func(path, root string)) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
 			continue
 		}
-		path := filepath.Join(tuiDir, e.Name())
-		content, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		text := string(content)
-		name := "idea/" + strings.TrimSuffix(e.Name(), ".md")
-		tasks := extractTasks(text)
-
-		var cur, bugs, unsorted, backlog int
-		for _, t := range tasks {
-			if t.Done {
-				continue
-			}
-			switch t.Section {
-			case "current":
-				cur++
-			case "bugs":
-				bugs++
-			case "unsorted":
-				unsorted++
-			case "backlog":
-				backlog++
-			}
-		}
-
-		var modTime time.Time
-		if info, err := os.Stat(path); err == nil {
-			modTime = info.ModTime()
-		}
-
-		ideas = append(ideas, Project{
-			Name:         name,
-			Path:         path,
-			Dir:          tuiDir,
-			Content:      text,
-			Tasks:        tasks,
-			TaskCount:    cur + bugs + unsorted + backlog,
-			CurrentCount: cur,
-			BugsCount:    bugs,
-			UnsortedCount: unsorted,
-			BacklogCount: backlog,
-			NonListCount: countNonListLines(text),
-			ModTime:      modTime,
-		})
+		addOrReplace(filepath.Join(dir, e.Name()), dir)
 	}
-	return ideas
 }
 
 // Save writes content to a WORK.md file.
@@ -273,8 +282,14 @@ func deriveName(path, root string) string {
 	if err != nil {
 		return filepath.Base(filepath.Dir(path))
 	}
-	// Remove /WORK.md suffix
-	rel = strings.TrimSuffix(rel, "/WORK.md")
+	// For WORK.md: strip filename entirely (project = directory).
+	// For any other file: strip just the extension so e.g. ROADMAP.md → ROADMAP.
+	if strings.HasSuffix(rel, "/WORK.md") || rel == "WORK.md" {
+		rel = strings.TrimSuffix(rel, "/WORK.md")
+		rel = strings.TrimSuffix(rel, "WORK.md")
+	} else if ext := filepath.Ext(rel); ext != "" {
+		rel = strings.TrimSuffix(rel, ext)
+	}
 
 	// Shorten common prefixes
 	rel = strings.TrimPrefix(rel, "active/tui-suite/")

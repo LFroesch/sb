@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/LFroesch/sb/internal/ollama"
 	"github.com/LFroesch/sb/internal/scripts"
@@ -156,7 +156,7 @@ func (m model) renderDashboard() string {
 	if leftWidth < 20 {
 		leftWidth = 20
 	}
-	innerLeft := leftWidth - 4  // border + padding
+	innerLeft := leftWidth - 4 // border + padding
 
 	// --- Left pane: project list or search ---
 	var leftLines []string
@@ -575,7 +575,7 @@ func (m model) renderChainCleanupSummary() string {
 
 func (m model) renderEditMode() string {
 	header := warnStyle.Render("EDITING") + dimStyle.Render(" — ctrl+s save · esc cancel")
-	hints := dimStyle.Render("  ctrl+d del line · ctrl+k del to eol · home/end line start/end · ctrl+a/e alt line nav")
+	hints := dimStyle.Render("  ctrl+d del line · ctrl+k del to eol · home/end line start/end")
 	return lipgloss.JoinVertical(lipgloss.Left, header, hints, "", m.editArea.View())
 }
 
@@ -758,8 +758,8 @@ func (m model) renderFooter() string {
 
 	switch m.page {
 	case pageDashboard:
-		add("j/k", "nav")
-		add("enter", "open")
+		add("↑/↓", "nav")
+		add("o", "open")
 		add("f", "pin")
 		add("space", "select")
 		add("e", "edit")
@@ -772,7 +772,7 @@ func (m model) renderFooter() string {
 			add("C", "cleanup all")
 		}
 	case pageProject:
-		add("j/k", "scroll")
+		add("↑/↓", "scroll")
 		add("e", "edit")
 		add("esc", "back")
 	case pageCleanup:
@@ -781,7 +781,7 @@ func (m model) renderFooter() string {
 			add("y/enter", "accept")
 			add("n/esc", "skip")
 			add("r", "feedback")
-			add("j/k", "scroll")
+			add("↑/↓", "scroll")
 		case modeChainCleanupFeedback, modeCleanupFeedback:
 			add("enter", "regenerate")
 			add("esc", "cancel")
@@ -807,7 +807,7 @@ func (m model) renderFooter() string {
 			add("esc", "back")
 		}
 	case pageScripts:
-		add("j/k", "nav")
+		add("↑/↓", "nav")
 		add("enter", "run")
 		if m.scriptOutput != "" {
 			add("J/K", "scroll output")
@@ -830,7 +830,7 @@ func (m model) renderHelp() string {
 		keys  []struct{ key, desc string }
 	}{
 		{"Dashboard", []struct{ key, desc string }{
-			{"j/k", "Navigate projects"},
+			{"↑/↓", "Navigate projects"},
 			{"g / G", "Jump to top / bottom of list"},
 			{"J/K", "Scroll WORK.md preview"},
 			{"ctrl+d/u", "Half-page scroll preview"},
@@ -853,7 +853,7 @@ func (m model) renderHelp() string {
 			{"r", "Refresh (re-scan WORK.md files)"},
 		}},
 		{"Project View", []struct{ key, desc string }{
-			{"j/k", "Scroll"},
+			{"↑/↓", "Scroll"},
 			{"g / G", "Jump to top / bottom"},
 			{"pgup/pgdn", "Full-page scroll"},
 			{"ctrl+home/end", "Top / bottom"},
@@ -865,7 +865,7 @@ func (m model) renderHelp() string {
 		{"Edit Mode", []struct{ key, desc string }{
 			{"ctrl+s", "Save"},
 			{"esc", "Cancel"},
-			{"home / ctrl+a", "Start of line"},
+			{"home", "Start of line"},
 			{"end / ctrl+e", "End of line"},
 			{"ctrl+d", "Delete current line"},
 			{"ctrl+k", "Delete to end of line"},
@@ -877,7 +877,7 @@ func (m model) renderHelp() string {
 			{"esc", "Cancel / abort remaining"},
 		}},
 		{"Scripts", []struct{ key, desc string }{
-			{"j/k", "Navigate scripts"},
+			{"↑/↓", "Navigate scripts"},
 			{"enter", "Run script"},
 			{"J/K", "Scroll output"},
 			{"c", "Clear output"},

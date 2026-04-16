@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/diff"
 	"github.com/LFroesch/sb/internal/markdown"
 	"github.com/LFroesch/sb/internal/ollama"
@@ -111,6 +112,10 @@ func copyToClipboard(s string) {
 		}
 	}
 }
+
+// reposViewMsg is a no-op message used to trigger textarea.repositionView()
+// after manual cursor navigation (CursorUp/CursorDown don't update the viewport).
+type reposViewMsg struct{}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -621,10 +626,14 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(2 * time.Second)
 		}
 	case "r":
-		m.projects = workmd.Discover()
+		m.projects = workmd.Discover(m.cfg.ExpandedScanDirs(), m.cfg.FilePatterns, m.cfg.ExpandedIdeaDirs())
 		sortWithFavorites(m.projects, m.favorites)
 		m.statusMsg = "refreshed"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
+	case ",":
+		if path, err := config.Path(); err == nil {
+			return m, openInEditor(path)
+		}
 	}
 
 	// Update right-panel viewport when cursor changes
@@ -734,7 +743,7 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				savedPath := m.projects[m.selected].Path
 				m.projects[m.selected].Content = m.cleanupResult
-				m.projects = workmd.Discover()
+				m.projects = workmd.Discover(m.cfg.ExpandedScanDirs(), m.cfg.FilePatterns, m.cfg.ExpandedIdeaDirs())
 				for i, p := range m.projects {
 					if p.Path == savedPath {
 						m.selected = i
@@ -828,7 +837,7 @@ func (m model) updateChainCleanupReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chainSkipped++
 		}
 		if m.chainAccepted > 0 {
-			m.projects = workmd.Discover()
+			m.projects = workmd.Discover(m.cfg.ExpandedScanDirs(), m.cfg.FilePatterns, m.cfg.ExpandedIdeaDirs())
 		}
 		m.mode = modeChainCleanupSummary
 		return m, nil
@@ -876,7 +885,7 @@ func (m model) advanceChainCursor() (tea.Model, tea.Cmd) {
 	m.chainCursor++
 	if m.chainCursor >= len(m.chainQueue) {
 		if m.chainAccepted > 0 {
-			m.projects = workmd.Discover()
+			m.projects = workmd.Discover(m.cfg.ExpandedScanDirs(), m.cfg.FilePatterns, m.cfg.ExpandedIdeaDirs())
 		}
 		m.mode = modeChainCleanupSummary
 		return m, nil
@@ -984,11 +993,20 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if lineNum < len(lines) {
 			newLines := append(lines[:lineNum], lines[lineNum+1:]...)
 			m.editArea.SetValue(strings.Join(newLines, "\n"))
-			// SetValue leaves cursor at end; move up to target line
-			for i := 0; i < len(newLines)-1-lineNum; i++ {
+			// SetValue leaves cursor at end; move up to target line.
+			target := lineNum
+			if target >= len(newLines) {
+				target = len(newLines) - 1
+			}
+			if target < 0 {
+				target = 0
+			}
+			for i := 0; i < len(newLines)-1-target; i++ {
 				m.editArea.CursorUp()
 			}
 			m.editArea.CursorStart()
+			// CursorUp doesn't call repositionView; pass a no-op msg to trigger it.
+			m.editArea, _ = m.editArea.Update(reposViewMsg{})
 		}
 		return m, nil
 	}
@@ -1165,7 +1183,7 @@ func (m model) advanceDumpCursor() (tea.Model, tea.Cmd) {
 // finishDumpReview ends the review and shows the summary screen.
 func (m model) finishDumpReview() (tea.Model, tea.Cmd) {
 	if m.dumpAccepted > 0 {
-		m.projects = workmd.Discover()
+		m.projects = workmd.Discover(m.cfg.ExpandedScanDirs(), m.cfg.FilePatterns, m.cfg.ExpandedIdeaDirs())
 	}
 	m.mode = modeDumpSummary
 	return m, nil
