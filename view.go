@@ -9,7 +9,6 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/LFroesch/sb/internal/ollama"
-	"github.com/LFroesch/sb/internal/scripts"
 )
 
 func truncate(s string, max int) string {
@@ -39,8 +38,6 @@ func (m model) View() string {
 		content = m.renderProject()
 	case pageDump:
 		content = m.renderDump()
-	case pageScripts:
-		content = m.renderScripts()
 	case pageCleanup:
 		content = m.renderCleanup()
 	}
@@ -73,7 +70,6 @@ func (m model) renderHeader() string {
 	}{
 		{"Dashboard", pageDashboard},
 		{"Dump", pageDump},
-		{"Scripts", pageScripts},
 	}
 
 	var tabs []string
@@ -694,57 +690,6 @@ func isDumpSkipped(item ollama.RouteItem, skipped []ollama.RouteItem) bool {
 	return false
 }
 
-// --- Scripts ---
-
-func (m model) renderScripts() string {
-	available := scripts.Available()
-	if len(available) == 0 {
-		return m.renderEmpty("No scripts found", "")
-	}
-
-	var lines []string
-	lines = append(lines, titleStyle.Render("Maintenance Scripts"), "")
-
-	for i, s := range available {
-		prefix := "  "
-		if i == m.scriptCursor {
-			prefix = accentStyle.Render("▸ ")
-		}
-
-		name := s.Name
-		if i == m.scriptCursor {
-			name = accentStyle.Bold(true).Render(name)
-		}
-
-		lines = append(lines, prefix+name+dimStyle.Render("  "+s.Description))
-	}
-
-	if m.scriptOutput != "" {
-		lines = append(lines, "", dimStyle.Render(strings.Repeat("─", m.width-4)))
-		header := strings.Join(lines, "\n")
-
-		listH := len(lines) + 1 // +1 for the sep line itself
-		vpH := m.height - 6 - listH
-		if vpH < 3 {
-			vpH = 3
-		}
-		m.viewport.Width = m.width - 4
-		m.viewport.Height = vpH
-
-		scrollPct := ""
-		if m.viewport.TotalLineCount() > vpH {
-			pct := int(m.viewport.ScrollPercent() * 100)
-			scrollPct = dimStyle.Render(fmt.Sprintf("  %d%%  J/K scroll · c clear", pct))
-		} else {
-			scrollPct = dimStyle.Render("  c clear")
-		}
-
-		return lipgloss.JoinVertical(lipgloss.Left, header, m.viewport.View(), scrollPct)
-	}
-
-	return strings.Join(lines, "\n")
-}
-
 // --- Footer ---
 
 func (m model) renderFooter() string {
@@ -769,7 +714,7 @@ func (m model) renderFooter() string {
 		if len(m.selectedProjects) > 0 {
 			add("C", fmt.Sprintf("cleanup (%d)", len(m.selectedProjects)))
 		} else {
-			add("C", "cleanup all")
+			add("c/C", "cleanup selected/all")
 		}
 	case pageProject:
 		add("↑/↓", "scroll")
@@ -806,14 +751,6 @@ func (m model) renderFooter() string {
 			add("ctrl+d", "route")
 			add("esc", "back")
 		}
-	case pageScripts:
-		add("↑/↓", "nav")
-		add("enter", "run")
-		if m.scriptOutput != "" {
-			add("J/K", "scroll output")
-			add("c", "clear")
-		}
-		add("esc", "back")
 	}
 
 	add("?", "help")
@@ -848,7 +785,6 @@ func (m model) renderHelp() string {
 			{"o", "Open project directory in editor"},
 			{"y", "Copy project dir path to clipboard"},
 			{"d", "Brain dump"},
-			{"x", "Maintenance scripts"},
 			{"/", "Search across all WORK.md files"},
 			{"r", "Refresh (re-scan WORK.md files)"},
 		}},
@@ -875,13 +811,6 @@ func (m model) renderHelp() string {
 			{"y/enter", "Accept routed item"},
 			{"n", "Skip item"},
 			{"esc", "Cancel / abort remaining"},
-		}},
-		{"Scripts", []struct{ key, desc string }{
-			{"↑/↓", "Navigate scripts"},
-			{"enter", "Run script"},
-			{"J/K", "Scroll output"},
-			{"c", "Clear output"},
-			{"esc", "Back"},
 		}},
 	}
 

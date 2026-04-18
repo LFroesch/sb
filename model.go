@@ -36,7 +36,6 @@ const (
 	pageDashboard page = iota // overview of all projects + task counts
 	pageProject               // single project WORK.md viewer/editor
 	pageDump                  // brain dump input
-	pageScripts               // maintenance scripts
 	pageCleanup               // ollama WORK.md cleanup preview
 )
 
@@ -133,10 +132,6 @@ type model struct {
 	searchQuery   string
 	searchMatches []searchMatch
 
-	// Scripts
-	scriptCursor int
-	scriptOutput string
-
 	// Spinner
 	spinner spinner.Model
 
@@ -223,7 +218,6 @@ func (m model) Init() tea.Cmd {
 // --- Messages ---
 
 type tickMsg time.Time
-type statusClearMsg struct{}
 
 type todoResultMsg struct {
 	result string

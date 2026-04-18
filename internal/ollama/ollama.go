@@ -23,9 +23,58 @@ func New() *Client {
 	return &Client{host: cfg.OllamaHost, model: cfg.Model}
 }
 
-type RouteResult struct {
-	Project string `json:"project"`
-	Section string `json:"section"`
+// chat sends a single-message chat request to ollama and returns the raw
+// response content. Shared plumbing for every prompt function in this package.
+func (c *Client) chat(ctx context.Context, prompt string, timeout time.Duration, opts map[string]any) (string, error) {
+	body := map[string]any{
+		"model":  c.model,
+		"stream": false,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+	if opts != nil {
+		body["options"] = opts
+	}
+	data, _ := json.Marshal(body)
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var chatResp struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return "", fmt.Errorf("ollama decode: %w", err)
+	}
+	return chatResp.Message.Content, nil
+}
+
+// logPrompt appends a prompt/response pair to /tmp/sb-{tag}.log for tuning + debugging.
+func logPrompt(tag, prompt, raw string) {
+	f, err := os.OpenFile("/tmp/sb-"+tag+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sep := strings.Repeat("=", 80)
+	ts := time.Now().Format(time.RFC3339)
+	fmt.Fprintf(f, "%s\n[%s] %s REQUEST\n%s\n%s\n", sep, ts, strings.ToUpper(tag), sep, prompt)
+	fmt.Fprintf(f, "%s\n[%s] %s RESPONSE\n%s\n%s\n\n", sep, ts, strings.ToUpper(tag), sep, raw)
 }
 
 // RouteItem represents a single routed item from a multi-item brain dump.
@@ -65,58 +114,29 @@ Structure rules:
 5. Convert table rows to plain bullets: "- task text" (drop priority/status columns, keep the task description verbatim).
 6. Output ONLY the cleaned markdown. No commentary, no code fences.`
 
-// cleanupLog writes a cleanup request/response pair to /tmp/sb-cleanup.log for tuning.
-func cleanupLog(prompt, response string) {
-	f, err := os.OpenFile("/tmp/sb-cleanup.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	sep := strings.Repeat("=", 80)
-	fmt.Fprintf(f, "%s\n[%s] CLEANUP REQUEST\n%s\n%s\n", sep, time.Now().Format(time.RFC3339), sep, prompt)
-	fmt.Fprintf(f, "%s\n[%s] CLEANUP RESPONSE\n%s\n%s\n\n", sep, time.Now().Format(time.RFC3339), sep, response)
-}
-
 // Cleanup sends a WORK.md file to ollama for normalization and returns the cleaned content.
-func (c *Client) Cleanup(ctx context.Context, content string) (string, error) {
+// If feedback is non-empty it's appended so the model can course-correct a prior attempt.
+func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string, error) {
 	prompt := CleanupPrompt + "\n\nHere is the WORK.md to clean up:\n\n" + content
-
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
+	if feedback != "" {
+		prompt += "\n\nUser feedback on the previous cleanup attempt: " + feedback +
+			"\nPlease address this feedback in your cleanup."
 	}
 
-	data, _ := json.Marshal(body)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	// Deterministic sampling — cleanup is a structural normalize, not creative.
+	// Same input should give the same output.
+	raw, err := c.chat(ctx, prompt, 120*time.Second, map[string]any{
+		"temperature": 0,
+		"top_p":       1,
+		"seed":        42,
+	})
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", fmt.Errorf("ollama decode: %w", err)
-	}
-
-	cleanupLog(prompt, chatResp.Message.Content)
+	logPrompt("cleanup", prompt, raw)
 
 	project := projectNameFromContent(content)
-	cleaned := strings.TrimSpace(chatResp.Message.Content)
+	cleaned := strings.TrimSpace(raw)
 	// Strip accidental code fences
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
@@ -126,121 +146,6 @@ func (c *Client) Cleanup(ctx context.Context, content string) (string, error) {
 	cleaned = reconcileMissingBullets(content, cleaned)
 	cleaned = ensureHeaderNewlines(cleaned)
 	return cleaned + "\n", nil
-}
-
-// CleanupWithFeedback is like Cleanup but appends user feedback so the model can course-correct.
-func (c *Client) CleanupWithFeedback(ctx context.Context, content, feedback string) (string, error) {
-	prompt := CleanupPrompt + "\n\nHere is the WORK.md to clean up:\n\n" + content +
-		"\n\nUser feedback on the previous cleanup attempt: " + feedback +
-		"\nPlease address this feedback in your cleanup."
-
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, _ := json.Marshal(body)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", fmt.Errorf("ollama decode: %w", err)
-	}
-
-	cleanupLog(prompt, chatResp.Message.Content)
-
-	project := projectNameFromContent(content)
-	cleaned := strings.TrimSpace(chatResp.Message.Content)
-	cleaned = strings.TrimPrefix(cleaned, "```markdown")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-	cleaned = normalizeContent(strings.TrimSpace(cleaned))
-	cleaned = stripProjectTagsFromBullets(cleaned, project)
-	cleaned = reconcileMissingBullets(content, cleaned)
-	cleaned = ensureHeaderNewlines(cleaned)
-	return cleaned + "\n", nil
-}
-
-// Route classifies a brain dump and returns the target project + section.
-func (c *Client) Route(ctx context.Context, text string, projectNames []string) (*RouteResult, error) {
-	prompt := fmt.Sprintf(`You are a brain dump router. Given a thought/idea/task, decide which project it belongs to and which section (inbox, backlog, or current_tasks).
-
-Available projects: %s
-
-If the text doesn't clearly belong to any specific project, route to "SECOND_BRAIN" with section "current_tasks". "main" means the main SECOND_BRAIN WORK.md, not a project called "main".
-
-Valid sections: current_tasks, bugs_blockers, updates_features, backlog, unsorted
-Respond with ONLY valid JSON: {"project": "name", "section": "current_tasks"}
-
-Brain dump: %s`, strings.Join(projectNames, ", "), text)
-
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, _ := json.Marshal(body)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("ollama decode: %w", err)
-	}
-
-	// Extract JSON from response (may have markdown wrapping)
-	content := chatResp.Message.Content
-	content = strings.TrimSpace(content)
-	if idx := strings.Index(content, "{"); idx >= 0 {
-		end := strings.LastIndex(content, "}")
-		if end > idx {
-			content = content[idx : end+1]
-		}
-	}
-
-	var result RouteResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return nil, fmt.Errorf("parse route: %w (raw: %s)", err, chatResp.Message.Content)
-	}
-
-	return &result, nil
 }
 
 // RouteMulti splits a brain dump into discrete items and routes each one.
@@ -256,11 +161,11 @@ Available projects: %s
 Special targets:
 - "IDEAS" — for ideas that don't belong to any current project
 - "SECOND_BRAIN" — catch-all for general notes
-- "CLARIFY" — ONLY use this when you genuinely cannot determine which project an item belongs to. Most items should be routable.
+- "CLARIFY" — ONLY when you genuinely cannot tell which project an item belongs to. Most items should be routable.
 
-Section guide (pick the most accurate):
-- current_tasks: active work in progress right now (default if unsure between this and bugs_blockers)
-- bugs_blockers: something broken, failing, crashing, or actively blocking progress — only if it clearly needs an urgent fix
+Section guide:
+- current_tasks: active work (default when unsure between current_tasks and bugs_blockers)
+- bugs_blockers: something broken, failing, crashing, or actively blocking progress — urgent fix needed
 - updates_features: planned improvements, enhancements, new features
 - backlog: future ideas, someday/maybe items, low priority
 - unsorted: genuinely unclear
@@ -275,40 +180,13 @@ Example output: [{"text":"fix the login bug","project":"gather","section":"bugs_
 Brain dump:
 %s`, strings.Join(projectNames, ", "), text)
 
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, _ := json.Marshal(body)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	raw, err := c.chat(ctx, prompt, 3*time.Minute, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("ollama decode: %w", err)
-	}
 
 	// Extract JSON array from response
-	content := strings.TrimSpace(chatResp.Message.Content)
+	content := strings.TrimSpace(raw)
 	start := strings.Index(content, "[")
 	end := strings.LastIndex(content, "]")
 	if start < 0 || end <= start {
@@ -318,7 +196,7 @@ Brain dump:
 
 	var items []RouteItem
 	if err := json.Unmarshal([]byte(content), &items); err != nil {
-		return nil, fmt.Errorf("parse routes: %w (raw: %s)", err, chatResp.Message.Content)
+		return nil, fmt.Errorf("parse routes: %w (raw: %s)", err, raw)
 	}
 
 	for i := range items {
@@ -326,7 +204,7 @@ Brain dump:
 		items[i].Text = stripProjectTag(items[i].Text, items[i].Project)
 	}
 
-	routeLog(text, chatResp.Message.Content, items)
+	routeLog(text, raw, items)
 	return items, nil
 }
 
@@ -334,42 +212,16 @@ Brain dump:
 func (c *Client) NextTodo(ctx context.Context, content string) (string, error) {
 	prompt := `You are a helpful assistant reviewing a WORK.md task file. Give a short, direct answer: what are the 2-3 most important things to work on right now? Be specific and actionable. No fluff.
 
-Priority order: Bugs + Blockers first (these are urgent), then Current Tasks, then Inbox. If there are bugs/blockers, always lead with those.
+Priority order: Bugs + Blockers first (urgent), then Current Tasks, then Unsorted. If there are bugs/blockers, always lead with those.
 
 WORK.md:
 ` + content
 
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	raw, err := c.chat(ctx, prompt, 60*time.Second, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", fmt.Errorf("ollama decode: %w", err)
-	}
-	return strings.TrimSpace(chatResp.Message.Content), nil
+	return strings.TrimSpace(raw), nil
 }
 
 // DailyPlan asks ollama to group tasks from multiple projects by theme and suggest a day plan.
@@ -380,7 +232,7 @@ Rules:
 - Create 2-4 context groups (e.g. "job search", "tooling / second brain", "active dev")
 - Pick 1-3 specific tasks per group that would move the needle today
 - Be brief — each task is one line, attribute project in parens
-- Bugs + Blockers are URGENT — if any exist, surface them first under a "🔥 Bugs + Blockers" group regardless of project
+- Bugs + Blockers are URGENT — if any exist, surface them first under a "Bugs + Blockers" group regardless of project
 - Lead with highest-impact group (bugs/blockers group always first if present)
 
 Format:
@@ -390,37 +242,11 @@ Format:
 Current tasks:
 ` + taskSummary
 
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	raw, err := c.chat(ctx, prompt, 90*time.Second, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 90 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", fmt.Errorf("ollama decode: %w", err)
-	}
-	return strings.TrimSpace(chatResp.Message.Content), nil
+	return strings.TrimSpace(raw), nil
 }
 
 // reconcileMissingBullets checks that every bullet from the original content appears in the
@@ -701,6 +527,7 @@ func stripProjectTagsFromBullets(content, project string) string {
 }
 
 // routeLog writes a routing request/response pair to /tmp/sb-route.log for debugging.
+// Unlike logPrompt, this also captures the parsed items for at-a-glance inspection.
 func routeLog(input, raw string, items []RouteItem) {
 	f, err := os.OpenFile("/tmp/sb-route.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -729,39 +556,12 @@ Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section":
 
 Item: %s`, clarification, strings.Join(projectNames, ", "), text)
 
-	body := map[string]any{
-		"model":  c.model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	data, _ := json.Marshal(body)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
+	raw, err := c.chat(ctx, prompt, 30*time.Second, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("ollama decode: %w", err)
-	}
-
-	content := strings.TrimSpace(chatResp.Message.Content)
+	content := strings.TrimSpace(raw)
 	if idx := strings.Index(content, "{"); idx >= 0 {
 		end := strings.LastIndex(content, "}")
 		if end > idx {
@@ -771,7 +571,7 @@ Item: %s`, clarification, strings.Join(projectNames, ", "), text)
 
 	var item RouteItem
 	if err := json.Unmarshal([]byte(content), &item); err != nil {
-		return nil, fmt.Errorf("parse reroute: %w (raw: %s)", err, chatResp.Message.Content)
+		return nil, fmt.Errorf("parse reroute: %w (raw: %s)", err, raw)
 	}
 
 	item.Project = strings.TrimSpace(strings.TrimPrefix(item.Project, "#"))

@@ -1,6 +1,6 @@
 # sb
 
-Second Brain control plane. TUI for managing WORK.md files across projects — brain dump ideas, clean up backlogs, and run maintenance scripts.
+Second Brain control plane. TUI for managing WORK.md files across projects — brain dump ideas and clean up backlogs with a local LLM.
 
 ## Quick Install
 
@@ -108,7 +108,6 @@ Scans WORK.md for lines that aren't proper list items and fixes them in-place. U
 | `f` | Pin/unpin project |
 | `space` | Toggle project selection |
 | `o` | Open project dir in editor |
-| `x` | Maintenance scripts |
 | `r` | Refresh |
 | `?` | Help |
 
