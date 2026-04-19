@@ -787,6 +787,8 @@ func (m model) renderHelp() string {
 			{"d", "Brain dump"},
 			{"/", "Search across all WORK.md files"},
 			{"r", "Refresh (re-scan WORK.md files)"},
+			{",", "Open config.json in editor"},
+			{"?", "Toggle this help overlay"},
 		}},
 		{"Project View", []struct{ key, desc string }{
 			{"↑/↓", "Scroll"},
@@ -848,7 +850,16 @@ func (m model) renderHelp() string {
 		scrollHint = "\n" + dimStyle.Render(fmt.Sprintf("j/k scroll (%d/%d)", m.helpScroll+1, len(lines)-visibleH+1))
 	}
 
-	dialog := dialogStyle.Width(55).Render(strings.Join(visible, "\n") + scrollHint)
+	// Width adapts to terminal: wide enough for longest line, capped so it doesn't
+	// stretch across a huge screen. On narrow terminals, shrink to fit.
+	dialogW := 72
+	if m.width-8 < dialogW {
+		dialogW = m.width - 8
+	}
+	if dialogW < 40 {
+		dialogW = 40
+	}
+	dialog := dialogStyle.Width(dialogW).Render(strings.Join(visible, "\n") + scrollHint)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
 }
 

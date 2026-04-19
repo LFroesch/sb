@@ -180,7 +180,13 @@ Example output: [{"text":"fix the login bug","project":"gather","section":"bugs_
 Brain dump:
 %s`, strings.Join(projectNames, ", "), text)
 
-	raw, err := c.chat(ctx, prompt, 3*time.Minute, nil)
+	// Deterministic sampling — routing is a classification task, same dump should
+	// route the same way every time.
+	raw, err := c.chat(ctx, prompt, 3*time.Minute, map[string]any{
+		"temperature": 0,
+		"top_p":       1,
+		"seed":        42,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -226,27 +232,45 @@ WORK.md:
 
 // DailyPlan asks ollama to group tasks from multiple projects by theme and suggest a day plan.
 func (c *Client) DailyPlan(ctx context.Context, taskSummary string) (string, error) {
-	prompt := `You are a daily planning assistant. Given current tasks from multiple projects, group similar tasks by context/theme and create a focused plan for today.
+	prompt := `You are a daily planning assistant. Given current tasks from multiple projects, group similar tasks by context/theme and produce a focused plan for today as clean markdown.
 
 Rules:
-- Create 2-4 context groups (e.g. "job search", "tooling / second brain", "active dev")
+- Create 2-4 context groups (e.g. "Bugs + Blockers", "Tooling", "Active Dev")
 - Pick 1-3 specific tasks per group that would move the needle today
-- Be brief — each task is one line, attribute project in parens
 - Bugs + Blockers are URGENT — if any exist, surface them first under a "Bugs + Blockers" group regardless of project
 - Lead with highest-impact group (bugs/blockers group always first if present)
+- Copy task text verbatim from the input. Do not rephrase or invent tasks.
+- Each task is one bullet with the project name in parens at the end
 
-Format:
-## [Context Name]
-- task description (project)
+Output must be valid markdown using ONLY this structure:
+# Daily Plan
+
+## Group Name
+- task description (project-name)
+- another task (project-name)
+
+## Next Group Name
+- task description (project-name)
+
+No commentary, no preamble, no trailing notes — just the markdown plan.
 
 Current tasks:
 ` + taskSummary
 
-	raw, err := c.chat(ctx, prompt, 90*time.Second, nil)
+	raw, err := c.chat(ctx, prompt, 90*time.Second, map[string]any{
+		"temperature": 0,
+		"top_p":       1,
+		"seed":        42,
+	})
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(raw), nil
+	logPrompt("plan", prompt, raw)
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.TrimPrefix(cleaned, "```markdown")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	return strings.TrimSpace(cleaned), nil
 }
 
 // reconcileMissingBullets checks that every bullet from the original content appears in the
@@ -556,7 +580,11 @@ Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section":
 
 Item: %s`, clarification, strings.Join(projectNames, ", "), text)
 
-	raw, err := c.chat(ctx, prompt, 30*time.Second, nil)
+	raw, err := c.chat(ctx, prompt, 30*time.Second, map[string]any{
+		"temperature": 0,
+		"top_p":       1,
+		"seed":        42,
+	})
 	if err != nil {
 		return nil, err
 	}

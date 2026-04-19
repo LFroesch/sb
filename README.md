@@ -109,6 +109,7 @@ Scans WORK.md for lines that aren't proper list items and fixes them in-place. U
 | `space` | Toggle project selection |
 | `o` | Open project dir in editor |
 | `r` | Refresh |
+| `,` | Open `config.json` in editor |
 | `?` | Help |
 
 Full keybind reference is available in-app with `?`.

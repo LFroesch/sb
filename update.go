@@ -352,7 +352,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.planResult = msg.result
-		m.viewport.SetContent(msg.result)
+		rightW := m.rightPanelWidth()
+		m.viewport.SetContent(markdown.Render(msg.result, rightW-4))
 		m.viewport.GotoTop()
 		m.mode = modePlanResult
 		return m, nil
