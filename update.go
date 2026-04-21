@@ -127,10 +127,29 @@ func (m model) rightPanelWidth() int {
 	return w
 }
 
-// rediscover re-scans configured scan dirs / idea dirs for markdown files.
-// Shared across refresh, post-cleanup save, and chain cleanup completion.
+// rediscover re-scans configured scan dirs / idea dirs for markdown files
+// and refreshes the routing-context index. Shared across refresh, post-cleanup
+// save, and chain cleanup completion.
 func (m model) rediscover() []workmd.Project {
-	return m.rediscover()
+	projects := workmd.Discover(
+		m.cfg.ExpandedScanRoots(),
+		m.cfg.FilePatterns,
+		m.cfg.ExpandedIdeaDirs(),
+		m.cfg,
+	)
+	var targets []workmd.SpecialTarget
+	if t := m.cfg.CatchallTarget; t != nil {
+		targets = append(targets, workmd.SpecialTarget{
+			Name: t.Name, Path: t.Path, Description: "catch-all for general notes",
+		})
+	}
+	if t := m.cfg.IdeasTarget; t != nil {
+		targets = append(targets, workmd.SpecialTarget{
+			Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
+		})
+	}
+	_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets)
+	return projects
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1014,7 +1033,7 @@ func (m model) updateDump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dumpText = text
 		m.mode = modeDumpRouting
 		m.dumpResult = ""
-		return m, tea.Batch(routeDumpCmd(text, m.projects), m.spinner.Tick)
+		return m, tea.Batch(routeDumpCmd(text, m.projects, m.cfg), m.spinner.Tick)
 	}
 
 	var cmd tea.Cmd
@@ -1080,7 +1099,7 @@ func (m model) updateDumpClarify(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "rerouting..."
 		m.statusExpiry = time.Now().Add(10 * time.Second)
 		item := m.dumpItems[m.dumpCursor]
-		return m, tea.Batch(rerouteDumpCmd(item.Text, clarification, m.projects), m.spinner.Tick)
+		return m, tea.Batch(rerouteDumpCmd(item.Text, clarification, m.projects, m.cfg), m.spinner.Tick)
 	}
 
 	var cmd tea.Cmd
@@ -1094,18 +1113,15 @@ func (m model) writeDumpItem(item ollama.RouteItem) error {
 	proj := strings.TrimSpace(strings.TrimPrefix(item.Project, "#"))
 	projLower := strings.ToLower(proj)
 
-	// IDEAS target
-	if projLower == "ideas" {
-		home, _ := os.UserHomeDir()
-		ideasPath := filepath.Join(home, "projects/active/SECOND_BRAIN/ideas/WORK.md")
-		return workmd.AppendToSection(ideasPath, "inbox", item.Text)
+	// Configured ideas bucket — section default is "inbox" so items land in the
+	// well-known unsorted spot regardless of what ollama guessed.
+	if t := m.cfg.IdeasTarget; t != nil && t.Name != "" && projLower == strings.ToLower(t.Name) {
+		return workmd.AppendToSection(config.ExpandHome(t.Path), "inbox", item.Text)
 	}
 
-	// SECOND_BRAIN catch-all → main SECOND_BRAIN WORK.md
-	if projLower == "second_brain" || projLower == "second brain" {
-		home, _ := os.UserHomeDir()
-		sbPath := filepath.Join(home, "projects/active/SECOND_BRAIN/WORK.md")
-		return workmd.AppendToSection(sbPath, item.Section, item.Text)
+	// Configured catch-all bucket — preserves the section ollama chose.
+	if t := m.cfg.CatchallTarget; t != nil && t.Name != "" && projLower == strings.ToLower(t.Name) {
+		return workmd.AppendToSection(config.ExpandHome(t.Path), item.Section, item.Text)
 	}
 
 	// Find matching project — exact match first, then fuzzy (suffix/substring)
@@ -1235,30 +1251,45 @@ func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func routeDumpCmd(text string, projects []workmd.Project) tea.Cmd {
+// projectDescs converts the model's discovered projects into the name+description
+// shape RouteMulti/RerouteSingle expect.
+func projectDescs(projects []workmd.Project) []ollama.ProjectDesc {
+	out := make([]ollama.ProjectDesc, len(projects))
+	for i, p := range projects {
+		out[i] = ollama.ProjectDesc{Name: p.Name, Description: p.Description}
+	}
+	return out
+}
+
+// targetFromConfig maps a *config.Target into the prompt-time SpecialTarget
+// (with a fixed description string for the prompt body), or nil if unset.
+func targetFromConfig(t *config.Target, desc string) *ollama.SpecialTarget {
+	if t == nil || t.Name == "" {
+		return nil
+	}
+	return &ollama.SpecialTarget{Name: t.Name, Description: desc}
+}
+
+func routeDumpCmd(text string, projects []workmd.Project, cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		client := ollama.New()
-		names := make([]string, len(projects))
-		for i, p := range projects {
-			names[i] = p.Name
-		}
+		catchall := targetFromConfig(cfg.CatchallTarget, "catch-all for general notes that don't belong to any project above")
+		ideas := targetFromConfig(cfg.IdeasTarget, "ideas not tied to a specific project")
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		items, err := client.RouteMulti(ctx, text, names)
+		items, err := client.RouteMulti(ctx, text, projectDescs(projects), catchall, ideas)
 		return dumpRoutedMsg{items: items, err: err}
 	}
 }
 
-func rerouteDumpCmd(text, clarification string, projects []workmd.Project) tea.Cmd {
+func rerouteDumpCmd(text, clarification string, projects []workmd.Project, cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		client := ollama.New()
-		names := make([]string, len(projects))
-		for i, p := range projects {
-			names[i] = p.Name
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30_000_000_000)
+		catchall := targetFromConfig(cfg.CatchallTarget, "catch-all for general notes")
+		ideas := targetFromConfig(cfg.IdeasTarget, "ideas not tied to a specific project")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		item, err := client.RerouteSingle(ctx, text, clarification, names)
+		item, err := client.RerouteSingle(ctx, text, clarification, projectDescs(projects), catchall, ideas)
 		return dumpReroutedMsg{item: item, err: err}
 	}
 }

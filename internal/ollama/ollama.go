@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -64,24 +64,64 @@ func (c *Client) chat(ctx context.Context, prompt string, timeout time.Duration,
 	return chatResp.Message.Content, nil
 }
 
-// logPrompt appends a prompt/response pair to /tmp/sb-{tag}.log for tuning + debugging.
-func logPrompt(tag, prompt, raw string) {
-	f, err := os.OpenFile("/tmp/sb-"+tag+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	sep := strings.Repeat("=", 80)
-	ts := time.Now().Format(time.RFC3339)
-	fmt.Fprintf(f, "%s\n[%s] %s REQUEST\n%s\n%s\n", sep, ts, strings.ToUpper(tag), sep, prompt)
-	fmt.Fprintf(f, "%s\n[%s] %s RESPONSE\n%s\n%s\n\n", sep, ts, strings.ToUpper(tag), sep, raw)
-}
-
 // RouteItem represents a single routed item from a multi-item brain dump.
 type RouteItem struct {
 	Text    string `json:"text"`
 	Project string `json:"project"`
 	Section string `json:"section"`
+}
+
+// ProjectDesc gives the router a name + a short description for each project,
+// so the model isn't trying to disambiguate between bare slugs alone.
+type ProjectDesc struct {
+	Name        string
+	Description string
+}
+
+// SpecialTarget mirrors config.Target for routing-prompt purposes. nil means
+// "this target isn't configured — omit it from the prompt entirely."
+type SpecialTarget struct {
+	Name string
+	// Description is a short reminder of what the target is *for* — e.g.
+	// "catch-all for general notes". Used inside the prompt only.
+	Description string
+}
+
+// renderProjectList builds the "Available projects" prompt block.
+func renderProjectList(projects []ProjectDesc) string {
+	var b strings.Builder
+	for _, p := range projects {
+		if p.Description == "" {
+			fmt.Fprintf(&b, "- %s\n", p.Name)
+		} else {
+			fmt.Fprintf(&b, "- %s — %s\n", p.Name, p.Description)
+		}
+	}
+	return b.String()
+}
+
+// renderSpecialTargets builds the "Special targets" prompt block, including
+// CLARIFY. Catchall/ideas lines only appear when their target is non-nil.
+func renderSpecialTargets(catchall, ideas *SpecialTarget) string {
+	var b strings.Builder
+	b.WriteString("Special targets:\n")
+	if catchall != nil {
+		fmt.Fprintf(&b, "- %q — %s\n", catchall.Name, catchall.Description)
+	}
+	if ideas != nil {
+		fmt.Fprintf(&b, "- %q — %s\n", ideas.Name, ideas.Description)
+	}
+	b.WriteString("- \"CLARIFY\" — ONLY when you genuinely cannot tell which project an item belongs to. Most items should be routable.\n")
+	return b.String()
+}
+
+// defaultUnsureLine returns the fallback instruction for ambiguous items, using
+// the catchall name if configured, else falling back to CLARIFY.
+func defaultUnsureLine(catchall *SpecialTarget) string {
+	if catchall != nil {
+		return fmt.Sprintf("If you're unsure where an item goes, default to project %q section \"current_tasks\".", catchall.Name)
+	}
+	return "If you're unsure between two projects, prefer \"CLARIFY\" over guessing."
 }
 
 // CleanupPrompt is the system prompt for WORK.md normalization.
@@ -133,7 +173,7 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 	if err != nil {
 		return "", err
 	}
-	logPrompt("cleanup", prompt, raw)
+	slog.Info("ollama cleanup", "prompt", prompt, "response", raw)
 
 	project := projectNameFromContent(content)
 	cleaned := strings.TrimSpace(raw)
@@ -150,19 +190,16 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 
 // RouteMulti splits a brain dump into discrete items and routes each one.
 // Items with project "CLARIFY" need user clarification.
-func (c *Client) RouteMulti(ctx context.Context, text string, projectNames []string) ([]RouteItem, error) {
+func (c *Client) RouteMulti(ctx context.Context, text string, projects []ProjectDesc, catchall, ideas *SpecialTarget) ([]RouteItem, error) {
 	prompt := fmt.Sprintf(`You are a brain dump router. The user pasted a messy brain dump that may contain MULTIPLE ideas, tasks, or notes for DIFFERENT projects.
 
 Your job:
 1. Split the text into discrete items (one idea/task/note each)
-2. Route each item to the best matching project and section
+2. Route each item to the best matching project and section. Use the project descriptions to disambiguate — slug names alone may collide.
 
-Available projects: %s
-Special targets:
-- "IDEAS" — for ideas that don't belong to any current project
-- "SECOND_BRAIN" — catch-all for general notes
-- "CLARIFY" — ONLY when you genuinely cannot tell which project an item belongs to. Most items should be routable.
-
+Available projects:
+%s
+%s
 Section guide:
 - current_tasks: active work (default when unsure between current_tasks and bugs_blockers)
 - bugs_blockers: something broken, failing, crashing, or actively blocking progress — urgent fix needed
@@ -170,15 +207,12 @@ Section guide:
 - backlog: future ideas, someday/maybe items, low priority
 - unsorted: genuinely unclear
 
-If you're unsure where an item goes, default to project "SECOND_BRAIN" section "current_tasks".
+%s
 
 Respond with ONLY a valid JSON array. Each element: {"text": "the extracted item", "project": "name", "section": "current_tasks"}
 
-Example input: "need to fix the login bug in gather, also had an idea for a new tui app called radar, and sb needs better diff views"
-Example output: [{"text":"fix the login bug","project":"gather","section":"bugs_blockers"},{"text":"new tui app idea: radar","project":"IDEAS","section":"backlog"},{"text":"sb needs better diff views","project":"sb","section":"updates_features"}]
-
 Brain dump:
-%s`, strings.Join(projectNames, ", "), text)
+%s`, renderProjectList(projects), renderSpecialTargets(catchall, ideas), defaultUnsureLine(catchall), text)
 
 	// Deterministic sampling — routing is a classification task, same dump should
 	// route the same way every time.
@@ -265,7 +299,7 @@ Current tasks:
 	if err != nil {
 		return "", err
 	}
-	logPrompt("plan", prompt, raw)
+	slog.Info("ollama daily plan", "prompt", prompt, "response", raw)
 	cleaned := strings.TrimSpace(raw)
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
@@ -550,35 +584,23 @@ func stripProjectTagsFromBullets(content, project string) string {
 	return strings.Join(lines, "\n")
 }
 
-// routeLog writes a routing request/response pair to /tmp/sb-route.log for debugging.
-// Unlike logPrompt, this also captures the parsed items for at-a-glance inspection.
+// routeLog records the raw routing response plus parsed items for debugging.
 func routeLog(input, raw string, items []RouteItem) {
-	f, err := os.OpenFile("/tmp/sb-route.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	sep := strings.Repeat("=", 60)
-	fmt.Fprintf(f, "%s\n[%s] INPUT\n%s\n%s\n", sep, time.Now().Format(time.RFC3339), sep, input)
-	fmt.Fprintf(f, "RAW RESPONSE:\n%s\n", raw)
-	fmt.Fprintf(f, "PARSED (%d items):\n", len(items))
-	for i, it := range items {
-		fmt.Fprintf(f, "  [%d] %q → %s/%s\n", i, it.Text, it.Project, it.Section)
-	}
-	fmt.Fprintln(f)
+	slog.Info("ollama route", "input", input, "raw", raw, "items", items)
 }
 
 // RerouteSingle re-routes a single item with user-provided clarification context.
-func (c *Client) RerouteSingle(ctx context.Context, text, clarification string, projectNames []string) (*RouteItem, error) {
-	prompt := fmt.Sprintf(`Route this item to a project. The user clarified: "%s"
+func (c *Client) RerouteSingle(ctx context.Context, text, clarification string, projects []ProjectDesc, catchall, ideas *SpecialTarget) (*RouteItem, error) {
+	prompt := fmt.Sprintf(`Route this item to a project. The user clarified: %q
 
-Available projects: %s
-Special: "IDEAS" for ideas not tied to a project, "SECOND_BRAIN" for general notes (default to current_tasks if unsure).
+Available projects:
+%s
+%s
 Sections: current_tasks (active work, default), bugs_blockers (broken/actively blocking), updates_features (planned improvements), backlog (future/low-prio), unsorted (unclear)
 
 Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section": "current_tasks"}
 
-Item: %s`, clarification, strings.Join(projectNames, ", "), text)
+Item: %s`, clarification, renderProjectList(projects), renderSpecialTargets(catchall, ideas), text)
 
 	raw, err := c.chat(ctx, prompt, 30*time.Second, map[string]any{
 		"temperature": 0,

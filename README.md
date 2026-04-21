@@ -39,16 +39,60 @@ sb
 ```json
 {
   "model": "qwen2.5:7b",
-  "ollama_host": "http://localhost:11434"
+  "ollama_host": "http://localhost:11434",
+  "scan_roots": [
+    { "name": "projects", "path": "~/projects" }
+  ],
+  "file_patterns": ["WORK.md"],
+  "idea_dirs": [],
+  "label_max_depth": 2,
+  "index_path": "~/.config/sb/index.md",
+  "log_level": "info",
+  "catchall_target": null,
+  "ideas_target": null
 }
 ```
 
-Env vars `SB_MODEL` and `OLLAMA_HOST` override config. The `o` key opens project directories in your editor — set `$VISUAL` (GUI) or `$EDITOR` (terminal) to control which one. Falls back to probing for cursor, code, nvim, vim, nano.
+| Field | Purpose |
+|-------|---------|
+| `scan_roots` | Recursive discovery roots. `name` is used only when sb needs extra label context. |
+| `file_patterns` | Filenames sb treats as projects (e.g. add `ROADMAP.md`). |
+| `idea_dirs` | Flat dirs whose `.md` files are loaded directly (no recursion). |
+| `label_max_depth` | Fallback label depth: keep the last N path components when no title label is present. |
+| `index_path` | Auto-regenerated routing-context cache (see below). |
+| `log_level` | JSON log verbosity for `~/.local/share/sb/logs/sb.log` (`debug`, `info`, `warn`, `error`). |
+| `catchall_target` | `{ "name": "...", "path": "..." }` — optional bucket for general notes that don't belong to a project. |
+| `ideas_target` | Same shape — optional bucket for project-less ideas. |
+
+Press `,` inside sb to open the config in your editor.
+
+Env vars `SB_MODEL` and `OLLAMA_HOST` override the config. The `o` key opens project directories in your editor — set `$VISUAL` (GUI) or `$EDITOR` (terminal). Falls back to probing for cursor, code, nvim, vim, nano.
 
 ```bash
 export EDITOR=nvim      # terminal editor
 export VISUAL=cursor    # GUI editor (checked first)
 ```
+
+### Project labels and descriptions
+
+Any discovered markdown file can define both its dashboard label and routing description from the first H1:
+
+```markdown
+# WORK - sb | Second Brain TUI for managing WORK.md files across projects
+# ROADMAP - toolkit | v1 polish
+```
+
+`label` overrides the left-panel project name. `description` feeds the router and index. If there is no title label, sb falls back to the shortest useful relative path within the scan root, expanding only when needed to resolve collisions.
+
+If two different roots still collide after path expansion, sb prefixes the fallback label with the root name, e.g. `work/api` and `client/api`.
+
+### Index file
+
+On every startup sb writes `~/.config/sb/index.md` — a human-readable list of every discovered project + its description, plus the configured special targets. It's a **read-only artifact** for inspecting what ollama sees during routing. Edits get overwritten on the next startup; change the markdown title line to update a label or description.
+
+### Logging
+
+sb now logs structured JSON to `~/.local/share/sb/logs/sb.log` and rotates at roughly 5 MiB, keeping 3 backups. The old `/tmp/sb-*.log` files are no longer used.
 
 ---
 
@@ -119,6 +163,10 @@ Full keybind reference is available in-app with `?`.
 ## Roadmap
 
 - **Multi-provider LLM support** — `provider` + `api_key` fields in config for Anthropic/OpenAI alongside Ollama
+
+## Design Docs
+
+- [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md) — product direction for turning `sb` into the first cockpit UI for coding-agent orchestration, with a separable foreman/runtime layer behind it
 
 ## License
 

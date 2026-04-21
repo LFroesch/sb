@@ -44,20 +44,20 @@ const (
 type mode int
 
 const (
-	modeNormal mode = iota
-	modeEdit         // inline editing a section
-	modeHelp         // help overlay
-	modeConfirm      // confirm action
-	modeDumpInput    // typing a brain dump
-	modeDumpRouting  // ollama is classifying
-	modeDumpConfirm  // showing route result, waiting for y/n
-	modeCleanupWait   // ollama is cleaning up
-	modeTodoWait      // ollama is generating next todo
-	modeTodoResult    // showing next todo result
-	modeSearch        // fuzzy search across WORK.md content
-	modeDumpReview    // stepping through routed items
-	modeDumpClarify   // asking user to clarify unclear item
-	modeDumpSummary   // post-dump summary, esc to dismiss
+	modeNormal      mode = iota
+	modeEdit             // inline editing a section
+	modeHelp             // help overlay
+	modeConfirm          // confirm action
+	modeDumpInput        // typing a brain dump
+	modeDumpRouting      // ollama is classifying
+	modeDumpConfirm      // showing route result, waiting for y/n
+	modeCleanupWait      // ollama is cleaning up
+	modeTodoWait         // ollama is generating next todo
+	modeTodoResult       // showing next todo result
+	modeSearch           // fuzzy search across WORK.md content
+	modeDumpReview       // stepping through routed items
+	modeDumpClarify      // asking user to clarify unclear item
+	modeDumpSummary      // post-dump summary, esc to dismiss
 
 	modeChainCleanupWait     // ollama running on current project in chain
 	modeChainCleanupReview   // reviewing diff for current project
@@ -90,33 +90,33 @@ type model struct {
 	viewport viewport.Model
 
 	// Inline editing
-	editArea textarea.Model
+	editArea    textarea.Model
 	editSection string // which section is being edited
 
 	// Brain dump
-	dumpArea        textarea.Model
-	dumpText        string          // raw input text
-	dumpItems       []ollama.RouteItem // multi-routed items from ollama
-	dumpCursor      int             // which item we're reviewing
-	dumpAccepted    int               // count of accepted items
-	dumpSkipped     int               // count of skipped items
-	dumpSkippedList    []ollama.RouteItem // items that were skipped
-	dumpClarifyArea   textarea.Model    // textarea for clarification input
-	dumpResult        string            // last status message for display
-	dumpSummaryScroll int               // scroll offset for summary screen
+	dumpArea          textarea.Model
+	dumpText          string             // raw input text
+	dumpItems         []ollama.RouteItem // multi-routed items from ollama
+	dumpCursor        int                // which item we're reviewing
+	dumpAccepted      int                // count of accepted items
+	dumpSkipped       int                // count of skipped items
+	dumpSkippedList   []ollama.RouteItem // items that were skipped
+	dumpClarifyArea   textarea.Model     // textarea for clarification input
+	dumpResult        string             // last status message for display
+	dumpSummaryScroll int                // scroll offset for summary screen
 
 	// Cleanup
 	cleanupOriginal string // original content before cleanup
 	cleanupResult   string // ollama-cleaned content
 
 	// Chain cleanup
-	chainQueue          []int
-	chainCursor         int
-	chainAccepted       int
-	chainSkipped        int
-	chainFeedback       textarea.Model
-	chainResults        []chainResult
-	chainSummaryScroll  int
+	chainQueue         []int
+	chainCursor        int
+	chainAccepted      int
+	chainSkipped       int
+	chainFeedback      textarea.Model
+	chainResults       []chainResult
+	chainSummaryScroll int
 
 	// Project selection (for chain cleanup / plan)
 	selectedProjects map[string]bool // keyed by project path
@@ -154,7 +154,7 @@ type model struct {
 	helpScroll      int
 }
 
-func newModel() model {
+func newModel(cfg *config.Config) model {
 	dump := textarea.New()
 	dump.Placeholder = "brain dump — type an idea, thought, or task... (ctrl+d to route)"
 	dump.SetWidth(80)
@@ -184,8 +184,6 @@ func newModel() model {
 	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C6CCA"))
 
-	cfg := config.Load()
-
 	return model{
 		loading:          true,
 		cfg:              cfg,
@@ -206,11 +204,27 @@ func (m model) Init() tea.Cmd {
 		tickCmd(),
 		m.spinner.Tick,
 		func() tea.Msg {
-			return projectsLoadedMsg{projects: workmd.Discover(
-				m.cfg.ExpandedScanDirs(),
+			projects := workmd.Discover(
+				m.cfg.ExpandedScanRoots(),
 				m.cfg.FilePatterns,
 				m.cfg.ExpandedIdeaDirs(),
-			)}
+				m.cfg,
+			)
+			// Best-effort: regenerate the routing-context index. Failure here
+			// (e.g. read-only $HOME) shouldn't block startup.
+			var targets []workmd.SpecialTarget
+			if t := m.cfg.CatchallTarget; t != nil {
+				targets = append(targets, workmd.SpecialTarget{
+					Name: t.Name, Path: t.Path, Description: "catch-all for general notes",
+				})
+			}
+			if t := m.cfg.IdeasTarget; t != nil {
+				targets = append(targets, workmd.SpecialTarget{
+					Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
+				})
+			}
+			_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets)
+			return projectsLoadedMsg{projects: projects}
 		},
 	)
 }
@@ -249,4 +263,3 @@ func tickCmd() tea.Cmd {
 		return tickMsg(t)
 	})
 }
-

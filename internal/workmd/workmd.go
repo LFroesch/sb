@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/LFroesch/sb/internal/config"
 )
 
 // fileKey returns a device:inode string that uniquely identifies a file,
@@ -34,8 +36,11 @@ type Task struct {
 
 type Project struct {
 	Name          string
+	Description   string // optional one-line description from "# WORK - name | description" title
 	Path          string // absolute path to WORK.md
 	Dir           string // directory containing WORK.md
+	RootName      string
+	RelativePath  string
 	Content       string
 	Phase         string
 	Tasks         []Task
@@ -48,13 +53,24 @@ type Project struct {
 	ModTime       time.Time
 }
 
+type discoverRoot struct {
+	Name string
+	Path string
+	Flat bool
+}
+
+type nameCandidate struct {
+	base     string
+	explicit bool
+}
+
 // Discover finds markdown files under scanDirs matching filePatterns, plus
 // all .md files in ideaDirs (flat, non-recursive).
 // Pass nil/empty slices to use the legacy defaults.
-func Discover(scanDirs, filePatterns, ideaDirs []string) []Project {
+func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg *config.Config) []Project {
 	home, _ := os.UserHomeDir()
-	if len(scanDirs) == 0 {
-		scanDirs = []string{filepath.Join(home, "projects")}
+	if len(scanRoots) == 0 {
+		scanRoots = []config.ScanRoot{{Name: "projects", Path: filepath.Join(home, "projects")}}
 	}
 	if len(filePatterns) == 0 {
 		filePatterns = []string{"WORK.md"}
@@ -70,28 +86,29 @@ func Discover(scanDirs, filePatterns, ideaDirs []string) []Project {
 	seen := map[string]seenEntry{} // keyed by resolved (symlink-free) path
 	var projects []Project
 
-	addOrReplace := func(path, root string) {
+	addOrReplace := func(path string, root discoverRoot) {
 		resolved := fileKey(path)
 		depth := strings.Count(path, string(filepath.Separator))
 		if entry, exists := seen[resolved]; exists {
 			if depth < entry.depth {
 				// Shallower path wins — replace the existing project in-place
-				if p, ok := loadProject(path, root); ok {
+				if p, ok := loadProject(path, root, cfg); ok {
 					projects[entry.idx] = p
 					seen[resolved] = seenEntry{idx: entry.idx, depth: depth}
 				}
 			}
 			return
 		}
-		if p, ok := loadProject(path, root); ok {
+		if p, ok := loadProject(path, root, cfg); ok {
 			seen[resolved] = seenEntry{idx: len(projects), depth: depth}
 			projects = append(projects, p)
 		}
 	}
 
-	for _, root := range scanDirs {
+	for _, root := range scanRoots {
+		dr := discoverRoot{Name: root.Name, Path: root.Path}
 		for _, pattern := range filePatterns {
-			args := []string{root,
+			args := []string{root.Path,
 				"-name", pattern,
 				"-not", "-path", "*/node_modules/*",
 				"-not", "-path", "*/.git/*",
@@ -104,7 +121,7 @@ func Discover(scanDirs, filePatterns, ideaDirs []string) []Project {
 			}
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 				if line != "" {
-					addOrReplace(line, root)
+					addOrReplace(line, dr)
 				}
 			}
 		}
@@ -112,8 +129,14 @@ func Discover(scanDirs, filePatterns, ideaDirs []string) []Project {
 
 	// Flat idea dirs — load all .md files directly (non-recursive)
 	for _, dir := range ideaDirs {
-		discoverFlatDir(dir, addOrReplace)
+		discoverFlatDir(dir, discoverRoot{
+			Name: filepath.Base(strings.TrimRight(dir, string(filepath.Separator))),
+			Path: dir,
+			Flat: true,
+		}, addOrReplace)
 	}
+
+	resolveProjectNames(projects, cfg)
 
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].ModTime.After(projects[j].ModTime)
@@ -124,13 +147,14 @@ func Discover(scanDirs, filePatterns, ideaDirs []string) []Project {
 
 // loadProject reads a markdown file at path and builds a Project.
 // root is used only for deriving the display name.
-func loadProject(path, root string) (Project, bool) {
+func loadProject(path string, root discoverRoot, cfg *config.Config) (Project, bool) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return Project{}, false
 	}
 	text := string(content)
-	name := deriveName(path, root)
+	meta := extractTitleMetadata(text)
+	rel := relativeProjectPath(path, root)
 	tasks := extractTasks(text)
 
 	var cur, bugs, unsorted, backlog int
@@ -156,9 +180,12 @@ func loadProject(path, root string) (Project, bool) {
 	}
 
 	return Project{
-		Name:          name,
+		Name:          meta.Label,
+		Description:   meta.Description,
 		Path:          path,
 		Dir:           filepath.Dir(path),
+		RootName:      root.Name,
+		RelativePath:  rel,
 		Content:       text,
 		Tasks:         tasks,
 		TaskCount:     cur + bugs + unsorted + backlog,
@@ -171,9 +198,39 @@ func loadProject(path, root string) (Project, bool) {
 	}, true
 }
 
+type titleMetadata struct {
+	Label       string
+	Description string
+}
+
+// extractTitleMetadata parses a title line like:
+// "# WORK - sb | Second Brain TUI"
+// "# ROADMAP - toolkit | v1 polish"
+// "# WORK - sb"
+func extractTitleMetadata(content string) titleMetadata {
+	for _, line := range strings.SplitN(content, "\n", 5) {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "# ") {
+			continue
+		}
+		title := strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		beforePipe, desc, hasDesc := strings.Cut(title, "|")
+		label := ""
+		if _, afterDash, ok := strings.Cut(strings.TrimSpace(beforePipe), " - "); ok {
+			label = strings.TrimSpace(afterDash)
+		}
+		meta := titleMetadata{Label: label}
+		if hasDesc {
+			meta.Description = strings.TrimSpace(desc)
+		}
+		return meta
+	}
+	return titleMetadata{}
+}
+
 // discoverFlatDir loads all .md files from dir (non-recursive), deduplicating
 // against already-found projects via addOrReplace.
-func discoverFlatDir(dir string, addOrReplace func(path, root string)) {
+func discoverFlatDir(dir string, root discoverRoot, addOrReplace func(path string, root discoverRoot)) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -182,7 +239,7 @@ func discoverFlatDir(dir string, addOrReplace func(path, root string)) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
 			continue
 		}
-		addOrReplace(filepath.Join(dir, e.Name()), dir)
+		addOrReplace(filepath.Join(dir, e.Name()), root)
 	}
 }
 
@@ -277,36 +334,183 @@ func SplitDevlog(content string) (string, string) {
 
 // --- helpers ---
 
-func deriveName(path, root string) string {
-	rel, err := filepath.Rel(root, path)
+func relativeProjectPath(path string, root discoverRoot) string {
+	rel, err := filepath.Rel(root.Path, path)
 	if err != nil {
-		return filepath.Base(filepath.Dir(path))
+		return fallbackStem(path)
 	}
-	// For WORK.md: strip filename entirely (project = directory).
-	// For any other file: strip just the extension so e.g. ROADMAP.md → ROADMAP.
+	return relativeStem(rel)
+}
+
+func relativeStem(rel string) string {
+	rel = filepath.ToSlash(rel)
 	if strings.HasSuffix(rel, "/WORK.md") || rel == "WORK.md" {
 		rel = strings.TrimSuffix(rel, "/WORK.md")
 		rel = strings.TrimSuffix(rel, "WORK.md")
 	} else if ext := filepath.Ext(rel); ext != "" {
 		rel = strings.TrimSuffix(rel, ext)
 	}
-
-	// Shorten common prefixes
-	rel = strings.TrimPrefix(rel, "active/tui-suite/")
-	rel = strings.TrimPrefix(rel, "active/")
-
-	// SECOND_BRAIN root → "Main", subprojects → drop prefix
-	if rel == "SECOND_BRAIN" {
-		return "Main"
-	}
-	rel = strings.TrimPrefix(rel, "SECOND_BRAIN/")
-
-	// Use last component if it's still long
-	parts := strings.Split(rel, "/")
-	if len(parts) > 2 {
-		return strings.Join(parts[len(parts)-2:], "/")
+	rel = strings.Trim(rel, "/")
+	if rel == "" {
+		return ""
 	}
 	return rel
+}
+
+func fallbackStem(path string) string {
+	path = filepath.ToSlash(path)
+	if strings.HasSuffix(path, "/WORK.md") || path == "WORK.md" {
+		return filepath.Base(filepath.Dir(path))
+	}
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	return strings.TrimSuffix(base, ext)
+}
+
+func resolveProjectNames(projects []Project, cfg *config.Config) {
+	maxDepth := 2
+	if cfg != nil && cfg.LabelMaxDepth > 0 {
+		maxDepth = cfg.LabelMaxDepth
+	}
+
+	candidates := make([]nameCandidate, len(projects))
+	groups := make(map[string][]int)
+	for i := range projects {
+		if projects[i].Name != "" {
+			candidates[i] = nameCandidate{
+				base:     projects[i].Name,
+				explicit: true,
+			}
+		} else {
+			fallback := fixedSuffix(relativeParts(projects[i].RelativePath), maxDepth)
+			if fallback == "" {
+				fallback = projects[i].RootName
+			}
+			candidates[i] = nameCandidate{
+				base: fallback,
+			}
+			projects[i].Name = fallback
+		}
+		groups[candidates[i].base] = append(groups[candidates[i].base], i)
+	}
+
+	for _, idxs := range groups {
+		if len(idxs) == 1 {
+			if candidates[idxs[0]].explicit {
+				projects[idxs[0]].Name = candidates[idxs[0]].base
+			}
+			continue
+		}
+		resolveCollisionGroup(projects, candidates, idxs, maxDepth)
+	}
+}
+
+func resolveCollisionGroup(projects []Project, candidates []nameCandidate, idxs []int, maxDepth int) {
+	suffixes := make(map[int]string, len(idxs))
+	for _, idx := range idxs {
+		minDepth := 1
+		if !candidates[idx].explicit {
+			minDepth = maxDepth
+		}
+		suffixes[idx] = shortestUniqueSuffix(projects, idxs, idx, minDepth)
+		if suffixes[idx] == "" {
+			suffixes[idx] = projects[idx].RootName
+		}
+	}
+
+	nameCounts := make(map[string]int)
+	for _, idx := range idxs {
+		name := candidates[idx].base
+		if candidates[idx].explicit {
+			name = decorateExplicitName(candidates[idx].base, suffixes[idx])
+		} else {
+			name = suffixes[idx]
+		}
+		projects[idx].Name = name
+		nameCounts[name]++
+	}
+
+	for _, idx := range idxs {
+		if nameCounts[projects[idx].Name] == 1 {
+			continue
+		}
+		rootPrefix := projects[idx].RootName
+		if rootPrefix == "" {
+			rootPrefix = "root"
+		}
+		if candidates[idx].explicit {
+			extra := rootPrefix
+			if suffixes[idx] != "" {
+				extra = rootPrefix + "/" + suffixes[idx]
+			}
+			projects[idx].Name = decorateExplicitName(candidates[idx].base, extra)
+			continue
+		}
+		if suffixes[idx] == "" {
+			projects[idx].Name = rootPrefix
+			continue
+		}
+		projects[idx].Name = rootPrefix + "/" + suffixes[idx]
+	}
+}
+
+func decorateExplicitName(base, suffix string) string {
+	if suffix == "" {
+		return base
+	}
+	return fmt.Sprintf("%s (%s)", base, suffix)
+}
+
+func relativeParts(rel string) []string {
+	rel = strings.Trim(rel, "/")
+	if rel == "" {
+		return nil
+	}
+	return strings.Split(rel, "/")
+}
+
+func fixedSuffix(parts []string, minDepth int) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	if minDepth < 1 {
+		minDepth = 1
+	}
+	if minDepth > len(parts) {
+		minDepth = len(parts)
+	}
+	return strings.Join(parts[len(parts)-minDepth:], "/")
+}
+
+func shortestUniqueSuffix(projects []Project, idxs []int, targetIdx int, minDepth int) string {
+	parts := relativeParts(projects[targetIdx].RelativePath)
+	if len(parts) == 0 {
+		return ""
+	}
+	if minDepth < 1 {
+		minDepth = 1
+	}
+	if minDepth > len(parts) {
+		minDepth = len(parts)
+	}
+	for depth := minDepth; depth <= len(parts); depth++ {
+		candidate := fixedSuffix(parts, depth)
+		unique := true
+		for _, otherIdx := range idxs {
+			if otherIdx == targetIdx {
+				continue
+			}
+			otherParts := relativeParts(projects[otherIdx].RelativePath)
+			if fixedSuffix(otherParts, depth) == candidate {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return candidate
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // sectionType maps a heading string to a canonical section name.
