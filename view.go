@@ -8,7 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/LFroesch/sb/internal/ollama"
+	"github.com/LFroesch/sb/internal/config"
+	"github.com/LFroesch/sb/internal/llm"
 )
 
 func truncate(s string, max int) string {
@@ -86,11 +87,15 @@ func (m model) renderHeader() string {
 
 	left := title + "  " + strings.Join(tabs, "")
 
+	providerStatus := m.cfg.ActiveProviderStatus()
+	providerBadge := m.renderProviderBadge(providerStatus)
+
 	// Right side: project-specific info on project page, global stats otherwise
 	var right string
 	if m.page == pageProject && m.selected < len(m.projects) {
 		p := m.projects[m.selected]
 		var parts []string
+		parts = append(parts, providerBadge)
 		parts = append(parts, panelHeaderStyle.Render(p.Name))
 		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", p.CurrentCount)))
 		if p.BugsCount > 0 {
@@ -111,6 +116,7 @@ func (m model) renderHeader() string {
 			totalBacklog += p.BacklogCount
 		}
 		var parts []string
+		parts = append(parts, providerBadge)
 		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d files", len(m.projects))))
 		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", totalCur)))
 		if totalBugs > 0 {
@@ -129,6 +135,24 @@ func (m model) renderHeader() string {
 	}
 
 	return left + strings.Repeat(" ", gap) + right
+}
+
+func (m model) renderProviderBadge(status config.ProviderStatus) string {
+	if !status.Enabled {
+		if status.Problem == "" {
+			return warnStyle.Render("no llm provider enabled")
+		}
+		return warnStyle.Render("llm disabled") + dimStyle.Render(" ("+status.Problem+")")
+	}
+
+	label := status.Name
+	if label == "" {
+		label = status.Type
+	}
+	if status.Model != "" {
+		label += ":" + status.Model
+	}
+	return accentStyle.Render("llm") + dimStyle.Render("=") + dimStyle.Render(label)
 }
 
 // --- Dashboard ---
@@ -336,9 +360,9 @@ func (m model) renderDashboard() string {
 	if m.mode == modeEdit && m.selected == m.cursor {
 		rightContent = m.renderEditMode()
 	} else if (m.mode == modeCleanupWait || m.mode == modeTodoWait) && m.selected == m.cursor {
-		label := "ollama cleaning up..."
+		label := "model cleaning up..."
 		if m.mode == modeTodoWait {
-			label = "asking ollama what to work on..."
+			label = "asking model what to work on..."
 		}
 		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
 			m.spinner.View()+" "+dimStyle.Render(label),
@@ -402,7 +426,7 @@ func (m model) renderProject() string {
 			h = 5
 		}
 		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
-			m.spinner.View()+" "+dimStyle.Render("ollama cleaning up..."),
+			m.spinner.View()+" "+dimStyle.Render("model cleaning up..."),
 			"",
 			dimStyle.Render("please wait, this may take a minute."),
 		)
@@ -585,7 +609,7 @@ func (m model) renderDump() string {
 	case modeDumpSummary:
 		return m.renderDumpSummary()
 	case modeDumpRouting:
-		lines = append(lines, "  "+m.spinner.View()+" "+dimStyle.Render("routing via ollama..."))
+		lines = append(lines, "  "+m.spinner.View()+" "+dimStyle.Render("routing via model..."))
 		preview := m.dumpText
 		if len(preview) > 120 {
 			preview = preview[:117] + "..."
@@ -681,7 +705,7 @@ func (m model) renderDumpSummary() string {
 	return strings.Join(lines[scroll:end], "\n")
 }
 
-func isDumpSkipped(item ollama.RouteItem, skipped []ollama.RouteItem) bool {
+func isDumpSkipped(item llm.RouteItem, skipped []llm.RouteItem) bool {
 	for _, s := range skipped {
 		if s.Text == item.Text {
 			return true
@@ -778,10 +802,10 @@ func (m model) renderHelp() string {
 			{"space", "Toggle project selection (for C/P)"},
 			{"e", "Edit WORK.md inline"},
 			{"-", "Fix non-list lines (save in-place)"},
-			{"c", "Cleanup via ollama (single)"},
+			{"c", "Cleanup via model (single)"},
 			{"C", "Chain cleanup selected (or all)"},
-			{"P", "Daily plan via ollama (grouped tasks)"},
-			{"t", "Ask ollama what to work on"},
+			{"P", "Daily plan via model (grouped tasks)"},
+			{"t", "Ask model what to work on"},
 			{"o", "Open project directory in editor"},
 			{"y", "Copy project dir path to clipboard"},
 			{"d", "Brain dump"},
@@ -797,7 +821,7 @@ func (m model) renderHelp() string {
 			{"ctrl+home/end", "Top / bottom"},
 			{"e", "Edit inline"},
 			{"ctrl+s", "Save edits"},
-			{"c", "Cleanup via ollama (normalizes format)"},
+			{"c", "Cleanup via model (normalizes format)"},
 			{"esc", "Back / cancel edit"},
 		}},
 		{"Edit Mode", []struct{ key, desc string }{
@@ -809,7 +833,7 @@ func (m model) renderHelp() string {
 			{"ctrl+k", "Delete to end of line"},
 		}},
 		{"Brain Dump", []struct{ key, desc string }{
-			{"ctrl+d", "Route dump via ollama (splits into items)"},
+			{"ctrl+d", "Route dump via model (splits into items)"},
 			{"y/enter", "Accept routed item"},
 			{"n", "Skip item"},
 			{"esc", "Cancel / abort remaining"},

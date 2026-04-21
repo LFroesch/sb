@@ -1,10 +1,11 @@
-package ollama
+package llm
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -14,54 +15,179 @@ import (
 )
 
 type Client struct {
-	host  string
-	model string
+	provider config.ProviderConfig
 }
 
-func New() *Client {
-	cfg := config.Load()
-	return &Client{host: cfg.OllamaHost, model: cfg.Model}
+func New(cfg *config.Config) *Client {
+	if cfg == nil {
+		cfg = config.Load()
+	}
+	return &Client{provider: cfg.ActiveProvider()}
 }
 
-// chat sends a single-message chat request to ollama and returns the raw
+func (c *Client) providerLabel() string {
+	if c.provider.Type == "" {
+		return "llm"
+	}
+	return c.provider.Type
+}
+
+// chat sends a single-message request to the active provider and returns the raw
 // response content. Shared plumbing for every prompt function in this package.
 func (c *Client) chat(ctx context.Context, prompt string, timeout time.Duration, opts map[string]any) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	switch c.provider.Type {
+	case "openai":
+		return c.chatOpenAI(ctx, prompt, opts)
+	case "anthropic":
+		return c.chatAnthropic(ctx, prompt, opts)
+	default:
+		return c.chatOllama(ctx, prompt, opts)
+	}
+}
+
+func (c *Client) chatOllama(ctx context.Context, prompt string, opts map[string]any) (string, error) {
 	body := map[string]any{
-		"model":  c.model,
+		"model":  c.provider.Model,
 		"stream": false,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
 	}
-	if opts != nil {
+	if len(opts) > 0 {
 		body["options"] = opts
 	}
-	data, _ := json.Marshal(body)
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.host+"/api/chat", bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("ollama: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var chatResp struct {
+	var resp struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", fmt.Errorf("ollama decode: %w", err)
+	if err := c.doJSON(ctx, http.MethodPost, c.provider.BaseURL+"/api/chat", nil, body, &resp); err != nil {
+		return "", fmt.Errorf("ollama: %w", err)
 	}
-	return chatResp.Message.Content, nil
+	return resp.Message.Content, nil
+}
+
+func (c *Client) chatOpenAI(ctx context.Context, prompt string, opts map[string]any) (string, error) {
+	apiKey := c.provider.ResolvedAPIKey()
+	if apiKey == "" {
+		return "", fmt.Errorf("openai: missing api key")
+	}
+
+	body := map[string]any{
+		"model": c.provider.Model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+	for k, v := range opts {
+		body[k] = v
+	}
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	headers := map[string]string{
+		"Authorization": "Bearer " + apiKey,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, strings.TrimRight(c.provider.BaseURL, "/")+"/chat/completions", headers, body, &resp); err != nil {
+		return "", fmt.Errorf("openai: %w", err)
+	}
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("openai: empty response")
+	}
+	return resp.Choices[0].Message.Content, nil
+}
+
+func (c *Client) chatAnthropic(ctx context.Context, prompt string, opts map[string]any) (string, error) {
+	apiKey := c.provider.ResolvedAPIKey()
+	if apiKey == "" {
+		return "", fmt.Errorf("anthropic: missing api key")
+	}
+
+	body := map[string]any{
+		"model":      c.provider.Model,
+		"max_tokens": 2048,
+		"messages": []map[string]any{
+			{"role": "user", "content": prompt},
+		},
+	}
+	if v, ok := opts["temperature"]; ok {
+		body["temperature"] = v
+	}
+	if v, ok := opts["top_p"]; ok {
+		body["top_p"] = v
+	}
+
+	var resp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	headers := map[string]string{
+		"x-api-key":         apiKey,
+		"anthropic-version": "2023-06-01",
+	}
+	if err := c.doJSON(ctx, http.MethodPost, strings.TrimRight(c.provider.BaseURL, "/")+"/v1/messages", headers, body, &resp); err != nil {
+		return "", fmt.Errorf("anthropic: %w", err)
+	}
+	var parts []string
+	for _, block := range resp.Content {
+		if block.Type == "text" && block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("anthropic: empty response")
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
+func (c *Client) doJSON(ctx context.Context, method, url string, headers map[string]string, body any, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range c.provider.Headers {
+		req.Header.Set(k, v)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("http %d: %s", resp.StatusCode, msg)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RouteItem represents a single routed item from a multi-item brain dump.
@@ -154,8 +280,9 @@ Structure rules:
 5. Convert table rows to plain bullets: "- task text" (drop priority/status columns, keep the task description verbatim).
 6. Output ONLY the cleaned markdown. No commentary, no code fences.`
 
-// Cleanup sends a WORK.md file to ollama for normalization and returns the cleaned content.
-// If feedback is non-empty it's appended so the model can course-correct a prior attempt.
+// Cleanup sends a WORK.md file to the active provider for normalization and
+// returns the cleaned content. If feedback is non-empty it's appended so the
+// model can course-correct a prior attempt.
 func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string, error) {
 	prompt := CleanupPrompt + "\n\nHere is the WORK.md to clean up:\n\n" + content
 	if feedback != "" {
@@ -163,8 +290,6 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 			"\nPlease address this feedback in your cleanup."
 	}
 
-	// Deterministic sampling — cleanup is a structural normalize, not creative.
-	// Same input should give the same output.
 	raw, err := c.chat(ctx, prompt, 120*time.Second, map[string]any{
 		"temperature": 0,
 		"top_p":       1,
@@ -173,11 +298,10 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 	if err != nil {
 		return "", err
 	}
-	slog.Info("ollama cleanup", "prompt", prompt, "response", raw)
+	slog.Info("llm cleanup", "provider", c.providerLabel(), "prompt", prompt, "response", raw)
 
 	project := projectNameFromContent(content)
 	cleaned := strings.TrimSpace(raw)
-	// Strip accidental code fences
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
 	cleaned = strings.TrimSuffix(cleaned, "```")
@@ -214,8 +338,6 @@ Respond with ONLY a valid JSON array. Each element: {"text": "the extracted item
 Brain dump:
 %s`, renderProjectList(projects), renderSpecialTargets(catchall, ideas), defaultUnsureLine(catchall), text)
 
-	// Deterministic sampling — routing is a classification task, same dump should
-	// route the same way every time.
 	raw, err := c.chat(ctx, prompt, 3*time.Minute, map[string]any{
 		"temperature": 0,
 		"top_p":       1,
@@ -225,7 +347,6 @@ Brain dump:
 		return nil, err
 	}
 
-	// Extract JSON array from response
 	content := strings.TrimSpace(raw)
 	start := strings.Index(content, "[")
 	end := strings.LastIndex(content, "]")
@@ -244,11 +365,11 @@ Brain dump:
 		items[i].Text = stripProjectTag(items[i].Text, items[i].Project)
 	}
 
-	routeLog(text, raw, items)
+	routeLog(c.providerLabel(), text, raw, items)
 	return items, nil
 }
 
-// NextTodo asks ollama to suggest what to work on next given a WORK.md.
+// NextTodo asks the active provider to suggest what to work on next given a WORK.md.
 func (c *Client) NextTodo(ctx context.Context, content string) (string, error) {
 	prompt := `You are a helpful assistant reviewing a WORK.md task file. Give a short, direct answer: what are the 2-3 most important things to work on right now? Be specific and actionable. No fluff.
 
@@ -264,7 +385,8 @@ WORK.md:
 	return strings.TrimSpace(raw), nil
 }
 
-// DailyPlan asks ollama to group tasks from multiple projects by theme and suggest a day plan.
+// DailyPlan asks the active provider to group tasks from multiple projects by
+// theme and suggest a day plan.
 func (c *Client) DailyPlan(ctx context.Context, taskSummary string) (string, error) {
 	prompt := `You are a daily planning assistant. Given current tasks from multiple projects, group similar tasks by context/theme and produce a focused plan for today as clean markdown.
 
@@ -299,7 +421,7 @@ Current tasks:
 	if err != nil {
 		return "", err
 	}
-	slog.Info("ollama daily plan", "prompt", prompt, "response", raw)
+	slog.Info("llm daily plan", "provider", c.providerLabel(), "prompt", prompt, "response", raw)
 	cleaned := strings.TrimSpace(raw)
 	cleaned = strings.TrimPrefix(cleaned, "```markdown")
 	cleaned = strings.TrimPrefix(cleaned, "```")
@@ -328,7 +450,6 @@ func reconcileMissingBullets(original, cleaned string) string {
 		outSet[b] = true
 	}
 
-	// Collect original lines for missing bullets (preserve exact text)
 	var missing []string
 	for _, line := range strings.Split(original, "\n") {
 		t := strings.TrimSpace(line)
@@ -336,7 +457,7 @@ func reconcileMissingBullets(original, cleaned string) string {
 			key := strings.ToLower(strings.TrimSpace(t[2:]))
 			if !outSet[key] {
 				missing = append(missing, t)
-				outSet[key] = true // don't add twice
+				outSet[key] = true
 			}
 		}
 	}
@@ -345,20 +466,17 @@ func reconcileMissingBullets(original, cleaned string) string {
 		return cleaned
 	}
 
-	// Append to existing ## Unsorted or add the section
 	unsortedHeader := "## Unsorted"
 	if strings.Contains(cleaned, unsortedHeader) {
-		// Insert after the ## Unsorted header line
 		lines := strings.Split(cleaned, "\n")
 		out := make([]string, 0, len(lines)+len(missing)+1)
 		inserted := false
 		for i, line := range lines {
 			out = append(out, line)
 			if !inserted && strings.TrimSpace(line) == unsortedHeader {
-				// skip blank line after header if present, then insert
 				if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
 					out = append(out, lines[i+1])
-					i++ // will be incremented by loop but we already appended
+					i++
 					_ = i
 				}
 				for _, m := range missing {
@@ -370,7 +488,6 @@ func reconcileMissingBullets(original, cleaned string) string {
 		return strings.Join(out, "\n")
 	}
 
-	// No ## Unsorted section — append it
 	result := strings.TrimRight(cleaned, "\n") + "\n\n## Unsorted\n\n"
 	for _, m := range missing {
 		result += m + "\n"
@@ -407,7 +524,6 @@ func normalizeContent(content string) string {
 			s = strings.TrimPrefix(s, e)
 			s = strings.TrimSpace(s)
 		}
-		// Strip trailing priority word that got left (e.g. "High" after emoji)
 		lower := strings.ToLower(s)
 		for _, w := range priorityWords {
 			if lower == w || strings.HasPrefix(lower, w+" ") {
@@ -447,9 +563,8 @@ func normalizeContent(content string) string {
 			}
 		}
 		if len(parts) == 0 {
-			return "", true // skip
+			return "", true
 		}
-		// Skip header rows
 		for _, p := range parts {
 			lower := strings.ToLower(p)
 			if lower == "task" || lower == "status" || lower == "priority" ||
@@ -457,7 +572,6 @@ func normalizeContent(content string) string {
 				return "", true
 			}
 		}
-		// Collect meaningful columns: skip priority/status cols
 		var meaningful []string
 		for _, p := range parts {
 			p = stripPriority(p)
@@ -472,20 +586,17 @@ func normalizeContent(content string) string {
 		if len(meaningful) == 1 {
 			return "- " + meaningful[0], true
 		}
-		// task — note
 		return "- " + meaningful[0] + " — " + strings.Join(meaningful[1:], ", "), true
 	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Skip table separator rows
 		if strings.HasPrefix(trimmed, "|--") || strings.HasPrefix(trimmed, "| --") ||
 			strings.HasPrefix(trimmed, "|:-") || strings.HasPrefix(trimmed, "| :-") {
 			continue
 		}
 
-		// Convert table rows to plain bullets
 		if strings.HasPrefix(trimmed, "|") {
 			if result, ok := tableColToPlain(trimmed); ok {
 				if result != "" {
@@ -497,13 +608,10 @@ func normalizeContent(content string) string {
 			continue
 		}
 
-		// Handle bullet items (including indented): strip emoji priority and pipe residue
 		isBullet := strings.HasPrefix(trimmed, "- ")
 		if isBullet {
 			item := trimmed[2:]
-			// Strip priority emoji + word prefix
 			item = stripPriority(item)
-			// If item still contains pipes (model converted table row to bullet but kept pipes)
 			if strings.Contains(item, "|") {
 				cols := strings.Split(item, "|")
 				var parts []string
@@ -585,8 +693,8 @@ func stripProjectTagsFromBullets(content, project string) string {
 }
 
 // routeLog records the raw routing response plus parsed items for debugging.
-func routeLog(input, raw string, items []RouteItem) {
-	slog.Info("ollama route", "input", input, "raw", raw, "items", items)
+func routeLog(provider, input, raw string, items []RouteItem) {
+	slog.Info("llm route", "provider", provider, "input", input, "raw", raw, "items", items)
 }
 
 // RerouteSingle re-routes a single item with user-provided clarification context.

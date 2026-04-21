@@ -17,8 +17,8 @@ import (
 
 	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/diff"
+	"github.com/LFroesch/sb/internal/llm"
 	"github.com/LFroesch/sb/internal/markdown"
-	"github.com/LFroesch/sb/internal/ollama"
 	"github.com/LFroesch/sb/internal/workmd"
 )
 
@@ -523,9 +523,9 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected = m.cursor
 			m.cleanupOriginal = m.projects[m.selected].Content
 			m.mode = modeCleanupWait
-			m.statusMsg = "asking ollama to clean up..."
+			m.statusMsg = "asking model to clean up..."
 			m.statusExpiry = time.Now().Add(10 * time.Second)
-			return m, tea.Batch(cleanupCmd(m.projects[m.selected].Content), m.spinner.Tick)
+			return m, tea.Batch(cleanupCmd(m.cfg, m.projects[m.selected].Content), m.spinner.Tick)
 		}
 	case "C":
 		var queue []int
@@ -553,7 +553,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cleanupOriginal = m.projects[m.selected].Content
 			m.page = pageCleanup
 			m.mode = modeChainCleanupWait
-			return m, tea.Batch(cleanupCmd(m.cleanupOriginal), m.spinner.Tick)
+			return m, tea.Batch(cleanupCmd(m.cfg, m.cleanupOriginal), m.spinner.Tick)
 		}
 	case "P":
 		var sources []workmd.Project
@@ -570,7 +570,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.planScroll = 0
 		m.statusMsg = "generating daily plan..."
 		m.statusExpiry = time.Now().Add(10 * time.Second)
-		return m, tea.Batch(planCmd(sources), m.spinner.Tick)
+		return m, tea.Batch(planCmd(m.cfg, sources), m.spinner.Tick)
 	case "o":
 		if m.cursor < len(m.projects) {
 			return m, openInEditor(m.projects[m.cursor].Dir)
@@ -591,9 +591,9 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected = m.cursor
 			m.mode = modeTodoWait
 			m.todoResult = ""
-			m.statusMsg = "asking ollama..."
+			m.statusMsg = "asking model..."
 			m.statusExpiry = time.Now().Add(10 * time.Second)
-			return m, tea.Batch(todoCmd(m.projects[m.cursor].Content), m.spinner.Tick)
+			return m, tea.Batch(todoCmd(m.cfg, m.projects[m.cursor].Content), m.spinner.Tick)
 		}
 	case "f":
 		if m.cursor < len(m.projects) {
@@ -657,9 +657,9 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selected < len(m.projects) {
 			m.cleanupOriginal = m.projects[m.selected].Content
 			m.mode = modeCleanupWait
-			m.statusMsg = "asking ollama to clean up..."
+			m.statusMsg = "asking model to clean up..."
 			m.statusExpiry = time.Now().Add(10 * time.Second)
-			return m, tea.Batch(cleanupCmd(m.projects[m.selected].Content), m.spinner.Tick)
+			return m, tea.Batch(cleanupCmd(m.cfg, m.projects[m.selected].Content), m.spinner.Tick)
 		}
 	case "j", "down":
 		m.viewport.LineDown(1)
@@ -682,9 +682,9 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func todoCmd(content string) tea.Cmd {
+func todoCmd(cfg *config.Config, content string) tea.Cmd {
 	return func() tea.Msg {
-		client := ollama.New()
+		client := llm.New(cfg)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		result, err := client.NextTodo(ctx, content)
@@ -692,9 +692,9 @@ func todoCmd(content string) tea.Cmd {
 	}
 }
 
-func cleanupCmd(content string) tea.Cmd {
+func cleanupCmd(cfg *config.Config, content string) tea.Cmd {
 	return func() tea.Msg {
-		client := ollama.New()
+		client := llm.New(cfg)
 		result, err := client.Cleanup(context.Background(), content, "")
 		return cleanupDoneMsg{result: result, err: err}
 	}
@@ -779,7 +779,7 @@ func (m model) updateSingleCleanupFeedback(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			return m, nil
 		}
 		m.mode = modeCleanupWait
-		return m, tea.Batch(cleanupWithFeedbackCmd(m.cleanupOriginal, feedback), m.spinner.Tick)
+		return m, tea.Batch(cleanupWithFeedbackCmd(m.cfg, m.cleanupOriginal, feedback), m.spinner.Tick)
 	case "esc":
 		m.mode = modeNormal
 		return m, nil
@@ -856,7 +856,7 @@ func (m model) updateChainCleanupFeedback(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.mode = modeChainCleanupWait
-		return m, tea.Batch(cleanupWithFeedbackCmd(m.cleanupOriginal, feedback), m.spinner.Tick)
+		return m, tea.Batch(cleanupWithFeedbackCmd(m.cfg, m.cleanupOriginal, feedback), m.spinner.Tick)
 	}
 	var cmd tea.Cmd
 	m.chainFeedback, cmd = m.chainFeedback.Update(msg)
@@ -876,7 +876,7 @@ func (m model) advanceChainCursor() (tea.Model, tea.Cmd) {
 	m.selected = idx
 	m.cleanupOriginal = m.projects[idx].Content
 	m.mode = modeChainCleanupWait
-	return m, tea.Batch(cleanupCmd(m.cleanupOriginal), m.spinner.Tick)
+	return m, tea.Batch(cleanupCmd(m.cfg, m.cleanupOriginal), m.spinner.Tick)
 }
 
 func (m model) dismissChainCleanupSummary() (tea.Model, tea.Cmd) {
@@ -896,7 +896,7 @@ func (m model) dismissChainCleanupSummary() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func planCmd(projects []workmd.Project) tea.Cmd {
+func planCmd(cfg *config.Config, projects []workmd.Project) tea.Cmd {
 	return func() tea.Msg {
 		var sb strings.Builder
 		for _, p := range projects {
@@ -928,7 +928,7 @@ func planCmd(projects []workmd.Project) tea.Cmd {
 		if summary == "" {
 			return planResultMsg{result: "No current tasks found across projects.", err: nil}
 		}
-		client := ollama.New()
+		client := llm.New(cfg)
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		result, err := client.DailyPlan(ctx, summary)
@@ -936,9 +936,9 @@ func planCmd(projects []workmd.Project) tea.Cmd {
 	}
 }
 
-func cleanupWithFeedbackCmd(content, feedback string) tea.Cmd {
+func cleanupWithFeedbackCmd(cfg *config.Config, content, feedback string) tea.Cmd {
 	return func() tea.Msg {
-		client := ollama.New()
+		client := llm.New(cfg)
 		result, err := client.Cleanup(context.Background(), content, feedback)
 		return cleanupDoneMsg{result: result, err: err}
 	}
@@ -1108,18 +1108,18 @@ func (m model) updateDumpClarify(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // writeDumpItem appends an item to the correct file.
-func (m model) writeDumpItem(item ollama.RouteItem) error {
+func (m model) writeDumpItem(item llm.RouteItem) error {
 	// Normalize: strip leading #, trim spaces
 	proj := strings.TrimSpace(strings.TrimPrefix(item.Project, "#"))
 	projLower := strings.ToLower(proj)
 
 	// Configured ideas bucket — section default is "inbox" so items land in the
-	// well-known unsorted spot regardless of what ollama guessed.
+	// well-known unsorted spot regardless of what the model guessed.
 	if t := m.cfg.IdeasTarget; t != nil && t.Name != "" && projLower == strings.ToLower(t.Name) {
 		return workmd.AppendToSection(config.ExpandHome(t.Path), "inbox", item.Text)
 	}
 
-	// Configured catch-all bucket — preserves the section ollama chose.
+	// Configured catch-all bucket — preserves the section the model chose.
 	if t := m.cfg.CatchallTarget; t != nil && t.Name != "" && projLower == strings.ToLower(t.Name) {
 		return workmd.AppendToSection(config.ExpandHome(t.Path), item.Section, item.Text)
 	}
@@ -1253,26 +1253,26 @@ func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // projectDescs converts the model's discovered projects into the name+description
 // shape RouteMulti/RerouteSingle expect.
-func projectDescs(projects []workmd.Project) []ollama.ProjectDesc {
-	out := make([]ollama.ProjectDesc, len(projects))
+func projectDescs(projects []workmd.Project) []llm.ProjectDesc {
+	out := make([]llm.ProjectDesc, len(projects))
 	for i, p := range projects {
-		out[i] = ollama.ProjectDesc{Name: p.Name, Description: p.Description}
+		out[i] = llm.ProjectDesc{Name: p.Name, Description: p.Description}
 	}
 	return out
 }
 
 // targetFromConfig maps a *config.Target into the prompt-time SpecialTarget
 // (with a fixed description string for the prompt body), or nil if unset.
-func targetFromConfig(t *config.Target, desc string) *ollama.SpecialTarget {
+func targetFromConfig(t *config.Target, desc string) *llm.SpecialTarget {
 	if t == nil || t.Name == "" {
 		return nil
 	}
-	return &ollama.SpecialTarget{Name: t.Name, Description: desc}
+	return &llm.SpecialTarget{Name: t.Name, Description: desc}
 }
 
 func routeDumpCmd(text string, projects []workmd.Project, cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
-		client := ollama.New()
+		client := llm.New(cfg)
 		catchall := targetFromConfig(cfg.CatchallTarget, "catch-all for general notes that don't belong to any project above")
 		ideas := targetFromConfig(cfg.IdeasTarget, "ideas not tied to a specific project")
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -1284,7 +1284,7 @@ func routeDumpCmd(text string, projects []workmd.Project, cfg *config.Config) te
 
 func rerouteDumpCmd(text, clarification string, projects []workmd.Project, cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
-		client := ollama.New()
+		client := llm.New(cfg)
 		catchall := targetFromConfig(cfg.CatchallTarget, "catch-all for general notes")
 		ideas := targetFromConfig(cfg.IdeasTarget, "ideas not tied to a specific project")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

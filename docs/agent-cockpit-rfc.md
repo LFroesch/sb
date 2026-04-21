@@ -1,260 +1,431 @@
-# RFC: sb as the First Cockpit for Agent Orchestration
+# RFC: Agent Dashboard and Foreman Mode in `sb`
+
+## Before Implementation
+
+We need to get into the nitty gritty before implementation.
+
+This concept is strong, but it will get sloppy fast if the hard edges stay vague. Before building, lock the authority model, state boundaries, job lifecycle, safety model, and defaulting behavior.
 
 ## Summary
 
-`sb` should grow into the first operator cockpit for coding-agent orchestration, not just a task launcher. It already owns cross-project markdown context, which makes it the natural place to choose work, inspect state, and review outcomes. The orchestration runtime itself should remain separable from the Bubble Tea app so unattended execution, policies, and notifications are not trapped inside the TUI process.
+`sb` should evolve from a markdown work dashboard into a dispatch + supervision layer for agent work across many projects.
 
-Recommended boundary:
+This is not a launcher-only feature. The point is to turn `sb` context into well-configured agent jobs quickly, keep those jobs visible, preserve history, and let the same system grow into unattended queue running later.
 
-- `sb` is the first human-facing cockpit
-- a separate orchestration core owns runtime state, policies, and events
-- Codex CLI and Claude CLI and Ollama (Dwight?) are initial executors
-- agent / hook / context/ prompt management / currently running dashboard etc / task starter / queueing / ralph wiggum iteration etc
-- mobile updates and remote approvals are first-class design goals
-- a separate TUI is deferred unless orchestration workflows outgrow `sb`
+The first release should be a small horizontal slice:
 
-## Problem
+- real enough to use daily
+- narrow enough to ship without every advanced feature
+- built so day mode and night/foreman mode share the same core model
 
-Current agent workflows break down at the control layer:
+## Product Stance
 
-- tasks exist across many markdown files and projects
-- launching a coding assistant from a task is decently easy, but supervising many runs is not
-- unattended work needs policy, stopping conditions, and review gates
-- results need to flow back into markdown so the task system stays current
-- when the user is away, updates and simple decisions should still be possible
+`sb` is already the second-brain layer:
 
-A simple launcher inside `sb` would only solve the first 10 percent of the problem. The real opportunity is a foreman layer that can route work, supervise iteration, summarize progress, and stop when human judgment is required.
+- project discovery
+- markdown task context
+- routing context
+- prioritization surface
 
-## Product Thesis
+The new agent dashboard becomes the third-hand layer:
 
-`sb` already acts as a second-brain control plane over `WORK.md` files. That makes it the right place to become a cockpit for coding assistants.
+- dispatch tasks into jobs fast
+- apply reusable roles, workflows, policies, and executor presets
+- supervise queued/running/paused work
+- preserve logs, summaries, and resume state
+- surface approvals and review gates
+- sync meaningful outcomes back into markdown
 
-This is not just "open Codex or Claude from a task." The product direction is:
+Core ideas:
 
-- choose work from existing markdown context
-- launch and supervise multiple agent runs
-- sequence related runs toward a larger outcome
-- keep markdown plans and statuses up to date
-- notify the user when progress or judgment matters
-- allow simple remote responses while away
+- `task -> launch preset -> job`
+- modular underneath, frictionless on top
 
-The missing product in most agent setups is not another model wrapper. It is durable operator control over many evolving runs.
+## Hidden Requirements
 
-## Recommended Product Boundary
+These are the easy-to-miss requirements that need concrete decisions before implementation.
 
-Start `sb`-first, but do not make the orchestration model an implementation detail of the TUI.
+### Authority model
 
-### `sb` responsibilities
+- user vs master session vs foreman vs worker authority
+- who can launch, amend, approve, stop, apply, queue, or auto-continue work
+- which actions always require explicit human approval
 
-- discover projects and markdown task files
-- let the user select tasks, projects, or groups of work
-- show live run/campaign state in a cockpit view
-- present review gates, summaries, and diffs
-- write meaningful outcomes back into markdown
+### State model
 
-### orchestration core responsibilities
+- what lives in markdown
+- what lives in runtime state
+- what lives in PTY transcripts
+- what gets summarized and persisted
+- what is disposable
 
-- own runs, campaigns, policies, and event history
-- launch executors and track their lifecycle
-- handle unattended iteration rules
-- detect blocking, looping, risky, or review-worthy states
-- emit notification events for local and remote surfaces
+### Job lifecycle
 
-### executor responsibilities
+- exact meaning of launch, queue, run, pause, resume, retry, fork, handoff, complete, fail
+- what makes a job `needs_review` vs `completed`
+- when a result is only a proposal vs safe to apply/sync back
 
-- run Codex CLI, Claude CLI, and future backends behind a stable executor interface
-- expose normalized output, exit state, and checkpoints to the orchestration core
+### Safety model
 
-### notification responsibilities
+- permission presets
+- approval gates
+- repo isolation and dirty-worktree rules
+- multi-job conflicts in the same repo
+- unattended/night-mode limits
 
-- consume structured events
-- deliver desktop alerts, mobile updates, and simple remote action links or reply commands
+### Defaulting model
 
-This separation keeps the first UI inside `sb` while preserving a clean escape hatch if orchestration later deserves a dedicated interface.
+- how tasks map to default launch presets
+- how projects/work item types influence role/workflow/policy/executor
+- when the app should auto-suggest vs auto-run
 
-## Why Not a New TUI First
+### Artifact model
 
-Starting with a second TUI would duplicate the one thing `sb` already does well: organize work across markdown-backed projects.
+- patches, diffs, plans, notes, logs, summaries, generated files
+- where artifacts live
+- how they attach to jobs and reviews
 
-Reasons to stay `sb`-first:
+### Context packaging
 
-- `sb` already has project discovery and the operator mindset
-- `WORK.md` context is already the user's planning system
-- the hard unsolved problem is orchestration state and policy, not terminal navigation
-- a second TUI now would mostly fork UX before the domain model is stable
+- how `sb` context becomes a launch brief
+- what task/project/history context gets passed to workers
+- what the master session knows vs what worker sessions inherit
 
-When a new UI would be justified later:
+### Failure detection
 
-- orchestration workflows dominate usage more than task management
-- campaigns and approvals no longer map cleanly onto `sb`'s dashboard model
-- remote/web/mobile surfaces become more important than the local markdown cockpit
+- loop detection
+- low-value progress detection
+- blocked vs risky vs idle vs waiting-for-review states
+- escalation rules
 
-## Core Concepts
+### Concurrency and scheduling
 
-### Task
+- per-repo limits
+- per-executor/provider/account limits
+- queue priority rules
+- night-window scheduling and usage thresholds
 
-A markdown task or work item discovered by `sb`. Tasks remain the human planning surface and the default source from which runs are created.
+### Recovery and observability
 
-### Run
+- what must survive app restart
+- how active sessions are rehydrated
+- what the dashboard must show at a glance
+- how history/search should work across jobs, tasks, roles, and outcomes
 
-One execution attempt by an agent against a specific task or brief. A run has an executor, prompt/parameters, status, logs, outputs, and a final or intermediate outcome.
+## Control Plane
 
-### Campaign
+The app should have one control-plane layer over many worker sessions.
 
-A managed sequence of runs toward a broader outcome. A campaign may include retries, follow-up runs, or work across multiple tasks or projects. "Ralph Wiggum mode" belongs here: it is a policy-driven campaign behavior, not a standalone feature toggle.
+Pieces:
 
-### Policy
+- `sb` remains the system of record and main UI shell
+- worker jobs run as PTY-backed terminal sessions
+- a master session or master console can inspect and manage the job system
+- the master session is not the only source of truth
 
-Rules that decide when a run or campaign should continue, pause, retry, escalate, or stop for review.
+The master/control layer should be able to:
 
-### Review Gate
+- summarize active work
+- show what needs approval
+- pause, resume, stop, retry, or amend jobs
+- spawn new jobs from tasks or briefs
+- queue work for unattended execution later
 
-An explicit pause point that requires human input before more work happens. Review gates exist because many coding tasks are neither clean pass/fail nor safe to continue indefinitely.
+This makes the system feel like one hub without turning a single long chat into the whole architecture.
 
-### Event
+## V1
 
-A structured state update emitted by the orchestration core: started, checkpoint reached, tests failing, likely complete, blocked, needs review, canceled, and so on.
+### Goal
 
-### Notification
+Make it easy to knock out many small coding tasks across many repos from one place, with the beginnings of unattended queue execution built in.
 
-A delivery of important events to a surface outside the main cockpit: desktop notifications, phone messages, or future chat integrations.
+### Must-have outcomes
 
-### Executor
+- launch jobs from existing `sb` tasks/projects in a few steps
+- use reusable launch presets instead of retyping prompts/settings every time
+- see queued, running, paused, completed, blocked, and review-needed jobs in one dashboard
+- drill into underlying terminal/session history when needed
+- pause, retry, resume, stop, and approve from the cockpit
+- sync important outcomes back into the source markdown task system
+- support a basic night queue for approved unattended work
+- support a master console/session for text-driven summaries and job control
 
-An abstraction over runnable coding-agent backends such as Codex CLI and Claude CLI.
+### Primary workload
 
-### Outcome
+The main V1 workload is many small one-off coding tasks spread across many repos.
 
-The orchestration core's normalized interpretation of what just happened: progressing, blocked, looping, risky, likely complete, needs human product judgment, or failed.
+Examples:
 
-## Source of Truth
+- small fixes
+- bug investigation
+- scaffold work
+- docs/readme cleanup
+- local low-risk night jobs
 
-`WORK.md` should remain the source of truth for human planning. It should not be overloaded into the only store for runtime orchestration state.
+### UI shape
 
-Recommended split:
+Keep the existing `sb` dashboard and add one `Agent Dashboard` tab/page.
 
-- markdown remains the human-readable plan and backlog surface
-- runtime state lives in a dedicated orchestration store
-- important orchestration outcomes sync back into markdown as status updates, notes, links, or summaries
+The page should be organized around jobs, not raw terminals.
 
-Markdown alone is not sufficient for:
+Top-to-bottom priority:
 
-- append-only event history
-- multiple attempts per task
-- executor-specific logs and artifacts
-- transient policy state
-- remote approvals and notification bookkeeping
+1. needs attention
+2. queued/running work
+3. launchable suggestions / dispatch queue
+4. recent history
 
-The design should therefore assume bidirectional sync instead of markdown-only runtime state.
+Jobs are the main row type. The underlying terminal/session is drill-in detail.
 
-## Intended Workflows
+The agent dashboard can later grow a master console pane, but V1 should already assume the control-plane concept exists.
 
-### Launch from tasks
+### Core objects
 
-The user selects one or more markdown tasks in `sb` and creates runs from them, choosing an executor and profile.
+#### Task
 
-### Supervised iteration
+A markdown-backed work item discovered by `sb`.
 
-The orchestration core allows safe continued work when failures are straightforward and bounded, but stops at review gates when judgment is needed.
+#### Role
 
-### Campaign execution
+Who the agent is acting as.
 
-The user groups related tasks into a higher-level effort and allows the foreman to sequence the work.
+Examples:
 
-### Away mode
+- `senior_dev`
+- `project_manager`
+- `cto`
+- `marketing`
+- `researcher`
+- `docs_editor`
 
-While the user is away, the system continues safe work, sends concise progress summaries, and pauses when approval or strategy is needed.
+#### Workflow
 
-### Markdown sync-back
+How the work should be done.
 
-Meaningful outcomes are reflected back into the originating task system so the cockpit and the task files do not drift apart.
+Examples:
 
-## Review and Stopping Logic
+- `small-fix`
+- `bug-investigation`
+- `scaffold`
+- `readme-refresh`
+- `night-local-ollama`
 
-The system cannot treat coding work as binary pass/fail. It needs richer stop categories.
+#### Policy
 
-Runs or campaigns should be able to stop as:
+What the job is allowed to do.
 
-- `progressing`
+Examples:
+
+- permission preset
+- autonomy level
+- retry behavior
+- review rules
+- night-queue eligibility
+
+#### Executor preset
+
+Where and how the job runs.
+
+Examples:
+
+- `codex-safe`
+- `claude-wide`
+- `ollama-local`
+- `cheap-night-runner`
+
+#### Launch preset
+
+A saved combination of role, workflow, policy, and executor defaults.
+
+Fields may include:
+
+- role default
+- prompt/system framing
+- workflow hooks
+- policy preset
+- executor preset
+- review behavior
+- sync-back behavior
+
+This should be the main frictionless user-facing object for daily launches.
+
+#### Job
+
+One launched unit of agent work tied to a task or ad hoc brief.
+
+Jobs should track:
+
+- source task/project
+- role/workflow/policy/executor selection
+- launch preset used
+- status
+- summary
+- logs/history
+- resume metadata
+- approvals/review state
+- resulting markdown sync-back
+
+#### Session
+
+The underlying PTY-backed process behind a live job.
+
+Sessions should support:
+
+- launch in a repo/context
+- output capture
+- input injection
+- attach/detach
+- stop/kill
+- transcript persistence
+
+#### Campaign
+
+A grouped or iterative sequence of jobs. V1 can keep this lightweight, but the concept should exist from the start.
+
+#### Event
+
+Append-only state update for a job or campaign.
+
+### V1 workflow
+
+Day mode:
+
+- open `sb`
+- review items that need attention
+- launch a task with a default or chosen launch preset
+- monitor progress from the agent dashboard
+- inspect terminal/log history only when needed
+- approve, retry, pause, resume, or stop
+- write meaningful result back to markdown
+- optionally use the master console/session to manage jobs by text
+
+Night mode:
+
+- run the same job model under stricter unattended policies
+- start from an approved queue
+- support local/low-risk jobs first
+
+### Launch UX
+
+The design rule is:
+
+composition in the model, defaults in the UX.
+
+Fast path:
+
+- select task
+- launch with the default preset
+
+Override path:
+
+- select task
+- choose a preset
+- launch
+
+Advanced compose path:
+
+- role
+- workflow
+- policy
+- executor
+- hooks
+- night-queue eligibility
+
+The user should not have to assemble these pieces manually for most launches.
+
+### Architecture boundary
+
+- `sb` is the first cockpit UI
+- runtime orchestration state must live outside the Bubble Tea process
+- markdown remains the human planning surface
+- markdown is not the only runtime store
+- sync-back writes important human-facing outcomes into markdown
+- Codex CLI and Claude CLI are the first serious executors
+- existing `sb` LLM/provider support remains useful for routing, planning, summarization, and small helper work
+- live worker jobs should be PTY-backed so the hub can launch, inspect, attach, and interact with terminal-native tools
+- the master session/control layer operates over structured app state, not over hidden chat memory alone
+
+### Status model
+
+V1 should support at least:
+
+- `queued`
+- `running`
+- `paused`
+- `needs_review`
 - `blocked`
-- `looping`
-- `risky_repo_state`
-- `needs_human_judgment`
-- `likely_ready_for_review`
-- `hard_failed`
+- `completed`
+- `failed`
+- `deferred_to_night_queue`
 
-Examples of review-worthy states:
+### Non-goals
 
-- tests mostly pass and the goal appears substantially reached
-- repeated retries are no longer producing new progress
-- the executor requests clarification
-- the repo state looks risky for unattended continuation
-- product or architectural tradeoffs appear instead of straightforward coding work
+- full remote/mobile control
+- broad autonomous task-picking across everything
+- full non-code workload automation
+- advanced account/provider balancing
+- a new standalone TUI
+- a giant profile/plugin ecosystem before the core loop works
 
-## Remote Interaction Model
+## V2 Notes
 
-Phone updates are a core goal, not an afterthought.
+Keep this section short and directional.
 
-Remote updates should support:
+### Foreman expansion
 
-- concise campaign or run summaries
-- important state changes
-- links or identifiers for the affected project/task
-- simple remote decisions: continue, stop, retry, escalate, mark for review
+- real night/foreman mode
+- approved queue runner first
+- later bounded autonomous work-picking
+- policy knobs for usage thresholds, days until reset, concurrency, provider/account preference, retry limits, and review requirements
+- richer master-session behavior over the same job/session store
 
-The orchestration architecture should expose these as events and actions, not as a provider-specific SMS implementation baked into the core.
+### Remote/away mode
 
-## Initial Executor Scope
+- remote summaries
+- remote approvals
+- away-from-PC control
+- notifications across phone/email/chat surfaces
 
-The first executors should be:
+### Broader workload classes
 
-- Codex CLI
-- Claude CLI
+Use the same `task/profile/job/policy` model for:
 
-The orchestration core should normalize enough state around them that additional backends can be added later without rewriting cockpit behavior.
+- ideas
+- standards/versioning
+- readmes/docs
+- knowledge-bank upkeep
+- app ideas and scaffolding
+- competitor/market research
+- job-search/admin pipelines
+- new-tech exploration
 
-## Constraints and Non-Goals
+### Smarter utilization
 
-Non-goals for the initial direction:
+- continuous stream of useful queued work
+- idle-capacity consumption
+- token/account-aware scheduling
+- bounded autonomous iteration
 
-- building a new standalone TUI before the orchestration model is proven
-- stuffing all runtime state directly into markdown
-- reducing the system to a simple task launcher
-- locking the core to a single executor
+## Acceptance Criteria
 
-Constraints to preserve:
+V1 is successful if it can:
 
-- `sb` remains useful as a markdown control plane even before orchestration is fully built
-- the first UI should feel native to `sb`
-- architecture should not prevent later web/mobile/dedicated-client surfaces
+- launch a small task into a job quickly
+- show all active and queued jobs in one dashboard
+- preserve enough history to understand and resume work later
+- surface review-needed work clearly
+- keep jobs linked to their source tasks/projects
+- sync meaningful outcomes back into markdown
+- run a basic unattended night queue on the same core model
+- survive `sb` restarts without losing runtime state
+- manage PTY-backed sessions from a single control hub
+- support text-driven control through a master console/session without making that chat the system of record
 
 ## Decision
 
-The recommended direction is:
+Build this as a real 80/20 horizontal slice:
 
-1. Treat this as an orchestration/foreman product, not a launcher feature.
-2. Use `sb` as the first cockpit UI.
-3. Keep runtime orchestration state and policy outside the Bubble Tea process.
-4. Preserve `WORK.md` as the human planning surface, with sync-back from runtime outcomes.
-5. Design mobile updates and remote approvals into the event model from the start.
-6. Revisit a standalone TUI only if the cockpit clearly outgrows `sb`.
-
-## Evaluation Criteria
-
-This direction is successful if it gives the project:
-
-- a coherent answer for why this belongs in `sb` first
-- a clear reason not to trap orchestration inside the TUI
-- a shared vocabulary for tasks, runs, campaigns, policies, and review gates
-- a place for "Ralph Wiggum mode" inside a broader system model
-- a basis for future phased implementation without re-arguing the product boundary
-
-## IMPORTANT
-
-- The primary goal of this major feature implementation is to basically have sb have the ability to manage all current agents/etc
-- Also to be able to easily "use tokens up" by just being able to batch through my checklists you know? or have them continue to start up new ones while I am away up to a certain limit etc
-- I have both codex and claude accounts and ollama locally for small things / docs tuning / intent parsing? idk some way to help integrate it, or could use it as a way to continue certain wiggum loops etc idk down the line, this is a pretty intense update but I need it to really level up and continue developing other things while my bug lists / content generation / scaffolding / all types of work i need autonomously done are kinda "taken care of" if that makes sense, i think this could really be an insane app but it needs to be very carefully crafted
-- end goal is to be able to manage and run all of my "sessions/jobs" from one place, see their status etc, all my usage limits etc, swap accounts maybe? idk launch in different providers / hook management / prompt management etc etc / foreman mode etc
-- anything else we can think of in this, autonomous log checking / patches / notifier (email?) / parse my emails / parse job apps / do job apps? mine and create knowledge items, scaffold out ideas if they seem like good ideas / organize files or tidy readme.mds all sorts of shit
-
-- i am envisioning a 3rd tab and maybe 4th maybe 5th tab of sb, that are devoted to this whole flow, lets really nail down this whole plan before we move on from this .md file
+- broad enough to cover the full daily loop
+- narrow enough to avoid v2 sprawl
+- shaped around small-task dispatch first
+- ready to grow into a broader work operating system later

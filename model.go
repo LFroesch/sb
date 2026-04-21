@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/LFroesch/sb/internal/config"
-	"github.com/LFroesch/sb/internal/ollama"
+	"github.com/LFroesch/sb/internal/llm"
 	"github.com/LFroesch/sb/internal/workmd"
 )
 
@@ -36,7 +36,7 @@ const (
 	pageDashboard page = iota // overview of all projects + task counts
 	pageProject               // single project WORK.md viewer/editor
 	pageDump                  // brain dump input
-	pageCleanup               // ollama WORK.md cleanup preview
+	pageCleanup               // LLM WORK.md cleanup preview
 )
 
 // --- Modes ---
@@ -49,24 +49,24 @@ const (
 	modeHelp             // help overlay
 	modeConfirm          // confirm action
 	modeDumpInput        // typing a brain dump
-	modeDumpRouting      // ollama is classifying
+	modeDumpRouting      // LLM is classifying
 	modeDumpConfirm      // showing route result, waiting for y/n
-	modeCleanupWait      // ollama is cleaning up
-	modeTodoWait         // ollama is generating next todo
+	modeCleanupWait      // LLM is cleaning up
+	modeTodoWait         // LLM is generating next todo
 	modeTodoResult       // showing next todo result
 	modeSearch           // fuzzy search across WORK.md content
 	modeDumpReview       // stepping through routed items
 	modeDumpClarify      // asking user to clarify unclear item
 	modeDumpSummary      // post-dump summary, esc to dismiss
 
-	modeChainCleanupWait     // ollama running on current project in chain
+	modeChainCleanupWait     // LLM running on current project in chain
 	modeChainCleanupReview   // reviewing diff for current project
 	modeChainCleanupFeedback // user typing correction hint for regen
 	modeChainCleanupSummary  // chain done — show results
 
 	modeCleanupFeedback // single-project cleanup: user typing feedback for regen
 
-	modePlanWait   // ollama generating daily plan
+	modePlanWait   // LLM generating daily plan
 	modePlanResult // showing daily plan result
 )
 
@@ -95,19 +95,19 @@ type model struct {
 
 	// Brain dump
 	dumpArea          textarea.Model
-	dumpText          string             // raw input text
-	dumpItems         []ollama.RouteItem // multi-routed items from ollama
-	dumpCursor        int                // which item we're reviewing
-	dumpAccepted      int                // count of accepted items
-	dumpSkipped       int                // count of skipped items
-	dumpSkippedList   []ollama.RouteItem // items that were skipped
-	dumpClarifyArea   textarea.Model     // textarea for clarification input
-	dumpResult        string             // last status message for display
-	dumpSummaryScroll int                // scroll offset for summary screen
+	dumpText          string          // raw input text
+	dumpItems         []llm.RouteItem // multi-routed items from the active LLM
+	dumpCursor        int             // which item we're reviewing
+	dumpAccepted      int             // count of accepted items
+	dumpSkipped       int             // count of skipped items
+	dumpSkippedList   []llm.RouteItem // items that were skipped
+	dumpClarifyArea   textarea.Model  // textarea for clarification input
+	dumpResult        string          // last status message for display
+	dumpSummaryScroll int             // scroll offset for summary screen
 
 	// Cleanup
 	cleanupOriginal string // original content before cleanup
-	cleanupResult   string // ollama-cleaned content
+	cleanupResult   string // LLM-cleaned content
 
 	// Chain cleanup
 	chainQueue         []int
@@ -126,7 +126,7 @@ type model struct {
 	planScroll int
 
 	// Todo
-	todoResult string // ollama next-todo response
+	todoResult string // LLM next-todo response
 
 	// Search
 	searchQuery   string
@@ -239,12 +239,12 @@ type todoResultMsg struct {
 }
 
 type dumpRoutedMsg struct {
-	items []ollama.RouteItem
+	items []llm.RouteItem
 	err   error
 }
 
 type dumpReroutedMsg struct {
-	item *ollama.RouteItem
+	item *llm.RouteItem
 	err  error
 }
 
