@@ -41,6 +41,8 @@ func (m model) View() string {
 		content = m.renderDump()
 	case pageCleanup:
 		content = m.renderCleanup()
+	case pageAgent:
+		content = m.renderAgent()
 	}
 
 	var statusLine string
@@ -71,6 +73,7 @@ func (m model) renderHeader() string {
 	}{
 		{"Dashboard", pageDashboard},
 		{"Dump", pageDump},
+		{"Agent", pageAgent},
 	}
 
 	var tabs []string
@@ -775,6 +778,43 @@ func (m model) renderFooter() string {
 			add("ctrl+d", "route")
 			add("esc", "back")
 		}
+	case pageAgent:
+		switch m.mode {
+		case modeAgentPicker:
+			add("↑/↓", "nav")
+			add("space", "toggle")
+			add("enter", "continue")
+			add("esc", "back")
+		case modeAgentLaunch:
+			add("tab", "focus")
+			add("↑/↓", "pick")
+			add("enter", "launch")
+			add("alt+enter", "launch (from brief)")
+			add("esc", "back")
+		case modeAgentAttached:
+			if m.attachedFocus == 1 {
+				add("enter", "send")
+				add("esc/tab", "leave input")
+			} else {
+				add("↑/↓", "scroll")
+				add("tab/i", "type")
+				add("a", "approve")
+				add("s", "stop")
+				add("r", "retry")
+				add("d", "delete")
+				add("esc", "back")
+			}
+		default:
+			add("↑/↓", "nav")
+			add("n", "new")
+			add("p/v", "new preset/provider")
+			add("enter", "attach")
+			add("a", "approve")
+			add("s", "stop")
+			add("r", "retry")
+			add("d", "delete")
+			add("esc", "back")
+		}
 	}
 
 	add("?", "help")
@@ -809,6 +849,7 @@ func (m model) renderHelp() string {
 			{"o", "Open project directory in editor"},
 			{"y", "Copy project dir path to clipboard"},
 			{"d", "Brain dump"},
+			{"a", "Agent cockpit"},
 			{"/", "Search across all WORK.md files"},
 			{"r", "Refresh (re-scan WORK.md files)"},
 			{",", "Open config.json in editor"},
@@ -837,6 +878,21 @@ func (m model) renderHelp() string {
 			{"y/enter", "Accept routed item"},
 			{"n", "Skip item"},
 			{"esc", "Cancel / abort remaining"},
+		}},
+		{"Agent Cockpit", []struct{ key, desc string }{
+			{"n", "New launch (pick file → tasks → preset)"},
+			{"N", "Freeform launch (opens straight into chat after launch)"},
+			{"space", "Toggle task in picker"},
+			{"tab", "Launch: cycle preset → provider → brief · Attached: swap transcript ↔ input"},
+			{"enter", "Launch (from preset/provider picker) · attach to job (from list) · send when typing"},
+			{"alt+enter", "Launch from brief"},
+			{"i", "Attached: focus input (live jobs open there by default when idle)"},
+			{"j/k", "Scroll transcript when attached"},
+			{"a", "Approve (confirm, then delete source line + append DEVLOG)"},
+			{"s", "Stop running job"},
+			{"r", "Retry job"},
+			{"d", "Delete job (confirm)"},
+			{"esc", "Back"},
 		}},
 	}
 

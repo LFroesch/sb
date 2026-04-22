@@ -1,431 +1,297 @@
-# RFC: Agent Dashboard and Foreman Mode in `sb`
+# RFC: Agent Cockpit in `sb` (refined — ready for Codex review)
+
+> **2026-04-21 update — jobs-are-chats.** The PTY-embedded executor path described below
+> was replaced with a per-turn `exec.Cmd` model: each job is a multi-turn session
+> (`Turns []Turn`, `SessionID`, `StatusIdle`), claude uses native `--session-id` / `--resume`,
+> codex/ollama replay history to stdin, shell is one-shot per turn. `pty.go` and
+> `creack/pty` are gone. Jobs and chats are the same primitive — freeform launches
+> carry no `Sources`; sourced launches sync back on approve as before. References to
+> "PTY pool" / `pty.go` below are historical.
+
+## Context
+
+`sb` already aggregates WORK.md-style files across many projects, routes brain dumps with an LLM, and understands per-project context. This RFC turns `sb` into a **cockpit** for coding-agent orchestration (Claude Code, Codex, local Ollama, generic shell) so that "checking off tasks" becomes frictionless: pick items from a discovered WORK.md, bundle them into a brief, launch an agent in the right repo, and sync the result back as a deleted line + devlog entry.
+
+The previous revision of this doc was product stance + hidden-requirement checklists with no implementation shape. This revision locks the architecture and phases the build. V0 is the horizontal slice that proves the core model; V1/V2/V3 are sketched only enough to prove the architecture holds without schema churn.
+
+## Locked decisions
+
+- Cockpit lives inside `sb` as a new **Agent** tab, backed by a small **`sb-foreman`** daemon that owns PTYs + job state over a local unix socket. Jobs survive `sb` restart; the TUI is a thin client.
+- Architecture must anticipate **swarms** (N parallel jobs from one task), **campaigns**, **night queue**, **master console**, **approval gates** — but V0 ships none of that.
+- Executors out of the box: Claude Code CLI, Codex CLI, local Ollama/llm scripts, and a generic shell brief escape hatch.
+- V0 task picker: pick a discovered file, list its `- ` items as selectable, multi-select → **one bundled job**. Repo auto-inferred from the file's project. Freeform brief + manual repo also supported.
+- Hooks: pre-launch shell, post-run shell, prompt-template injection, iteration policy (one-shot / loop-N / until-signal), plus named **role profiles** (code-analyzer, PM, senior-dev, etc.).
+- V0 sync-back: on "accept result", **delete** the source `- ` line and **append** an entry to the project's DEVLOG.md.
+
+## Architecture (forward-compatible, ships in slices)
+
+```
+ ┌──────────────────────────────────────────────────┐
+ │ sb TUI (Bubble Tea)                              │
+ │  ├─ existing tabs (Dashboard, Dump, Project)     │
+ │  └─ NEW: Agent tab                               │
+ │      ├─ job list (needs-attn / running / recent) │
+ │      ├─ task picker (file → `- ` items)          │
+ │      ├─ launch modal (preset + overrides)        │
+ │      └─ attached session view (tail + input)     │
+ └────────────────▲─────────────────────────────────┘
+                  │ unix socket: ~/.local/state/sb/foreman.sock
+                  │ newline-delimited JSON (request/response + event stream)
+ ┌────────────────┴─────────────────────────────────┐
+ │ sb-foreman daemon (Go, single binary)            │
+ │  ├─ job registry + lifecycle FSM                 │
+ │  ├─ PTY pool (creack/pty)                        │
+ │  ├─ event log (append-only JSONL per job)        │
+ │  ├─ preset + hook runner                         │
+ │  ├─ sync-back worker (edits WORK.md / DEVLOG.md) │
+ │  └─ future: scheduler, approval gates, swarms    │
+ └──────────────────────────────────────────────────┘
+        writes: ~/.local/state/sb/jobs/<id>/…
+        reads:  ~/.config/sb/presets/*.json
+```
+
+### Data model (locked now so swarms/campaigns drop in later)
+
+```go
+// internal/cockpit/types.go
+type JobID string
+type CampaignID string
+
+type SourceTask struct {
+    File    string // absolute path to WORK.md-style file
+    Line    int    // 1-indexed line of the `- ` item (0 = freeform/no source)
+    Text    string // the `- ` item text, verbatim
+    Project string // sb project Name (derived)
+    Repo    string // resolved repo path
+}
+
+type Job struct {
+    ID             JobID
+    CampaignID     CampaignID // "" for solo jobs; set when job is one of a swarm
+    PresetID       string
+    Sources        []SourceTask // bundled items; len>=1 for task-picker launches, 0 for freeform
+    Brief          string       // final composed brief handed to the executor
+    Repo           string
+    Executor       ExecutorSpec // type + model + extra flags
+    Hooks          HookSpec     // pre, post, prompt-templates, iteration
+    Permissions    string       // preset name: "read-only", "scoped-write", "wide-open"
+    Status         Status       // queued|running|paused|needs_review|blocked|completed|failed
+    CreatedAt      time.Time
+    StartedAt      time.Time
+    FinishedAt     time.Time
+    ExitCode       int
+    TranscriptPath string
+    EventLogPath   string
+    ArtifactsDir   string
+    SyncBackState  SyncBack // pending|applied|skipped|failed
+}
+
+type Campaign struct {
+    ID        CampaignID
+    Goal      string
+    JobIDs    []JobID
+    Strategy  string   // "solo" (V0) | "parallel" | "sequence" | "compare"
+    CreatedAt time.Time
+}
+
+type LaunchPreset struct {
+    ID             string
+    Name           string
+    Role           string          // "senior-dev", "code-analyzer", "pm", ...
+    SystemPrompt   string          // persona/framing injected into brief
+    Executor       ExecutorSpec
+    PromptHooks    []PromptHook    // file/string injection, ordered
+    PreShell       []ShellHook     // run in repo before executor starts
+    PostShell      []ShellHook     // run after executor exits; gates needs_review
+    Iteration      IterationPolicy // one-shot | loop_n{N} | until_signal{sentinel|file}
+    Permissions    string
+    NightEligible  bool            // V2, recorded now
+}
+
+type Event struct { // append-only JSONL per job
+    TS      time.Time
+    Kind    string      // status_changed | stdout | stderr | hook_started | hook_finished | review_set | synced_back
+    Payload interface{}
+}
+```
+
+**Why this shape holds for V1/V2/V3:** Campaigns already wrap jobs, so a swarm is just N jobs sharing a CampaignID. `NightEligible` + `Status=queued` lets a scheduler run later without schema churn. Iteration is a policy on the job, not baked into the executor — the same executor implementation handles all three modes. Hooks are ordered lists, so prompt-template injection + repo-context fetch compose cleanly.
+
+### Protocol (sb ↔ foreman)
 
-## Before Implementation
-
-We need to get into the nitty gritty before implementation.
-
-This concept is strong, but it will get sloppy fast if the hard edges stay vague. Before building, lock the authority model, state boundaries, job lifecycle, safety model, and defaulting behavior.
-
-## Summary
-
-`sb` should evolve from a markdown work dashboard into a dispatch + supervision layer for agent work across many projects.
-
-This is not a launcher-only feature. The point is to turn `sb` context into well-configured agent jobs quickly, keep those jobs visible, preserve history, and let the same system grow into unattended queue running later.
-
-The first release should be a small horizontal slice:
-
-- real enough to use daily
-- narrow enough to ship without every advanced feature
-- built so day mode and night/foreman mode share the same core model
-
-## Product Stance
-
-`sb` is already the second-brain layer:
-
-- project discovery
-- markdown task context
-- routing context
-- prioritization surface
-
-The new agent dashboard becomes the third-hand layer:
-
-- dispatch tasks into jobs fast
-- apply reusable roles, workflows, policies, and executor presets
-- supervise queued/running/paused work
-- preserve logs, summaries, and resume state
-- surface approvals and review gates
-- sync meaningful outcomes back into markdown
-
-Core ideas:
-
-- `task -> launch preset -> job`
-- modular underneath, frictionless on top
-
-## Hidden Requirements
-
-These are the easy-to-miss requirements that need concrete decisions before implementation.
-
-### Authority model
-
-- user vs master session vs foreman vs worker authority
-- who can launch, amend, approve, stop, apply, queue, or auto-continue work
-- which actions always require explicit human approval
-
-### State model
-
-- what lives in markdown
-- what lives in runtime state
-- what lives in PTY transcripts
-- what gets summarized and persisted
-- what is disposable
-
-### Job lifecycle
-
-- exact meaning of launch, queue, run, pause, resume, retry, fork, handoff, complete, fail
-- what makes a job `needs_review` vs `completed`
-- when a result is only a proposal vs safe to apply/sync back
-
-### Safety model
-
-- permission presets
-- approval gates
-- repo isolation and dirty-worktree rules
-- multi-job conflicts in the same repo
-- unattended/night-mode limits
-
-### Defaulting model
-
-- how tasks map to default launch presets
-- how projects/work item types influence role/workflow/policy/executor
-- when the app should auto-suggest vs auto-run
-
-### Artifact model
-
-- patches, diffs, plans, notes, logs, summaries, generated files
-- where artifacts live
-- how they attach to jobs and reviews
-
-### Context packaging
-
-- how `sb` context becomes a launch brief
-- what task/project/history context gets passed to workers
-- what the master session knows vs what worker sessions inherit
-
-### Failure detection
-
-- loop detection
-- low-value progress detection
-- blocked vs risky vs idle vs waiting-for-review states
-- escalation rules
-
-### Concurrency and scheduling
-
-- per-repo limits
-- per-executor/provider/account limits
-- queue priority rules
-- night-window scheduling and usage thresholds
-
-### Recovery and observability
-
-- what must survive app restart
-- how active sessions are rehydrated
-- what the dashboard must show at a glance
-- how history/search should work across jobs, tasks, roles, and outcomes
-
-## Control Plane
-
-The app should have one control-plane layer over many worker sessions.
-
-Pieces:
-
-- `sb` remains the system of record and main UI shell
-- worker jobs run as PTY-backed terminal sessions
-- a master session or master console can inspect and manage the job system
-- the master session is not the only source of truth
-
-The master/control layer should be able to:
-
-- summarize active work
-- show what needs approval
-- pause, resume, stop, retry, or amend jobs
-- spawn new jobs from tasks or briefs
-- queue work for unattended execution later
-
-This makes the system feel like one hub without turning a single long chat into the whole architecture.
-
-## V1
-
-### Goal
-
-Make it easy to knock out many small coding tasks across many repos from one place, with the beginnings of unattended queue execution built in.
-
-### Must-have outcomes
-
-- launch jobs from existing `sb` tasks/projects in a few steps
-- use reusable launch presets instead of retyping prompts/settings every time
-- see queued, running, paused, completed, blocked, and review-needed jobs in one dashboard
-- drill into underlying terminal/session history when needed
-- pause, retry, resume, stop, and approve from the cockpit
-- sync important outcomes back into the source markdown task system
-- support a basic night queue for approved unattended work
-- support a master console/session for text-driven summaries and job control
-
-### Primary workload
-
-The main V1 workload is many small one-off coding tasks spread across many repos.
-
-Examples:
-
-- small fixes
-- bug investigation
-- scaffold work
-- docs/readme cleanup
-- local low-risk night jobs
-
-### UI shape
-
-Keep the existing `sb` dashboard and add one `Agent Dashboard` tab/page.
-
-The page should be organized around jobs, not raw terminals.
-
-Top-to-bottom priority:
-
-1. needs attention
-2. queued/running work
-3. launchable suggestions / dispatch queue
-4. recent history
-
-Jobs are the main row type. The underlying terminal/session is drill-in detail.
-
-The agent dashboard can later grow a master console pane, but V1 should already assume the control-plane concept exists.
-
-### Core objects
-
-#### Task
-
-A markdown-backed work item discovered by `sb`.
-
-#### Role
-
-Who the agent is acting as.
-
-Examples:
-
-- `senior_dev`
-- `project_manager`
-- `cto`
-- `marketing`
-- `researcher`
-- `docs_editor`
-
-#### Workflow
-
-How the work should be done.
-
-Examples:
-
-- `small-fix`
-- `bug-investigation`
-- `scaffold`
-- `readme-refresh`
-- `night-local-ollama`
-
-#### Policy
-
-What the job is allowed to do.
-
-Examples:
-
-- permission preset
-- autonomy level
-- retry behavior
-- review rules
-- night-queue eligibility
-
-#### Executor preset
-
-Where and how the job runs.
-
-Examples:
-
-- `codex-safe`
-- `claude-wide`
-- `ollama-local`
-- `cheap-night-runner`
-
-#### Launch preset
-
-A saved combination of role, workflow, policy, and executor defaults.
-
-Fields may include:
-
-- role default
-- prompt/system framing
-- workflow hooks
-- policy preset
-- executor preset
-- review behavior
-- sync-back behavior
-
-This should be the main frictionless user-facing object for daily launches.
-
-#### Job
-
-One launched unit of agent work tied to a task or ad hoc brief.
-
-Jobs should track:
-
-- source task/project
-- role/workflow/policy/executor selection
-- launch preset used
-- status
-- summary
-- logs/history
-- resume metadata
-- approvals/review state
-- resulting markdown sync-back
-
-#### Session
-
-The underlying PTY-backed process behind a live job.
-
-Sessions should support:
-
-- launch in a repo/context
-- output capture
-- input injection
-- attach/detach
-- stop/kill
-- transcript persistence
-
-#### Campaign
-
-A grouped or iterative sequence of jobs. V1 can keep this lightweight, but the concept should exist from the start.
-
-#### Event
-
-Append-only state update for a job or campaign.
-
-### V1 workflow
-
-Day mode:
-
-- open `sb`
-- review items that need attention
-- launch a task with a default or chosen launch preset
-- monitor progress from the agent dashboard
-- inspect terminal/log history only when needed
-- approve, retry, pause, resume, or stop
-- write meaningful result back to markdown
-- optionally use the master console/session to manage jobs by text
-
-Night mode:
-
-- run the same job model under stricter unattended policies
-- start from an approved queue
-- support local/low-risk jobs first
-
-### Launch UX
-
-The design rule is:
-
-composition in the model, defaults in the UX.
-
-Fast path:
-
-- select task
-- launch with the default preset
-
-Override path:
-
-- select task
-- choose a preset
-- launch
-
-Advanced compose path:
-
-- role
-- workflow
-- policy
-- executor
-- hooks
-- night-queue eligibility
-
-The user should not have to assemble these pieces manually for most launches.
-
-### Architecture boundary
-
-- `sb` is the first cockpit UI
-- runtime orchestration state must live outside the Bubble Tea process
-- markdown remains the human planning surface
-- markdown is not the only runtime store
-- sync-back writes important human-facing outcomes into markdown
-- Codex CLI and Claude CLI are the first serious executors
-- existing `sb` LLM/provider support remains useful for routing, planning, summarization, and small helper work
-- live worker jobs should be PTY-backed so the hub can launch, inspect, attach, and interact with terminal-native tools
-- the master session/control layer operates over structured app state, not over hidden chat memory alone
-
-### Status model
-
-V1 should support at least:
-
-- `queued`
-- `running`
-- `paused`
-- `needs_review`
-- `blocked`
-- `completed`
-- `failed`
-- `deferred_to_night_queue`
-
-### Non-goals
-
-- full remote/mobile control
-- broad autonomous task-picking across everything
-- full non-code workload automation
-- advanced account/provider balancing
-- a new standalone TUI
-- a giant profile/plugin ecosystem before the core loop works
-
-## V2 Notes
-
-Keep this section short and directional.
-
-### Foreman expansion
-
-- real night/foreman mode
-- approved queue runner first
-- later bounded autonomous work-picking
-- policy knobs for usage thresholds, days until reset, concurrency, provider/account preference, retry limits, and review requirements
-- richer master-session behavior over the same job/session store
-
-### Remote/away mode
-
-- remote summaries
-- remote approvals
-- away-from-PC control
-- notifications across phone/email/chat surfaces
-
-### Broader workload classes
-
-Use the same `task/profile/job/policy` model for:
-
-- ideas
-- standards/versioning
-- readmes/docs
-- knowledge-bank upkeep
-- app ideas and scaffolding
-- competitor/market research
-- job-search/admin pipelines
-- new-tech exploration
-
-### Smarter utilization
-
-- continuous stream of useful queued work
-- idle-capacity consumption
-- token/account-aware scheduling
-- bounded autonomous iteration
-
-## Acceptance Criteria
-
-V1 is successful if it can:
-
-- launch a small task into a job quickly
-- show all active and queued jobs in one dashboard
-- preserve enough history to understand and resume work later
-- surface review-needed work clearly
-- keep jobs linked to their source tasks/projects
-- sync meaningful outcomes back into markdown
-- run a basic unattended night queue on the same core model
-- survive `sb` restarts without losing runtime state
-- manage PTY-backed sessions from a single control hub
-- support text-driven control through a master console/session without making that chat the system of record
-
-## Decision
-
-Build this as a real 80/20 horizontal slice:
-
-- broad enough to cover the full daily loop
-- narrow enough to avoid v2 sprawl
-- shaped around small-task dispatch first
-- ready to grow into a broader work operating system later
+Newline-delimited JSON over a unix socket. One connection per TUI; socket auto-starts the daemon if nothing is listening.
+
+Requests: `launch_job`, `list_jobs`, `get_job`, `attach(job_id)` (stream), `send_input(job_id, data)`, `stop_job`, `approve_job`, `retry_job`, `list_presets`, `reload_presets`.
+
+Events (push, when attached or subscribed): `job_status_changed`, `job_output`, `hook_finished`, `review_set`, `synced_back`.
+
+Keep it JSON-RPC-ish but boring — one Go `encoding/json` Decoder per direction. No gRPC, no MCP in V0.
+
+### Storage layout
+
+```
+~/.config/sb/presets/               # user-editable; seeded on first run
+  claude-senior-dev.json
+  codex-scaffold.json
+  ollama-docs-tidy.json
+  shell-escape.json                 # generic shell escape hatch
+~/.local/state/sb/
+  foreman.sock
+  foreman.pid
+  foreman.log
+  jobs/
+    <job_id>/
+      job.json                      # persisted Job struct, updated in place
+      transcript.log                # raw PTY dump (user sees this on attach)
+      events.jsonl                  # append-only Event stream
+      brief.md                      # composed brief, preserved for retry/audit
+      artifacts/                    # diffs, patches, screenshots, exported summaries
+  campaigns/<campaign_id>.json      # V1; directory exists from day one
+```
+
+## V0 — ships first
+
+Goal: single daily-loop path; proves the core data model + daemon + TUI wiring.
+
+**Scope (must):**
+
+1. `sb-foreman` daemon binary (new `cmd/foreman/` under sb) — boots, listens on socket, handles `launch_job` / `list_jobs` / `attach` / `stop_job` / `approve_job`, persists state.
+2. `internal/cockpit/` package in sb with types, socket client, and an in-proc fallback (so tests don't require the daemon).
+3. New **Agent** tab in sb TUI:
+   - job list (grouped: needs-attn, running, recent)
+   - task-picker page: file list (reuses `workmd.Discover`) → `- ` items with checkboxes → multi-select → launch modal
+   - launch modal: pick preset, edit brief, confirm
+   - attached view: tail transcript, send input, stop
+4. Four seed presets materialized in `~/.config/sb/presets/` on first run (claude-senior-dev, codex-scaffold, ollama-docs-tidy, shell-escape).
+5. Hook execution: pre-shell + post-shell + prompt-template injection. Iteration policy wired but V0 only exercises `one-shot`.
+6. Sync-back: on approve, delete source `- ` line in its file, append dated entry under `## DevLog` in the project's DEVLOG.md (or create the section if missing). Reuses `workmd` project-root logic.
+7. Persistence: jobs survive sb quit and daemon restart (read `jobs/<id>/job.json` on startup, reconcile live PTYs).
+
+**Explicitly NOT in V0:** night queue, master console, campaigns/swarms (data model ready, UI not), approval gates beyond `approve=delete+devlog`, remote control, autonomous task picking.
+
+**New UI keys on Agent tab:**
+
+- `n` new launch → task picker
+- `enter` attach to job
+- `s` stop, `a` approve (triggers sync-back), `r` retry, `p` pause
+- `esc` back to job list
+
+## V0.5 — shipped (socket daemon + preset/provider split)
+
+V0 ran the cockpit in-proc inside sb; jobs died when sb quit. V0.5 closes that gap:
+
+- `cmd/foreman` is now a real daemon. `cockpit.ListenUnix` + `cockpit.Serve` wrap `Manager` behind an NDJSON unix socket (`~/.local/state/sb/foreman.sock`). Protocol: `launch_job`, `list_jobs`, `get_job`, `stop_job`, `approve_job`, `retry_job`, `send_input`, `read_transcript`, `subscribe`, `ping`.
+- `SocketClient` in `internal/cockpit/client.go` implements a new `Client` interface that `Manager` also satisfies. sb always holds a `Client`, never a `*Manager` directly.
+- `EnsureDaemon(paths, binary)` dials the socket; if nothing answers it forks `sb-foreman -serve` (detached via `setsid` on unix), waits up to 3s for the socket, and re-dials. Failure falls back to in-proc `Manager` so the TUI still works offline.
+- Presets were split from providers. Presets are role-centric (`senior-dev`, `bug-fixer`, `explainer`, `pm`, …) and carry a *suggested* executor. `ProviderProfile` (new) describes an executor independently (`claude`, `ollama-qwen`, `shell`, …). `LaunchRequest.Provider` overrides the preset's default at launch time, so any preset can drive any provider. The launch modal gets a dedicated provider picker (`tab` cycles preset → provider → brief).
+- Config gains `cockpit_daemon` (default `true`) and `cockpit_foreman_bin` (optional). Header shows `[daemon]` / `[in-proc]`.
+- Covered by `socket_test.go` (end-to-end: launch → stdout event → status=completed → transcript round-trip).
+
+Open V0.5 follow-ups rolled into V1:
+
+- Dirty-repo refusal for sync-back (prompt before destructive delete).
+- Client reconnect on socket drop mid-session (today a daemon restart forces a sb restart to pick up the new socket).
+
+## V1 — next slice (architecture already supports)
+
+- Launch presets/providers editable in-app (currently: hand-edit JSON).
+- Master console pane: a text box that drives `launch_job` / `list_jobs` / `approve_job` via the LLM.
+- Post-hook gating: non-zero exit from post-shell → `needs_review` instead of `completed`.
+- Iteration: `loop_n` and `until_signal` wired end-to-end.
+- Simple review diff: `git diff` captured as an artifact at approve time.
+- Reconnect-on-drop for the socket client.
+
+## V2 — foreman mode
+
+- Night queue runner: picks from `queued` + `NightEligible`, obeys per-repo / per-executor concurrency.
+- Swarms: campaign with `Strategy=parallel`, N jobs off one brief, compare view.
+- Per-repo worktree isolation (git worktrees so two jobs don't clobber).
+- Usage-threshold guards (token budget, days-until-reset).
+
+## V3+
+
+- Remote summaries + approvals (phone/email/chat bridges).
+- Bounded autonomous work picking from `sb`'s dump/backlog.
+- Broader workload classes (docs, research, job-search pipelines) reusing the same job model.
+
+## Critical files
+
+**New (V0):**
+
+- `sb/cmd/foreman/main.go` — daemon entry
+- `sb/internal/cockpit/types.go` — Job / Preset / Event / Campaign structs
+- `sb/internal/cockpit/client.go` — sb-side socket client
+- `sb/internal/cockpit/server.go` — daemon-side protocol handler
+- `sb/internal/cockpit/registry.go` — job persistence + lifecycle FSM
+- `sb/internal/cockpit/pty.go` — PTY spawn + IO pump (creack/pty)
+- `sb/internal/cockpit/presets.go` — load/save/seed presets
+- `sb/internal/cockpit/hooks.go` — pre/post shell + prompt-template runners
+- `sb/internal/cockpit/syncback.go` — delete source line + append to DEVLOG.md
+- `sb/internal/cockpit/taskpicker.go` — parse `- ` items out of a discovered file
+- `sb/view_agent.go` — Agent tab rendering
+- `sb/update_agent.go` — Agent tab key handling + messages
+- `~/.config/sb/presets/*.json` — four seeds (materialized on first run by a `WriteDefaultPresets` helper)
+
+**Modified (V0):**
+
+- `sb/main.go` — start/ensure foreman daemon, wire cockpit client
+- `sb/model.go` — add `pageAgent`, new modes (`modeAgentList`, `modeAgentPicker`, `modeAgentLaunch`, `modeAgentAttached`), cockpit client handle
+- `sb/view.go` — route `pageAgent` to `renderAgent`, add Agent tab to header pages list (lines 68–75)
+- `sb/update.go` — dispatch key handling for `pageAgent`
+- `sb/internal/config/config.go` — add `presets_dir`, `foreman_socket`, `foreman_autostart` fields with sane defaults
+- `sb/internal/workmd/workmd.go` — expose helper to resolve project repo path from a file path (may already be derivable from `Project.Path`)
+- `sb/README.md` — new Agent tab section + presets config docs
+- `sb/WORK.md` — move the agent-cockpit tasks into Current Tasks with V0/V1 grouping
+- `sb/DEVLOG.md` — entry when V0 lands
+
+### Existing sb code to reuse
+
+- `workmd.Discover` + `Project` struct (`internal/workmd/workmd.go`) — multi-root scan, title/description parsing, label collision resolution. Task picker feeds off this.
+- `llm.Client` (`internal/llm/llm.go`) — wraps ollama / openai / anthropic. Used by V1 master console + any prompt-template hook that wants an LLM to compose context.
+- `config.Config` (`internal/config/config.go`) — provider profiles, env overrides, path expansion. Add cockpit fields here, don't fork config.
+- `logs.Open` (`internal/logs/logs.go`) — structured JSON logs with rotation. Foreman writes to `~/.local/share/sb/logs/foreman.log` via the same helper.
+- `markdown.Render` + `diff` packages — transcript preview + V1 review diffs.
+- `page` / `mode` enum pattern in `model.go` (lines 33–71) — follow it verbatim for new Agent states; don't invent a new state-machine idiom.
+
+## Verification
+
+**Build + unit tests**
+
+- `cd sb && go build ./...` — both `sb` and `cmd/foreman` must compile.
+- `go test ./internal/cockpit/...` — covers: preset load/save roundtrip, brief composition with prompt-templates, sync-back (delete line + DEVLOG append) against golden files, job-lifecycle FSM transitions, registry rehydration after daemon restart.
+
+**Manual end-to-end (V0 accept criteria)**
+
+1. Start `sb` with a clean `~/.local/state/sb/`. Daemon auto-starts; socket appears; `ps` shows `sb-foreman`.
+2. Switch to the new Agent page. Empty state visible.
+3. `n` → pick `sb/WORK.md` → see its `- ` items listed, multi-select 2, confirm.
+4. Launch modal shows `claude-senior-dev` preset pre-filled; confirm.
+5. `claude` runs in a PTY in `~/projects/active/tui-suite/sb`; output streams in the attached view; status is `running`.
+6. Send input via the attached view.
+7. On exit, post-shell hook (`git diff --stat`) runs; job moves to `needs_review` if diff non-empty, else `completed`.
+8. `a` → source `- ` lines are removed from `sb/WORK.md`, DEVLOG entry appended, `SyncBackState=applied`.
+9. Quit `sb`. Re-launch. Previous completed jobs still listed with transcripts intact.
+10. Kill daemon (`kill $(cat ~/.local/state/sb/foreman.pid)`). Launch `sb`. Daemon restarts; `list_jobs` returns the same history.
+11. Repeat with `codex-scaffold` on a different file; with `ollama-docs-tidy` on a docs file; with `shell-escape` running `echo hi` to prove the escape hatch.
+
+**Regression** — existing `sb` behavior (dashboard, dump, cleanup, plan, todo, search, favorites) unchanged; no config migration required for users who never open the Agent tab. Run `go test ./...` for the existing suite.
+
+## Open items to revisit after Codex feedback
+
+- Exact wire format (JSON-RPC 2.0 vs ad-hoc NDJSON). Leaning NDJSON for V0; revisit if Codex pushes back.
+- Whether `sb-foreman` lives in the `sb` go module (`cmd/foreman`) or as a sibling app in `tui-suite/`. Default: `sb/cmd/foreman` to share `internal/cockpit` — split later only if release cadence diverges.
+- V0 sync-back safety: should it refuse to run when the repo has uncommitted changes touching the `- ` line, to avoid clobbering in-progress edits?
+
+## Codex review prompt
+
+> You are reviewing `/home/lucas/projects/active/tui-suite/sb/docs/agent-cockpit-rfc.md`. Background: `sb` is a Go/Bubble Tea second-brain TUI that already discovers WORK.md files across projects and does LLM-assisted routing/cleanup. This RFC adds a cockpit for launching coding agents (Claude Code, Codex, Ollama, shell) against `- ` items from those files. V0 ships a daemon (`sb-foreman`) + new Agent tab in `sb`; V1/V2 add swarms, night queue, master console.
+>
+> Critique the RFC on:
+> 1. **Daemon/TUI boundary** — is an NDJSON unix socket the right abstraction, or should it be JSON-RPC 2.0 / gRPC / MCP? Concrete tradeoffs only.
+> 2. **Data model** — does `Job` + `Campaign` + `LaunchPreset` actually support parallel swarms and iteration without schema churn, or will V2 force migrations?
+> 3. **PTY handling** for `claude` and `codex` CLIs specifically — raw mode, terminal resize, clean exit detection, handling interactive prompts vs. headless flags.
+> 4. **Sync-back safety** — deleting source lines is destructive. What's missing for recovery (undo, soft-delete, dry run, dirty-repo refusal)?
+> 5. **V0 cut** — is anything in V0 actually a V1 concern that's bloating the first slice? Is anything V1 that V0 secretly needs to be useful on day one?
+> 6. **Hidden requirements** — name any item from the prior RFC's "Hidden Requirements" checklist (authority model, state boundaries, job lifecycle, safety model, defaulting, artifacts, context packaging, failure detection, concurrency, recovery) that this revision is still dodging.
+>
+> Return a short critique in the style of a senior-engineer code review: specific, cited to section or line in the RFC, no generic platitudes. If you think the architecture is wrong at the root, say so and propose a concrete alternative rather than a list of caveats.

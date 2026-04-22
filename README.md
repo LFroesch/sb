@@ -180,6 +180,46 @@ Press `t` on any project — the active model reads the WORK.md and tells you th
 
 Scans WORK.md for lines that aren't proper list items and fixes them in-place. Useful after messy manual edits.
 
+### Agent Cockpit (Agent tab)
+
+Launch coding agents against `- ` items from your WORK.md files. See [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md) for the full design.
+
+From the dashboard, switch to the **Agent** tab:
+
+1. `n` — new job sourced from a WORK.md task · `N` — freeform chat (no sources, defaults to the current project's repo or the current working directory)
+2. Step 1 (sourced): pick a file (`enter`)
+3. Step 2 (sourced): `space` toggles items, `enter` continues when at least one is selected
+4. Launch modal: `tab` cycles focus between **preset**, **provider**, and the brief editor. `↑/↓` moves within the focused group. `enter` launches from either picker; when the brief is focused, `alt+enter` launches.
+5. The jobs screen is now a real cockpit: the list shows total/live/running/attention counts plus session usage grouped by provider/model, so you can see at a glance which Claude/Codex/Ollama models are actually in use. `tab` cycles job filters, or press `1-5` for `all/live/running/attention/done`.
+6. Launch drops straight into the attached chat. Idle live jobs open with the input focused so you can keep typing without another mode switch.
+7. Jobs are multi-turn sessions. `enter` on a job attaches the chat view; `enter` sends when the input is focused, and `esc` or `tab` leaves input focus. Sent messages echo immediately, assistant replies stream into the same chat, and the view only auto-follows while you're at the bottom or actively typing. Claude and Codex jobs resume the native session; Ollama jobs replay history; shell jobs re-exec.
+8. Attached chat now includes a persistent sessions rail, and `[` / `]` switches between conversations without bouncing back to the list.
+9. From the jobs list, `i` jumps straight into the selected conversation with input focus when the job is live. Returning from attach preserves the current selection instead of snapping back to the top.
+10. `s` requests a stop for the in-flight turn. Stopped jobs return to `idle` with note `stopped`, so they stay available for follow-up turns or retry.
+11. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
+12. `d` asks for confirmation before deleting a job.
+
+**Presets** describe the *role* (persona, system prompt, hooks, iteration). **Providers** describe the *executor* (claude CLI, codex CLI, ollama model, shell). Each preset carries a suggested provider; the launch modal lets you override with any loaded provider — so you can drive the `senior-dev` role with Claude, Codex, or a local Ollama model interchangeably.
+
+Seed **presets** materialise in `~/.config/sb/presets/` on first run: `senior-dev`, `bug-fixer`, `test-writer`, `refactor`, `code-analyzer`, `explainer`, `pm`, `docs-writer`, `scaffold`, `rfc`, `docs-tidy`, `classify`, `summarize`, plus shell-specific `shell-test`, `shell-lint`, `shell-build`, `shell-escape`.
+
+Seed **providers** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`, `shell`.
+
+Edit any `*.json` in those dirs to customise. Each preset supports pre/post shell hooks, prompt-template injection, and role labels; see the RFC for the full schema.
+From the Agent page, `p` creates a preset template and opens it in your editor, `v` does the same for a provider template, and `P` / `V` open the presets/providers directories directly.
+
+Older preset files that still contain legacy executor args like Claude `--print` or Codex `exec` are normalized at runtime, so they continue to work after the multi-turn cockpit changes.
+
+### Daemon (sb-foreman)
+
+The cockpit runs in a small daemon (`sb-foreman`) that owns job state. sb dials it over a unix socket at `~/.local/state/sb/foreman.sock`, so running jobs survive sb quits and restarts. Each turn is a short-lived `exec.Cmd` spawned by the daemon — no embedded PTY.
+
+- `go build ./cmd/foreman` to build the binary; put it on your `PATH` (or set `cockpit_foreman_bin` in `config.json`).
+- sb auto-starts the daemon on launch if nothing is listening on the socket.
+- Set `"cockpit_daemon": false` in `config.json` to force the pre-daemon in-process mode.
+
+Job state is persisted under `~/.local/state/sb/jobs/<id>/`, rehydrated on every daemon start.
+
 ---
 
 ## Navigation
@@ -190,6 +230,7 @@ Scans WORK.md for lines that aren't proper list items and fixes them in-place. U
 | `enter` | Open project |
 | `e` | Edit WORK.md inline |
 | `d` | Brain dump |
+| `a` | Agent cockpit |
 | `c` / `C` | Cleanup (single / chain) |
 | `P` | Daily plan |
 | `t` | Next todo |
@@ -200,6 +241,28 @@ Scans WORK.md for lines that aren't proper list items and fixes them in-place. U
 | `r` | Refresh |
 | `,` | Open `config.json` in editor |
 | `?` | Help |
+
+Agent tab:
+
+| Key | Action |
+|-----|--------|
+| `n` | New launch (pick file → tasks → preset) |
+| `N` | Freeform launch |
+| `1-5` | Filter jobs by `all/live/running/attention/done` |
+| `tab` | List: cycle filters · Launch modal: cycle preset → provider → brief · Attached view: swap transcript ↔ input |
+| `p` / `v` | Create preset / provider template and open it |
+| `P` / `V` | Open presets / providers directory |
+| `space` | Toggle task in picker |
+| `i` | List: attach and focus input · Attached view: focus input (only while job is live) |
+| `enter` | Launch (from preset/provider picker) · attach to job (from list) · send when input-focused |
+| `alt+enter` | Launch from brief |
+| `j/k` | Scroll transcript when attached |
+| `[` / `]` | Attached view: previous / next job |
+| `a` | Approve (confirm, then sync-back) |
+| `s` | Stop running job |
+| `r` | Retry |
+| `d` | Delete job (confirm) |
+| `esc` | Back (or leave input focus when typing) |
 
 Full keybind reference is available in-app with `?`.
 

@@ -71,6 +71,20 @@ type Config struct {
 	LogLevel       string                    `json:"log_level,omitempty"`       // slog level: debug|info|warn|error
 	CatchallTarget *Target                   `json:"catchall_target,omitempty"` // optional generic-notes bucket
 	IdeasTarget    *Target                   `json:"ideas_target,omitempty"`    // optional ideas bucket
+
+	// Agent cockpit (V0.5+)
+	CockpitDaemon     *bool  `json:"cockpit_daemon,omitempty"`      // true = dial sb-foreman over unix socket (default); false = in-proc
+	CockpitForemanBin string `json:"cockpit_foreman_bin,omitempty"` // override path to sb-foreman; empty = auto-detect on PATH
+}
+
+// UseCockpitDaemon reports whether sb should dial the foreman daemon.
+// Defaults to true; a user who explicitly set it false in config opts
+// out and runs the cockpit in-proc (V0 behavior).
+func (c *Config) UseCockpitDaemon() bool {
+	if c == nil || c.CockpitDaemon == nil {
+		return true
+	}
+	return *c.CockpitDaemon
 }
 
 const (

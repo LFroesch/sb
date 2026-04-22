@@ -163,6 +163,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if m.page == pageDashboard && m.cursor < len(m.projects) {
 			rightW := m.rightPanelWidth()
 			m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+		} else if m.page == pageAgent && m.mode == modeAgentAttached {
+			m.refreshAttachedViewport(false)
 		}
 		// Resize dump textarea to fill available space
 		dumpH := m.height - 10
@@ -171,6 +173,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dumpArea.SetWidth(m.width - 6)
 		m.dumpArea.SetHeight(dumpH)
+		m.launchBrief.SetWidth(m.width - 6)
+		m.attachedInput.SetWidth(m.attachedInputWidth())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -243,6 +247,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDump(msg)
 		case pageCleanup:
 			return m.updateCleanup(msg)
+		case pageAgent:
+			return m.updateAgent(msg)
 		}
 
 	case spinner.TickMsg:
@@ -255,9 +261,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sortWithFavorites(m.projects, m.favorites)
 		m.loading = false
 		if len(m.projects) > 0 && m.width > 0 {
-			rightW := m.rightPanelWidth()
-			m.viewport.SetContent(markdown.Render(m.projects[0].Content, rightW))
-			m.viewport.GotoTop()
+			switch m.page {
+			case pageDashboard:
+				rightW := m.rightPanelWidth()
+				m.viewport.SetContent(markdown.Render(m.projects[0].Content, rightW))
+				m.viewport.GotoTop()
+			case pageProject:
+				if m.selected >= 0 && m.selected < len(m.projects) {
+					m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
+					m.viewport.GotoTop()
+				}
+			}
 		}
 		return m, nil
 
@@ -361,6 +375,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.page = pageCleanup
 		m.mode = modeNormal
+		return m, nil
+
+	case cockpitEventMsg:
+		return m.handleCockpitEvent(msg)
+
+	case cockpitJobsMsg:
+		m.cockpitJobs = msg.jobs
 		return m, nil
 
 	case planResultMsg:
@@ -581,6 +602,14 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dumpArea.Reset()
 		m.dumpArea.Focus()
 		return m, m.dumpArea.Cursor.BlinkCmd()
+	case "a":
+		m.page = pageAgent
+		m.mode = modeAgentList
+		m.agentCursor = 0
+		if m.cockpitClient != nil {
+			return m, cockpitRefreshCmd(m.cockpitClient)
+		}
+		return m, nil
 	case "/":
 		m.mode = modeSearch
 		m.searchQuery = ""

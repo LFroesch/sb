@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/LFroesch/sb/internal/cockpit"
 	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/llm"
 	"github.com/LFroesch/sb/internal/workmd"
@@ -37,6 +38,7 @@ const (
 	pageProject               // single project WORK.md viewer/editor
 	pageDump                  // brain dump input
 	pageCleanup               // LLM WORK.md cleanup preview
+	pageAgent                 // agent cockpit: job list + launch + attached view
 )
 
 // --- Modes ---
@@ -68,6 +70,11 @@ const (
 
 	modePlanWait   // LLM generating daily plan
 	modePlanResult // showing daily plan result
+
+	modeAgentList     // agent tab: job list (default)
+	modeAgentPicker   // agent tab: pick file + tasks
+	modeAgentLaunch   // agent tab: preset + brief confirm
+	modeAgentAttached // agent tab: attached transcript + input
 )
 
 // --- Model ---
@@ -152,6 +159,39 @@ type model struct {
 	dashScroll      int
 	dashRightScroll int
 	helpScroll      int
+
+	// Agent cockpit
+	cockpitClient     cockpit.Client
+	cockpitPresets    []cockpit.LaunchPreset
+	cockpitProviders  []cockpit.ProviderProfile
+	cockpitPaths      cockpit.Paths
+	cockpitJobs       []cockpit.Job
+	cockpitEvents     <-chan cockpit.Event
+	cockpitErr        string
+	cockpitMode       string // "daemon" | "in-proc"
+	agentFilter       string // "all" | "live" | "running" | "attention" | "done"
+	agentCursor       int
+	pickerFile        string
+	pickerProject     string
+	pickerRepo        string
+	pickerItems       []cockpit.PickerItem
+	pickerSelected    map[int]bool
+	launchSources     []cockpit.SourceTask
+	launchRepo        string
+	launchPresetIdx   int
+	launchProviderIdx int // 0 = preset default, 1..n = providers[idx-1]
+	launchBrief       textarea.Model
+	launchFocus       int // 0=preset 1=provider 2=brief
+	attachedJobID     cockpit.JobID
+	attachedInput     textarea.Model
+	attachedFocus     int    // 0=transcript (shortcuts + scroll), 1=input (typing)
+	transcriptBuf     string // live assistant output for the in-flight turn
+	attachedTurns     []cockpit.Turn
+
+	// Agent confirmation state: when active, next y/n answers the prompt.
+	agentConfirmActive bool
+	agentConfirmKind   string
+	agentConfirmTarget cockpit.JobID
 }
 
 func newModel(cfg *config.Config) model {
@@ -178,6 +218,18 @@ func newModel(cfg *config.Config) model {
 	chainFB.SetHeight(3)
 	chainFB.CharLimit = 500
 
+	launchBrief := textarea.New()
+	launchBrief.Placeholder = "additional context for the agent (optional)"
+	launchBrief.SetWidth(80)
+	launchBrief.SetHeight(6)
+	launchBrief.CharLimit = 0
+
+	attachedInput := textarea.New()
+	attachedInput.Placeholder = "send to agent…"
+	attachedInput.SetWidth(80)
+	attachedInput.SetHeight(3)
+	attachedInput.CharLimit = 0
+
 	vp := viewport.New(80, 20)
 
 	sp := spinner.New()
@@ -190,43 +242,50 @@ func newModel(cfg *config.Config) model {
 		dumpArea:         dump,
 		dumpClarifyArea:  clarify,
 		chainFeedback:    chainFB,
+		launchBrief:      launchBrief,
+		attachedInput:    attachedInput,
 		editArea:         edit,
 		viewport:         vp,
 		spinner:          sp,
 		selectedProjects: make(map[string]bool),
+		pickerSelected:   make(map[int]bool),
 		favorites:        loadFavorites(),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tea.SetWindowTitle("sb"),
 		tickCmd(),
 		m.spinner.Tick,
-		func() tea.Msg {
-			projects := workmd.Discover(
-				m.cfg.ExpandedScanRoots(),
-				m.cfg.FilePatterns,
-				m.cfg.ExpandedIdeaDirs(),
-				m.cfg,
-			)
-			// Best-effort: regenerate the routing-context index. Failure here
-			// (e.g. read-only $HOME) shouldn't block startup.
-			var targets []workmd.SpecialTarget
-			if t := m.cfg.CatchallTarget; t != nil {
-				targets = append(targets, workmd.SpecialTarget{
-					Name: t.Name, Path: t.Path, Description: "catch-all for general notes",
-				})
-			}
-			if t := m.cfg.IdeasTarget; t != nil {
-				targets = append(targets, workmd.SpecialTarget{
-					Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
-				})
-			}
-			_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets)
-			return projectsLoadedMsg{projects: projects}
-		},
-	)
+	}
+	if m.cockpitEvents != nil {
+		cmds = append(cmds, cockpitWatchCmd(m.cockpitEvents))
+	}
+	cmds = append(cmds, func() tea.Msg {
+		projects := workmd.Discover(
+			m.cfg.ExpandedScanRoots(),
+			m.cfg.FilePatterns,
+			m.cfg.ExpandedIdeaDirs(),
+			m.cfg,
+		)
+		// Best-effort: regenerate the routing-context index. Failure here
+		// (e.g. read-only $HOME) shouldn't block startup.
+		var targets []workmd.SpecialTarget
+		if t := m.cfg.CatchallTarget; t != nil {
+			targets = append(targets, workmd.SpecialTarget{
+				Name: t.Name, Path: t.Path, Description: "catch-all for general notes",
+			})
+		}
+		if t := m.cfg.IdeasTarget; t != nil {
+			targets = append(targets, workmd.SpecialTarget{
+				Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
+			})
+		}
+		_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets)
+		return projectsLoadedMsg{projects: projects}
+	})
+	return tea.Batch(cmds...)
 }
 
 // --- Messages ---
