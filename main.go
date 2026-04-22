@@ -79,7 +79,7 @@ func main() {
 		m.cockpitJobs = client.ListJobs()
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "sb: %v\n", err)
 		os.Exit(1)

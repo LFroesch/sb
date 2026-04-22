@@ -598,7 +598,7 @@ func (m model) renderChainCleanupSummary() string {
 
 func (m model) renderEditMode() string {
 	header := warnStyle.Render("EDITING") + dimStyle.Render(" — ctrl+s save · esc cancel")
-	hints := dimStyle.Render("  ctrl+d del line · ctrl+k del to eol · home/end line start/end")
+	hints := dimStyle.Render("  ctrl+home/end file top/bottom · ctrl+d del line · ctrl+k del to eol · home/end line start/end")
 	return lipgloss.JoinVertical(lipgloss.Left, header, hints, "", m.editArea.View())
 }
 
@@ -731,6 +731,7 @@ func (m model) renderFooter() string {
 	switch m.page {
 	case pageDashboard:
 		add("↑/↓", "nav")
+		add("wheel", "scroll preview")
 		add("o", "open")
 		add("f", "pin")
 		add("space", "select")
@@ -745,6 +746,7 @@ func (m model) renderFooter() string {
 		}
 	case pageProject:
 		add("↑/↓", "scroll")
+		add("wheel", "scroll")
 		add("e", "edit")
 		add("esc", "back")
 	case pageCleanup:
@@ -800,6 +802,7 @@ func (m model) renderFooter() string {
 				}
 			} else {
 				add("↑/↓", "scroll")
+				add("wheel", "scroll")
 				add("tab/i", "type")
 				add("a", "approve")
 				add("s", "stop")
@@ -810,9 +813,22 @@ func (m model) renderFooter() string {
 				}
 				add("esc", "back")
 			}
+		case modeAgentManage:
+			if m.agentManageEditing {
+				add("ctrl+s", "save field")
+				add("esc", "cancel edit")
+			} else {
+				add("tab", "focus")
+				add("[/]", "switch kind")
+				add("n", "new item")
+				add("enter", "edit")
+				add("esc", "back")
+			}
 		default:
 			add("↑/↓", "nav")
+			add("wheel", "scroll")
 			add("n", "new")
+			add("m", "manage")
 			add("p/v", "new preset/provider")
 			add("enter", "open/attach")
 			add("a", "approve")
@@ -881,6 +897,7 @@ func (m model) renderHelp() string {
 		{"Edit Mode", []struct{ key, desc string }{
 			{"ctrl+s", "Save"},
 			{"esc", "Cancel"},
+			{"ctrl+home/end", "Top / bottom of file"},
 			{"home", "Start of line"},
 			{"end / ctrl+e", "End of line"},
 			{"ctrl+d", "Delete current line"},
@@ -893,14 +910,17 @@ func (m model) renderHelp() string {
 			{"esc", "Cancel / abort remaining"},
 		}},
 		{"Agent Cockpit", []struct{ key, desc string }{
-			{"n", "New launch (pick file → tasks → preset)"},
+			{"n", "New launch (current project first)"},
 			{"N", "Freeform launch"},
+			{"m", "Manage presets/providers in-app"},
 			{"space", "Toggle task in picker"},
+			{"b", "Picker: back to file list"},
 			{"tab", "Launch: cycle preset → provider → brief · Attached exec-chat: swap transcript ↔ input"},
 			{"enter", "Launch · open selected job (tmux attach if live, log review if finished, chat for exec jobs) · send when typing"},
 			{"alt+enter", "Launch from brief"},
 			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
 			{"j/k", "Scroll transcript/log in attached view"},
+			{"wheel", "List nav / transcript scroll"},
 			{"a", "Approve (confirm, then delete source line + append DEVLOG)"},
 			{"s", "Stop running job"},
 			{"r", "Retry job"},

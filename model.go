@@ -75,6 +75,7 @@ const (
 	modeAgentPicker   // agent tab: pick file + tasks
 	modeAgentLaunch   // agent tab: preset + brief confirm
 	modeAgentAttached // agent tab: attached transcript + input
+	modeAgentManage   // agent tab: edit presets/providers in-app
 )
 
 // --- Model ---
@@ -193,6 +194,12 @@ type model struct {
 	agentConfirmActive bool
 	agentConfirmKind   string
 	agentConfirmTarget cockpit.JobID
+	agentManageKind    string // "preset" | "provider"
+	agentManageFocus   int    // 0=list 1=fields
+	agentManageCursor  int
+	agentManageField   int
+	agentManageEditing bool
+	agentManageEditor  textarea.Model
 }
 
 func newModel(cfg *config.Config) model {
@@ -231,6 +238,12 @@ func newModel(cfg *config.Config) model {
 	attachedInput.SetHeight(3)
 	attachedInput.CharLimit = 0
 
+	manageEditor := textarea.New()
+	manageEditor.Placeholder = "edit field value…"
+	manageEditor.SetWidth(80)
+	manageEditor.SetHeight(8)
+	manageEditor.CharLimit = 0
+
 	vp := viewport.New(80, 20)
 
 	sp := spinner.New()
@@ -238,19 +251,21 @@ func newModel(cfg *config.Config) model {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C6CCA"))
 
 	return model{
-		loading:          true,
-		cfg:              cfg,
-		dumpArea:         dump,
-		dumpClarifyArea:  clarify,
-		chainFeedback:    chainFB,
-		launchBrief:      launchBrief,
-		attachedInput:    attachedInput,
-		editArea:         edit,
-		viewport:         vp,
-		spinner:          sp,
-		selectedProjects: make(map[string]bool),
-		pickerSelected:   make(map[int]bool),
-		favorites:        loadFavorites(),
+		loading:           true,
+		cfg:               cfg,
+		dumpArea:          dump,
+		dumpClarifyArea:   clarify,
+		chainFeedback:     chainFB,
+		launchBrief:       launchBrief,
+		attachedInput:     attachedInput,
+		agentManageKind:   "preset",
+		agentManageEditor: manageEditor,
+		editArea:          edit,
+		viewport:          vp,
+		spinner:           sp,
+		selectedProjects:  make(map[string]bool),
+		pickerSelected:    make(map[int]bool),
+		favorites:         loadFavorites(),
 	}
 }
 

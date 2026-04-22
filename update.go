@@ -128,6 +128,44 @@ func (m model) rightPanelWidth() int {
 	return w
 }
 
+func mouseWheelDelta(msg tea.MouseMsg) int {
+	if msg.Action != tea.MouseActionPress {
+		return 0
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		return -3
+	case tea.MouseButtonWheelDown:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func scrollSummary(offset *int, delta, totalLines, visibleLines int) {
+	if delta == 0 {
+		return
+	}
+	*offset += delta
+	maxOffset := totalLines - visibleLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if *offset < 0 {
+		*offset = 0
+	}
+	if *offset > maxOffset {
+		*offset = maxOffset
+	}
+}
+
+func addScrollOffset(offset *int, delta int) {
+	*offset += delta
+	if *offset < 0 {
+		*offset = 0
+	}
+}
+
 // rediscover re-scans configured scan dirs / idea dirs for markdown files
 // and refreshes the routing-context index. Shared across refresh, post-cleanup
 // save, and chain cleanup completion.
@@ -176,6 +214,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dumpArea.SetHeight(dumpH)
 		m.launchBrief.SetWidth(m.width - 6)
 		m.attachedInput.SetWidth(m.attachedInputWidth())
+		return m, nil
+
+	case tea.MouseMsg:
+		if delta := mouseWheelDelta(msg); delta != 0 {
+			return m.handleMouseWheel(delta), nil
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -420,6 +464,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m model) handleMouseWheel(delta int) tea.Model {
+	if m.mode == modeHelp {
+		addScrollOffset(&m.helpScroll, delta/3)
+		return m
+	}
+
+	switch m.page {
+	case pageDashboard:
+		switch m.mode {
+		case modePlanResult, modeTodoResult:
+			if delta > 0 {
+				m.viewport.LineDown(delta)
+			} else {
+				m.viewport.LineUp(-delta)
+			}
+			return m
+		case modeNormal:
+			if delta > 0 {
+				m.viewport.LineDown(delta)
+			} else {
+				m.viewport.LineUp(-delta)
+			}
+			return m
+		}
+	case pageProject:
+		if m.mode == modeNormal {
+			if delta > 0 {
+				m.viewport.LineDown(delta)
+			} else {
+				m.viewport.LineUp(-delta)
+			}
+		}
+		return m
+	case pageCleanup:
+		switch m.mode {
+		case modeChainCleanupReview, modeNormal:
+			if delta > 0 {
+				m.viewport.LineDown(delta)
+			} else {
+				m.viewport.LineUp(-delta)
+			}
+		case modeChainCleanupSummary:
+			addScrollOffset(&m.chainSummaryScroll, delta/3)
+		}
+		return m
+	case pageDump:
+		if m.mode == modeDumpSummary {
+			addScrollOffset(&m.dumpSummaryScroll, delta/3)
+		}
+		return m
+	case pageAgent:
+		return m.handleAgentMouseWheel(delta)
+	}
+	return m
 }
 
 // --- Dashboard ---
@@ -1003,6 +1103,23 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(2 * time.Second)
 			m.mode = modeNormal
 		}
+		return m, nil
+	case "ctrl+home":
+		m.editArea.SetValue(m.editArea.Value())
+		m.editArea, _ = m.editArea.Update(reposViewMsg{})
+		return m, nil
+	case "ctrl+end":
+		value := m.editArea.Value()
+		lines := strings.Split(value, "\n")
+		if len(lines) == 0 {
+			return m, nil
+		}
+		m.editArea.SetValue(value)
+		for i := 0; i < len(lines)-1; i++ {
+			m.editArea.CursorDown()
+		}
+		m.editArea.CursorEnd()
+		m.editArea, _ = m.editArea.Update(reposViewMsg{})
 		return m, nil
 	case "ctrl+d":
 		// Delete current line, reposition cursor to same line number

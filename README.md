@@ -186,8 +186,8 @@ Launch coding agents against `- ` items from your WORK.md files. See [docs/agent
 
 From the dashboard, switch to the **Agent** tab:
 
-1. `n` — new job sourced from a WORK.md task · `N` — freeform chat (no sources, defaults to the current project's repo or the current working directory)
-2. Step 1 (sourced): pick a file (`enter`)
+1. `n` — new job sourced from the current project's WORK.md when possible · `N` — freeform chat (no sources, defaults to the current project's repo or the current working directory)
+2. Step 1 (sourced): if you want a different file, use `b` to jump back to the file list and pick one with `enter`
 3. Step 2 (sourced): `space` toggles items, `enter` continues when at least one is selected
 4. Launch modal: `tab` cycles focus between **preset**, **provider**, and the brief editor. `↑/↓` moves within the focused group. `enter` launches from either picker; when the brief is focused, `alt+enter` launches.
 5. New launches now default to the `senior-dev` role with the `codex` provider when those profiles exist. You can still override either one before launch.
@@ -200,6 +200,7 @@ From the dashboard, switch to the **Agent** tab:
 12. `s` stops the selected job. For tmux jobs that sends `C-c` and then closes the job window; exec jobs cancel the in-flight turn and return to `idle` with note `stopped`.
 13. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
 14. `d` asks for confirmation before deleting a job.
+15. `m` opens an in-app settings surface for presets/providers. Edit a field with `enter`, then `ctrl+s` to save it back to the underlying JSON file.
 
 **Presets** describe the *role* (persona, system prompt, hooks, iteration). **Providers** describe the *executor* (claude CLI, codex CLI, ollama model, shell). Each preset carries a suggested provider; the launch modal lets you override with any loaded provider — so you can drive the `senior-dev` role with Claude, Codex, or a local Ollama model interchangeably.
 
@@ -208,7 +209,7 @@ Seed **presets** materialise in `~/.config/sb/presets/` on first run: `senior-de
 Seed **providers** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`, `shell`.
 
 Edit any `*.json` in those dirs to customise. Each preset supports pre/post shell hooks, prompt-template injection, and role labels; see the RFC for the full schema.
-From the Agent page, `p` creates a preset template and opens it in your editor, `v` does the same for a provider template, and `P` / `V` open the presets/providers directories directly.
+From the Agent page, `m` opens the in-app preset/provider editor. `p` creates a preset template and opens it in your editor, `v` does the same for a provider template, and `P` / `V` open the presets/providers directories directly.
 
 Older preset files that still contain legacy executor args like Claude `--print` or Codex `exec` / `--json` are normalized at runtime, so they continue to work after the tmux split.
 
@@ -219,6 +220,11 @@ The bar at the bottom of live Claude/Codex sessions is the `tmux` status bar for
 - `mouse` is enabled for the cockpit session, and wheel-up / `PageUp` now enter tmux scrollback automatically for the active pane. Keep scrolling normally; `Esc` or `q` exits tmux copy-mode.
 - If you want the normal `sb` transcript/log view instead of the live native CLI pane, use `F1` / `Ctrl+g` / `F12` to return to `sb`.
 - Finished tmux jobs are easier to review inside `sb` itself, where `j/k`, `pgup/pgdn`, and the sessions rail are handled by the TUI instead of the native CLI.
+
+### Mouse wheel and long-file editing
+
+- The main `sb` surfaces now respond to the mouse wheel: dashboard preview, project view, help overlay, Agent jobs list, Agent settings, and attached transcript/log review.
+- Inline `.md` edit mode supports `ctrl+home` / `ctrl+end` to jump to the top or bottom of long files.
 
 ### Daemon (sb-foreman)
 

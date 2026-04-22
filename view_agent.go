@@ -22,6 +22,8 @@ func (m model) renderAgent() string {
 		return m.renderAgentLaunch()
 	case modeAgentAttached:
 		return m.renderAgentAttached()
+	case modeAgentManage:
+		return m.renderAgentManage()
 	}
 	return m.renderAgentList()
 }
@@ -86,17 +88,19 @@ func (m model) renderAgentList() string {
 		}
 		age := time.Since(j.CreatedAt).Round(time.Second)
 		title := fmt.Sprintf("%s  %s", j.PresetID, statusBadge(j.Status))
-		if j.Note != "" {
-			title += dimStyle.Render("  — " + j.Note)
-		}
 		src := ""
 		if len(j.Sources) > 0 {
-			src = "  " + dimStyle.Render(fmt.Sprintf("%s:%d", shortPath(j.Sources[0].File), j.Sources[0].Line))
+			src = fmt.Sprintf("  %s:%d", shortPath(j.Sources[0].File), j.Sources[0].Line)
 			if len(j.Sources) > 1 {
-				src += dimStyle.Render(fmt.Sprintf(" +%d", len(j.Sources)-1))
+				src += fmt.Sprintf(" +%d", len(j.Sources)-1)
 			}
+		} else if j.Repo != "" {
+			src = "  " + shortPath(j.Repo)
 		}
-		row := prefix + title + src + dimStyle.Render(fmt.Sprintf("  %s ago", age))
+		row := prefix + title + dimStyle.Render(src) + dimStyle.Render(fmt.Sprintf("  %s ago", age))
+		if j.Note != "" {
+			row += dimStyle.Render("  ·  " + truncate(j.Note, 28))
+		}
 		return truncate(row, listWidth-4)
 	}
 
@@ -216,11 +220,12 @@ func (m model) renderAgentJobDetail(j cockpit.Job, width int) string {
 	lines := []string{
 		panelHeaderStyle.Render("  Selected job"),
 		fmt.Sprintf("  %s  %s", j.PresetID, statusBadge(j.Status)),
-		dimStyle.Render("  model: " + describeExecutor(j.Executor)),
+		dimStyle.Render("  executor: " + describeExecutor(j.Executor)),
 		dimStyle.Render("  runner: " + describeRunner(j.Runner)),
-		dimStyle.Render("  id: " + string(j.ID)),
 		dimStyle.Render("  age: " + time.Since(j.CreatedAt).Round(time.Second).String()),
+		dimStyle.Render("  sync-back: " + string(j.SyncBackState)),
 	}
+	lines = append(lines, dimStyle.Render("  id: "+string(j.ID)))
 	if j.Runner == cockpit.RunnerTmux {
 		lines = append(lines, dimStyle.Render("  tmux: "+tmuxWindowState(j)))
 	}
@@ -233,6 +238,24 @@ func (m model) renderAgentJobDetail(j cockpit.Job, width int) string {
 			src += fmt.Sprintf(" (+%d)", len(j.Sources)-1)
 		}
 		lines = append(lines, dimStyle.Render(src))
+	} else if j.Repo != "" {
+		lines = append(lines, dimStyle.Render("  repo: "+shortPath(j.Repo)))
+	}
+	lines = append(lines, "")
+	lines = append(lines, panelHeaderStyle.Render("  Next action"))
+	switch {
+	case j.Runner == cockpit.RunnerTmux && j.Status == cockpit.StatusRunning:
+		lines = append(lines, accentStyle.Render("  enter attach to live tmux window"))
+	case j.Runner == cockpit.RunnerTmux:
+		lines = append(lines, dimStyle.Render("  enter review log / transcript"))
+	case j.Status == cockpit.StatusIdle:
+		lines = append(lines, accentStyle.Render("  enter or i to continue conversation"))
+	case j.Status == cockpit.StatusRunning:
+		lines = append(lines, dimStyle.Render("  stop or wait for the current turn"))
+	case j.Status == cockpit.StatusNeedsReview:
+		lines = append(lines, warnStyle.Render("  approve after reviewing changes"))
+	default:
+		lines = append(lines, dimStyle.Render("  retry, delete, or inspect details"))
 	}
 	lines = append(lines, "")
 	lines = append(lines, panelHeaderStyle.Render("  Latest turn"))
@@ -496,6 +519,17 @@ func renderAgentUsageSummary(jobs []cockpit.Job, width int) []string {
 	return lines
 }
 
+func renderAgentFilterChip(key, label string, n int, active string) string {
+	text := fmt.Sprintf("%s %s:%d", key, label, n)
+	if active == "" {
+		active = "all"
+	}
+	if label == active {
+		return accentStyle.Render(text)
+	}
+	return dimStyle.Render(text)
+}
+
 func renderAgentFilterBar(jobs []cockpit.Job, active string, width int) string {
 	counts := map[string]int{
 		"all":       len(jobs),
@@ -528,15 +562,80 @@ func renderAgentFilterBar(jobs []cockpit.Job, active string, width int) string {
 	return truncate("  "+strings.Join(parts, "  "), width)
 }
 
-func renderAgentFilterChip(key, label string, n int, active string) string {
-	text := fmt.Sprintf("%s %s:%d", key, label, n)
-	if active == "" {
-		active = "all"
+func (m model) renderAgentManage() string {
+	kindLabel := "Presets"
+	if m.agentManageKind == "provider" {
+		kindLabel = "Providers"
 	}
-	if label == active {
-		return accentStyle.Render(text)
+	title := titleStyle.Render("Agent Settings") +
+		dimStyle.Render("  ·  [ presets  ] / [ providers ]")
+	if m.agentManageKind == "provider" {
+		title = titleStyle.Render("Agent Settings") +
+			dimStyle.Render("  ·  [ providers ] / [ presets ]")
 	}
-	return dimStyle.Render(text)
+
+	contentHeight := m.agentContentHeight()
+	panelHeight := contentHeight - 2
+	if panelHeight < 10 {
+		panelHeight = 10
+	}
+	leftWidth := m.width * 32 / 100
+	if leftWidth < 30 {
+		leftWidth = 30
+	}
+	rightWidth := m.width - leftWidth - 6
+	if rightWidth < 40 {
+		rightWidth = 40
+	}
+	innerHeight := panelHeight - 2
+	if innerHeight < 4 {
+		innerHeight = 4
+	}
+
+	var items []string
+	items = append(items, panelHeaderStyle.Render("  "+kindLabel))
+	items = append(items, dimStyle.Render("  n new item"))
+	items = append(items, "")
+	total := m.agentManageItemCount()
+	start, end := windowRange(total, m.agentManageCursor, innerHeight-3)
+	for i := start; i < end; i++ {
+		prefix := "  "
+		if i == m.agentManageCursor {
+			prefix = accentStyle.Render("▸ ")
+		}
+		label := m.agentManageItemLabel(i)
+		items = append(items, truncate(prefix+label, leftWidth-4))
+	}
+	if total == 0 {
+		items = append(items, dimStyle.Render("  no items"))
+	}
+	left := panelStyle.Width(leftWidth).Height(panelHeight).Render(strings.Join(capLines(items, innerHeight), "\n"))
+
+	specs := m.agentManageFieldSpecs()
+	var detail []string
+	detail = append(detail, panelHeaderStyle.Render("  Fields"))
+	if total > 0 {
+		detail = append(detail, dimStyle.Render("  tab switch focus · enter edit · ctrl+s save"))
+	}
+	detail = append(detail, "")
+	for i, spec := range specs {
+		prefix := "  "
+		if i == m.agentManageField && m.agentManageFocus == 1 {
+			prefix = accentStyle.Render("▸ ")
+		}
+		value := m.agentManageFieldValue(m.agentManageCursor, i)
+		preview := strings.ReplaceAll(value, "\n", "  ")
+		detail = append(detail, truncate(prefix+spec.Label+": "+preview, rightWidth-4))
+	}
+	if m.agentManageEditing {
+		spec := specs[m.agentManageField]
+		detail = append(detail, "")
+		detail = append(detail, panelHeaderStyle.Render("  Editing: "+spec.Label))
+		detail = append(detail, m.agentManageEditor.View())
+	}
+	right := panelStyle.Width(rightWidth).Height(panelHeight).Render(strings.Join(capLines(detail, innerHeight), "\n"))
+
+	return strings.Join([]string{title, "", lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)}, "\n")
 }
 
 func countUserVisibleTurns(j cockpit.Job) int {
@@ -643,7 +742,7 @@ func (m model) renderAgentPicker() string {
 	} else {
 		lines = append(lines, "")
 	}
-	lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d selected · space toggle · enter continue · esc back", countSelected(m.pickerSelected))))
+	lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d selected · space toggle · enter continue · b change file · esc back", countSelected(m.pickerSelected))))
 	return strings.Join(lines, "\n")
 }
 
@@ -689,6 +788,17 @@ func (m model) renderAgentLaunch() string {
 		dimStyle.Render("  repo=") + textStyle.Render(shortPath(m.launchRepo)) +
 		dimStyle.Render(fmt.Sprintf("  %d sources", len(m.launchSources)))
 	lines = append(lines, summary, "")
+	if len(m.launchSources) > 0 {
+		var src []string
+		for i, s := range m.launchSources {
+			if i >= 3 {
+				src = append(src, fmt.Sprintf("+%d more", len(m.launchSources)-i))
+				break
+			}
+			src = append(src, truncate(s.Text, 42))
+		}
+		lines = append(lines, dimStyle.Render("  sources: "+strings.Join(src, "  ·  ")), "")
+	}
 
 	// Rows available for the focused panel.
 	// title(1)+blank(1)+summary(1)+blank(1)+topIndicator(1)+bottomIndicator(1)

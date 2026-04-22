@@ -16,6 +16,13 @@
 
 ## DevLog
 
+### 2026-04-22 — Wheel scrolling, long-file jumps, and in-app Agent settings
+- Enabled Bubble Tea mouse support in [main.go](main.go) and routed wheel events in [update.go](update.go) / [update_agent.go](update_agent.go) so the dashboard preview, project view, help overlay, Agent jobs list, and attached transcript/log review respond to the mouse wheel.
+- Tightened inline `.md` editing in [update.go](update.go) and [view.go](view.go): edit mode now documents and honors `ctrl+home` / `ctrl+end` as top/bottom-of-file jumps for long files.
+- Smoothed sourced Agent launches in [update_agent.go](update_agent.go) and [view_agent.go](view_agent.go) by defaulting `n` to the current project first, adding `b` to jump back to the full file picker, and surfacing a better source summary in the launch screen.
+- Added an in-app Agent settings surface in [update_agent.go](update_agent.go) and [view_agent.go](view_agent.go) for editing preset/provider fields and hook JSON directly from the TUI, with save-time validation and persistence back to the existing preset/provider JSON files.
+- Added focused coverage in [update_agent_test.go](update_agent_test.go) for current-project picker bootstrapping and preset hook-field parsing/saving.
+
 ### 2026-04-22 — Cockpit defaults, tmux styling, and hint cleanup
 - Cleaned up the Agent page so routine controls stay in the footer/help overlay instead of being repeated inside the list, detail pane, and attached views. The cockpit panels now bias toward status and state instead of inline mini-manuals.
 - Added a Codex-first launch default: new sourced/freeform launches now prefer the `senior-dev` preset and the `codex` provider when those profiles are available, instead of always landing on the first alphabetically sorted preset/provider.
