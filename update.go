@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/LFroesch/sb/internal/cockpit"
 	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/diff"
 	"github.com/LFroesch/sb/internal/llm"
@@ -180,7 +181,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// ctrl+c always quits regardless of mode
 		if msg.String() == "ctrl+c" {
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 
 		// In text-input modes, route directly to their handlers (don't intercept q, ?, etc.)
@@ -203,7 +204,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			if m.mode == modeNormal && m.page == pageDashboard {
-				return m, tea.Quit
+				return m, m.quitCmd()
 			}
 			if m.mode != modeNormal {
 				m.mode = modeNormal
@@ -719,6 +720,16 @@ func todoCmd(cfg *config.Config, content string) tea.Cmd {
 		result, err := client.NextTodo(ctx, content)
 		return todoResultMsg{result: result, err: err}
 	}
+}
+
+func (m model) quitCmd() tea.Cmd {
+	if m.cockpitDetachQuit {
+		return func() tea.Msg {
+			_ = cockpit.DetachClient()
+			return tea.Quit()
+		}
+	}
+	return tea.Quit
 }
 
 func cleanupCmd(cfg *config.Config, content string) tea.Cmd {

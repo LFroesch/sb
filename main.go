@@ -16,7 +16,16 @@ func main() {
 	_ = config.WriteDefaults() // create ~/.config/sb/config.json on first run
 	cfg := config.Load()
 	slog.SetDefault(logs.Open("sb", cfg.LogLevel))
+
+	// Bootstrap: re-exec ourselves inside the cockpit tmux session so
+	// that window 0 of sb-cockpit is sb itself. No-op (and ExecFallback
+	// is set) if tmux is missing or the user opted out via SB_NO_TMUX.
+	if _, fb, bootErr := cockpit.MaybeReExecIntoTmux(); bootErr != nil && fb {
+		slog.Info("cockpit: tmux bootstrap skipped", "err", bootErr)
+	}
+
 	m := newModel(cfg)
+	m.cockpitDetachQuit = cockpit.ShouldDetachOnQuit()
 
 	// Cockpit: seed presets + providers, then connect to the manager.
 	// Preferred path is dial sb-foreman over the unix socket so jobs

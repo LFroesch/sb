@@ -169,6 +169,7 @@ type model struct {
 	cockpitEvents     <-chan cockpit.Event
 	cockpitErr        string
 	cockpitMode       string // "daemon" | "in-proc"
+	cockpitDetachQuit bool
 	agentFilter       string // "all" | "live" | "running" | "attention" | "done"
 	agentCursor       int
 	pickerFile        string

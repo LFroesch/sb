@@ -25,6 +25,7 @@ const (
 	MethodRetryJob       Method = "retry_job"
 	MethodSendInput      Method = "send_input"
 	MethodReadTranscript Method = "read_transcript"
+	MethodAttachTmux     Method = "attach_tmux"
 	MethodSubscribe      Method = "subscribe" // server starts pushing events on this conn
 	MethodPing           Method = "ping"
 )
@@ -90,5 +91,7 @@ type SendInputParams struct {
 
 type ReadTranscriptParams struct{ ID JobID `json:"id"` }
 type ReadTranscriptResult struct{ Body string `json:"body"` }
+
+type AttachTmuxParams struct{ ID JobID `json:"id"` }
 
 type ListJobsResult struct{ Jobs []Job `json:"jobs"` }

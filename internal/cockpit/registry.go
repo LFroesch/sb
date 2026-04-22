@@ -26,9 +26,10 @@ func NewRegistry(paths Paths) *Registry {
 	return &Registry{paths: paths, jobs: map[JobID]*Job{}}
 }
 
-// Rehydrate walks JobsDir and loads every job.json. Running/paused jobs
-// are marked failed with a note so the UI shows them as stale after a
-// crash or daemon restart.
+// Rehydrate walks JobsDir and loads every job.json. Exec-backed
+// running/paused jobs are marked failed with a note so the UI shows
+// them as stale after a crash or daemon restart. Tmux-backed jobs are
+// left alone so the tmux runner can reconcile them against live panes.
 func (r *Registry) Rehydrate() error {
 	if err := os.MkdirAll(r.paths.JobsDir, 0o755); err != nil {
 		return err
@@ -53,7 +54,7 @@ func (r *Registry) Rehydrate() error {
 			fmt.Fprintf(os.Stderr, "cockpit: bad job file %s: %v\n", path, err)
 			continue
 		}
-		if j.Status == StatusRunning || j.Status == StatusPaused {
+		if (j.Status == StatusRunning || j.Status == StatusPaused) && j.Runner != RunnerTmux {
 			j.Status = StatusFailed
 			j.Note = "interrupted by restart"
 			j.FinishedAt = time.Now()

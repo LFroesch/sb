@@ -262,6 +262,10 @@ func (c *SocketClient) ReadTranscript(id JobID) (string, error) {
 	return out.Body, nil
 }
 
+func (c *SocketClient) AttachTmux(id JobID) error {
+	return c.call(MethodAttachTmux, AttachTmuxParams{ID: id}, nil)
+}
+
 // Subscribe asks the server to start streaming events (once) and returns
 // a local fan-out channel. Cancel the returned func to stop receiving.
 func (c *SocketClient) Subscribe() (<-chan Event, func()) {

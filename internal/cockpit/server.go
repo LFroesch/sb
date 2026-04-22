@@ -248,6 +248,18 @@ func dispatch(_ context.Context, mgr *Manager, req Envelope, activateSub func())
 		}
 		reply.Result = mustJSON(ReadTranscriptResult{Body: body})
 
+	case MethodAttachTmux:
+		var p AttachTmuxParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		if err := mgr.AttachTmux(p.ID); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(map[string]any{"ok": true})
+
 	case MethodSubscribe:
 		activateSub()
 		reply.Result = mustJSON(map[string]any{"ok": true})

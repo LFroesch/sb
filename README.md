@@ -191,13 +191,14 @@ From the dashboard, switch to the **Agent** tab:
 3. Step 2 (sourced): `space` toggles items, `enter` continues when at least one is selected
 4. Launch modal: `tab` cycles focus between **preset**, **provider**, and the brief editor. `↑/↓` moves within the focused group. `enter` launches from either picker; when the brief is focused, `alt+enter` launches.
 5. The jobs screen is now a real cockpit: the list shows total/live/running/attention counts plus session usage grouped by provider/model, so you can see at a glance which Claude/Codex/Ollama models are actually in use. `tab` cycles job filters, or press `1-5` for `all/live/running/attention/done`.
-6. Launch drops straight into the attached chat. Idle live jobs open with the input focused so you can keep typing without another mode switch.
-7. Jobs are multi-turn sessions. `enter` on a job attaches the chat view; `enter` sends when the input is focused, and `esc` or `tab` leaves input focus. Sent messages echo immediately, assistant replies stream into the same chat, and the view only auto-follows while you're at the bottom or actively typing. Claude and Codex jobs resume the native session; Ollama jobs replay history; shell jobs re-exec.
-8. Attached chat now includes a persistent sessions rail, and `[` / `]` switches between conversations without bouncing back to the list.
-9. From the jobs list, `i` jumps straight into the selected conversation with input focus when the job is live. Returning from attach preserves the current selection instead of snapping back to the top.
-10. `s` requests a stop for the in-flight turn. Stopped jobs return to `idle` with note `stopped`, so they stay available for follow-up turns or retry.
-11. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
-12. `d` asks for confirmation before deleting a job.
+6. Claude and Codex jobs now run in real `tmux` windows under the isolated `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to emulate its UI inside Bubble Tea.
+7. `enter` or `i` on a live tmux-backed job switches the client into that job's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the `sb` window. `Ctrl+C` is forwarded normally only when you're already on the `sb` window itself.
+8. Finished tmux jobs open an in-app log/review view instead of trying to fake a live chat. The detail pane also shows whether the tmux window is still live or already closed.
+9. Ollama and shell jobs stay on the exec-per-turn path. Those still use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
+10. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. `x` is an explicit detach shortcut from the Agent UI. Jobs and the `sb-cockpit` session keep running; relaunching `sb` reattaches to the same session.
+11. `s` stops the selected job. For tmux jobs that sends `C-c` and then closes the job window; exec jobs cancel the in-flight turn and return to `idle` with note `stopped`.
+12. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
+13. `d` asks for confirmation before deleting a job.
 
 **Presets** describe the *role* (persona, system prompt, hooks, iteration). **Providers** describe the *executor* (claude CLI, codex CLI, ollama model, shell). Each preset carries a suggested provider; the launch modal lets you override with any loaded provider — so you can drive the `senior-dev` role with Claude, Codex, or a local Ollama model interchangeably.
 
@@ -208,11 +209,13 @@ Seed **providers** materialise in `~/.config/sb/providers/` on first run: `claud
 Edit any `*.json` in those dirs to customise. Each preset supports pre/post shell hooks, prompt-template injection, and role labels; see the RFC for the full schema.
 From the Agent page, `p` creates a preset template and opens it in your editor, `v` does the same for a provider template, and `P` / `V` open the presets/providers directories directly.
 
-Older preset files that still contain legacy executor args like Claude `--print` or Codex `exec` are normalized at runtime, so they continue to work after the multi-turn cockpit changes.
+Older preset files that still contain legacy executor args like Claude `--print` or Codex `exec` / `--json` are normalized at runtime, so they continue to work after the tmux split.
 
 ### Daemon (sb-foreman)
 
-The cockpit runs in a small daemon (`sb-foreman`) that owns job state. sb dials it over a unix socket at `~/.local/state/sb/foreman.sock`, so running jobs survive sb quits and restarts. Each turn is a short-lived `exec.Cmd` spawned by the daemon — no embedded PTY.
+The cockpit runs in a small daemon (`sb-foreman`) that owns job state. sb dials it over a unix socket at `~/.local/state/sb/foreman.sock`, so running jobs survive sb quits and restarts. Claude/Codex jobs are tracked as `tmux` windows; Ollama/shell jobs stay on the short-lived `exec.Cmd` path.
+
+When the daemon restarts, tmux-backed jobs are rehydrated from their persisted `TmuxTarget` and reconciled against the live `sb-cockpit` session instead of being marked failed immediately. That lets interactive Claude/Codex work keep running even if `sb` or `sb-foreman` was not up for a while.
 
 - `go build ./cmd/foreman` to build the binary; put it on your `PATH` (or set `cockpit_foreman_bin` in `config.json`).
 - sb auto-starts the daemon on launch if nothing is listening on the socket.
@@ -249,19 +252,21 @@ Agent tab:
 | `n` | New launch (pick file → tasks → preset) |
 | `N` | Freeform launch |
 | `1-5` | Filter jobs by `all/live/running/attention/done` |
-| `tab` | List: cycle filters · Launch modal: cycle preset → provider → brief · Attached view: swap transcript ↔ input |
+| `tab` | List: cycle filters · Launch modal: cycle preset → provider → brief · Attached exec-chat: swap transcript ↔ input |
 | `p` / `v` | Create preset / provider template and open it |
 | `P` / `V` | Open presets / providers directory |
 | `space` | Toggle task in picker |
-| `i` | List: attach and focus input · Attached view: focus input (only while job is live) |
-| `enter` | Launch (from preset/provider picker) · attach to job (from list) · send when input-focused |
+| `i` | List: open selected job (`tmux` attach while live, input focus for exec-chat jobs) · Attached exec-chat: focus input |
+| `enter` | Launch (from preset/provider picker) · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
 | `alt+enter` | Launch from brief |
-| `j/k` | Scroll transcript when attached |
+| `j/k` | Scroll transcript or tmux log in the attached view |
 | `[` / `]` | Attached view: previous / next job |
 | `a` | Approve (confirm, then sync-back) |
 | `s` | Stop running job |
 | `r` | Retry |
 | `d` | Delete job (confirm) |
+| `x` | Detach cockpit client immediately when running inside `sb-cockpit` |
+| `q` | Detach cockpit client when running inside `sb-cockpit`; otherwise quit/go back |
 | `esc` | Back (or leave input focus when typing) |
 
 Full keybind reference is available in-app with `?`.

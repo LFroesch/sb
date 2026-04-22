@@ -795,6 +795,9 @@ func (m model) renderFooter() string {
 			if m.attachedFocus == 1 {
 				add("enter", "send")
 				add("esc/tab", "leave input")
+				if m.cockpitDetachQuit {
+					add("x", "detach")
+				}
 			} else {
 				add("↑/↓", "scroll")
 				add("tab/i", "type")
@@ -802,23 +805,33 @@ func (m model) renderFooter() string {
 				add("s", "stop")
 				add("r", "retry")
 				add("d", "delete")
+				if m.cockpitDetachQuit {
+					add("x", "detach")
+				}
 				add("esc", "back")
 			}
 		default:
 			add("↑/↓", "nav")
 			add("n", "new")
 			add("p/v", "new preset/provider")
-			add("enter", "attach")
+			add("enter", "open/attach")
 			add("a", "approve")
 			add("s", "stop")
 			add("r", "retry")
 			add("d", "delete")
+			if m.cockpitDetachQuit {
+				add("x", "detach")
+			}
 			add("esc", "back")
 		}
 	}
 
 	add("?", "help")
-	add("q", "quit")
+	if m.cockpitDetachQuit {
+		add("q", "detach")
+	} else {
+		add("q", "quit")
+	}
 
 	return " " + strings.Join(parts, "")
 }
@@ -881,17 +894,19 @@ func (m model) renderHelp() string {
 		}},
 		{"Agent Cockpit", []struct{ key, desc string }{
 			{"n", "New launch (pick file → tasks → preset)"},
-			{"N", "Freeform launch (opens straight into chat after launch)"},
+			{"N", "Freeform launch"},
 			{"space", "Toggle task in picker"},
-			{"tab", "Launch: cycle preset → provider → brief · Attached: swap transcript ↔ input"},
-			{"enter", "Launch (from preset/provider picker) · attach to job (from list) · send when typing"},
+			{"tab", "Launch: cycle preset → provider → brief · Attached exec-chat: swap transcript ↔ input"},
+			{"enter", "Launch · open selected job (tmux attach if live, log review if finished, chat for exec jobs) · send when typing"},
 			{"alt+enter", "Launch from brief"},
-			{"i", "Attached: focus input (live jobs open there by default when idle)"},
-			{"j/k", "Scroll transcript when attached"},
+			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
+			{"j/k", "Scroll transcript/log in attached view"},
 			{"a", "Approve (confirm, then delete source line + append DEVLOG)"},
 			{"s", "Stop running job"},
 			{"r", "Retry job"},
 			{"d", "Delete job (confirm)"},
+			{"x", "Detach cockpit client immediately when running inside tmux"},
+			{"q", "Detach cockpit client when running inside tmux (otherwise quit/go back)"},
 			{"esc", "Back"},
 		}},
 	}

@@ -16,6 +16,17 @@
 
 ## DevLog
 
+### 2026-04-22 — Tmux cockpit path made coherent
+- Finished the first real tmux-backed Claude/Codex path instead of mixing it with the older embedded-chat model. `internal/cockpit/runner_tmux.go` now launches the native interactive CLIs directly in tmux windows, normalizes legacy Claude/Codex args for that mode, and lets windows close cleanly so job status can advance instead of hanging in `running`.
+- Rewired the Agent page so tmux-backed jobs use `AttachTmux` from the job list and on launch, while Ollama/shell jobs continue using the existing attached exec-chat view. Updated cockpit title/detail/help text to make the split visible, including an `exec-fallback` badge when tmux bootstrap is unavailable.
+- Tightened cockpit tests by waiting for launched jobs to settle before tempdir cleanup, adding tmux-command normalization coverage, and skipping the unix-socket roundtrip test in environments where unix sockets are blocked.
+- Fixed two lifecycle holes in the tmux path: dashboard `q` now detaches the cockpit client instead of blindly quitting when running inside `sb-cockpit`, and registry rehydrate now preserves tmux-backed running jobs so the daemon can reconnect them to still-live tmux windows after a restart.
+- Added a clearer operator surface on top of that lifecycle work: Agent list/detail/attached views now expose explicit detach (`x`), live tmux-window state, and a finished-session log/review pane for tmux-backed jobs instead of only supporting live attach.
+- Hardened tmux startup for detached foreman usage: cockpit tmux commands now inject a default `TERM=xterm-256color` when the daemon was started without a terminal environment, which fixes launches that previously failed with `open terminal failed: not a terminal`. The Agent UI now also surfaces that real launch note instead of the vague `tmux window not recorded for this job`.
+- Fixed the tmux session bootstrap primitive itself: `EnsureSession` no longer uses `new-session -A`, and instead does an explicit `has-session` check before detached session creation. That avoids tmux falling into an attach/reuse path when `sb-cockpit` already exists, which was another source of confusing non-terminal startup failures.
+- Added more reliable "return to sb" tmux root bindings. `F1` is still bound to window 0, but the cockpit now also binds `Ctrl+g` and `F12` so VS Code / Cursor terminals that intercept function keys still have a clean way to return from an attached job without using `Ctrl+C` and accidentally interrupting the agent process.
+- Tightened that further by making `Ctrl+C` context-sensitive at the tmux root table: on window 0 (`sb`) it still passes through normally, but from attached job windows it now returns to `sb` instead of sending SIGINT to the agent process.
+
 ### 2026-04-21 — Agent cockpit control-plane pass
 - Reworked the Agent page toward a real multi-session cockpit instead of a single-chat view. The list now shows top-level operational counts plus session usage grouped by provider/model so it is easier to see where Claude/Codex/Ollama jobs are concentrated.
 - Reworked attached chat into a split layout with a persistent sessions rail and `[` / `]` quick-switching, which makes moving between multiple active conversations much faster.

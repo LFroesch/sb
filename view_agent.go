@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +30,9 @@ func (m model) renderAgentList() string {
 	title := titleStyle.Render("Agent Cockpit")
 	if m.cockpitMode != "" {
 		title += dimStyle.Render("  [" + m.cockpitMode + "]")
+	}
+	if cockpit.ExecFallback {
+		title += warnStyle.Render("  [exec-fallback]")
 	}
 	var lines []string
 	lines = append(lines, title, "")
@@ -118,7 +122,11 @@ func (m model) renderAgentList() string {
 		}
 	}
 	listLines = append(listLines, "")
-	listLines = append(listLines, dimStyle.Render("  1-5 filter · tab cycle · enter inspect · i iterate · a approve · s stop · r retry · d delete"))
+	hint := "  1-5 filter · tab cycle · enter open/attach · i iterate/attach · a approve · s stop · r retry · d delete"
+	if m.cockpitDetachQuit {
+		hint += " · x detach"
+	}
+	listLines = append(listLines, dimStyle.Render(hint))
 	listBody := panelStyle.Width(listWidth).Height(panelHeight).Render(strings.Join(capLines(listLines, innerHeight), "\n"))
 
 	detail := "  no selected job"
@@ -215,8 +223,12 @@ func (m model) renderAgentJobDetail(j cockpit.Job, width int) string {
 		panelHeaderStyle.Render("  Selected job"),
 		fmt.Sprintf("  %s  %s", j.PresetID, statusBadge(j.Status)),
 		dimStyle.Render("  model: " + describeExecutor(j.Executor)),
+		dimStyle.Render("  runner: " + describeRunner(j.Runner)),
 		dimStyle.Render("  id: " + string(j.ID)),
 		dimStyle.Render("  age: " + time.Since(j.CreatedAt).Round(time.Second).String()),
+	}
+	if j.Runner == cockpit.RunnerTmux {
+		lines = append(lines, dimStyle.Render("  tmux: "+tmuxWindowState(j)))
 	}
 	if j.Note != "" {
 		lines = append(lines, dimStyle.Render("  note: "+j.Note))
@@ -239,11 +251,50 @@ func (m model) renderAgentJobDetail(j cockpit.Job, width int) string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, panelHeaderStyle.Render("  Conversation"))
-	lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d total turns · %d assistant replies", countUserVisibleTurns(j), countAssistantTurnsForView(j))))
+	if j.Runner == cockpit.RunnerTmux {
+		lines = append(lines, dimStyle.Render("  tmux-backed interactive session"))
+		if j.TmuxTarget != "" {
+			lines = append(lines, dimStyle.Render("  target: "+j.TmuxTarget))
+		}
+	} else {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d total turns · %d assistant replies", countUserVisibleTurns(j), countAssistantTurnsForView(j))))
+	}
 	lines = append(lines, "")
 	lines = append(lines, panelHeaderStyle.Render("  Actions"))
-	lines = append(lines, dimStyle.Render("  enter attach · a approve · s stop · r retry · d delete"))
+	if j.Runner == cockpit.RunnerTmux {
+		if j.Status == cockpit.StatusRunning {
+			lines = append(lines, dimStyle.Render("  enter attach tmux · i attach tmux · a approve · s stop · r retry · d delete"))
+		} else {
+			lines = append(lines, dimStyle.Render("  enter review log · a approve · r retry · d delete"))
+		}
+	} else {
+		lines = append(lines, dimStyle.Render("  enter attach chat · i focus input · a approve · s stop · r retry · d delete"))
+	}
 	return strings.Join(lines, "\n")
+}
+
+func describeRunner(r cockpit.Runner) string {
+	if r == "" {
+		return "exec"
+	}
+	return string(r)
+}
+
+func tmuxWindowState(j cockpit.Job) string {
+	if j.Runner != cockpit.RunnerTmux {
+		return "n/a"
+	}
+	if j.TmuxTarget == "" {
+		return "missing target"
+	}
+	alive, err := cockpit.WindowAlive(j.TmuxTarget)
+	if err != nil {
+		return "check failed"
+	}
+	if alive {
+		return "live (" + j.TmuxTarget + ")"
+	}
+	return "closed (" + j.TmuxTarget + ")"
 }
 
 func lastJobPreview(j cockpit.Job) string {
@@ -751,17 +802,22 @@ func (m model) renderAgentAttached() string {
 		j.Status != cockpit.StatusFailed &&
 		j.Status != cockpit.StatusBlocked
 	turnInFlight := j.Status == cockpit.StatusRunning
+	isTmux := j.Runner == cockpit.RunnerTmux
 
 	railWidth, chatWidth, panelHeight := m.attachedLayoutDims()
 
 	rail := m.renderAttachedRail(railWidth, panelHeight)
 
 	var lines []string
-	header := titleStyle.Render("Chat: ") + j.PresetID + "  " + statusBadge(j.Status)
+	titleLabel := "Chat: "
+	if isTmux {
+		titleLabel = "Session: "
+	}
+	header := titleStyle.Render(titleLabel) + j.PresetID + "  " + statusBadge(j.Status)
 	header += dimStyle.Render("  " + describeExecutor(j.Executor))
 	lines = append(lines, header)
 
-	meta := []string{dimStyle.Render("  " + string(j.ID))}
+	meta := []string{dimStyle.Render("  " + string(j.ID)), dimStyle.Render("· " + describeRunner(j.Runner))}
 	if age := time.Since(j.CreatedAt).Round(time.Second); age > 0 {
 		meta = append(meta, dimStyle.Render("· "+age.String()+" ago"))
 	}
@@ -770,6 +826,9 @@ func (m model) renderAgentAttached() string {
 	}
 	if j.Note != "" {
 		meta = append(meta, dimStyle.Render("· "+j.Note))
+	}
+	if isTmux {
+		meta = append(meta, dimStyle.Render("· "+tmuxWindowState(j)))
 	}
 	lines = append(lines, strings.Join(meta, " "))
 
@@ -782,10 +841,16 @@ func (m model) renderAgentAttached() string {
 	}
 
 	turnCount := countUserVisibleTurns(j)
+	sectionLabel := "transcript"
+	sectionMeta := fmt.Sprintf("%d turns · [/] switch sessions · tab/i type", turnCount)
+	if isTmux {
+		sectionLabel = "log"
+		sectionMeta = "tmux session log · [/] switch sessions"
+	}
 	if m.attachedFocus == 0 {
-		lines = append(lines, "", accentStyle.Render("  ▸ transcript")+dimStyle.Render(fmt.Sprintf("  %d turns · [/] switch sessions · tab/i type", turnCount)))
+		lines = append(lines, "", accentStyle.Render("  ▸ "+sectionLabel)+dimStyle.Render("  "+sectionMeta))
 	} else {
-		lines = append(lines, "", dimStyle.Render(fmt.Sprintf("  transcript · %d turns", turnCount))+"  "+accentStyle.Render("▸ input"))
+		lines = append(lines, "", dimStyle.Render(fmt.Sprintf("  %s · %d turns", sectionLabel, turnCount))+"  "+accentStyle.Render("▸ input"))
 	}
 
 	headerLines := len(lines)
@@ -806,7 +871,13 @@ func (m model) renderAgentAttached() string {
 	m.viewport.Height = h
 	lines = append(lines, m.viewport.View())
 
-	if isLive {
+	if isTmux {
+		if isLive {
+			lines = append(lines, accentStyle.Render("  live tmux session — press enter or i from the jobs list to attach"))
+		} else {
+			lines = append(lines, dimStyle.Render("  tmux session ended — review log above"))
+		}
+	} else if isLive {
 		inputLabel := dimStyle.Render("  message:")
 		switch {
 		case m.attachedFocus == 1:
@@ -823,6 +894,10 @@ func (m model) renderAgentAttached() string {
 
 	var hint string
 	switch {
+	case isTmux && isLive:
+		hint = "  enter/i from jobs list attaches to tmux · j/k scroll log · [/] switch sessions · s stop · r retry · a approve · d delete · esc back"
+	case isTmux:
+		hint = "  j/k scroll log · [/] switch sessions · r retry · a approve · d delete · esc back"
 	case m.attachedFocus == 1:
 		hint = "  enter send · esc/tab leave input"
 	case isLive:
@@ -830,10 +905,40 @@ func (m model) renderAgentAttached() string {
 	default:
 		hint = "  j/k scroll · [/] switch chats · r retry · a approve · d delete · esc back"
 	}
+	if m.cockpitDetachQuit {
+		hint += " · x detach"
+	}
 	lines = append(lines, dimStyle.Render(hint))
 
 	chat := panelStyle.Width(chatWidth).Height(panelHeight).Render(strings.Join(lines, "\n"))
 	return lipgloss.JoinHorizontal(lipgloss.Top, rail, "  ", chat)
+}
+
+func renderTmuxLogConversation(j cockpit.Job, width int) string {
+	var parts []string
+	parts = append(parts, dimStyle.Render("tmux-backed session"))
+	if j.LogPath != "" {
+		parts = append(parts, dimStyle.Render("log: "+shortPath(j.LogPath)))
+	}
+	parts = append(parts, "")
+	if j.LogPath == "" {
+		parts = append(parts, "(no log path recorded)")
+		return strings.Join(parts, "\n")
+	}
+	body, err := os.ReadFile(j.LogPath)
+	if err != nil {
+		parts = append(parts, "(log unavailable: "+err.Error()+")")
+		return strings.Join(parts, "\n")
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		parts = append(parts, "(no log output captured yet)")
+		return strings.Join(parts, "\n")
+	}
+	for _, line := range strings.Split(text, "\n") {
+		parts = append(parts, wrapText(line, width))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (m model) renderAttachedRail(width, height int) string {

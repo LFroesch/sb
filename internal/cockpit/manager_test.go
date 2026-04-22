@@ -101,6 +101,7 @@ func TestLaunchJobFallsBackToCurrentWorkingDir(t *testing.T) {
 	if job.Repo != dir {
 		t.Fatalf("Repo = %q, want %q", job.Repo, dir)
 	}
+	waitForJobTerminalState(t, mgr, job.ID)
 }
 
 func TestStopJobMarksTurnStoppedAndReturnsIdle(t *testing.T) {
@@ -162,4 +163,101 @@ func TestStopJobMarksTurnStoppedAndReturnsIdle(t *testing.T) {
 
 	j, _ := mgr.GetJob(job.ID)
 	t.Fatalf("job did not return to idle after stop: status=%s note=%q", j.Status, j.Note)
+}
+
+func TestBuildTmuxCommandClaudeNormalizesPrintArg(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildTmuxCommand(Job{
+		Brief:    "fix the bug",
+		Executor: ExecutorSpec{Type: "claude", Args: []string{"--print", "--model", "sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"claude", "--model", "sonnet", "fix the bug"}
+	assertArgsEqual(t, cmd, want)
+}
+
+func TestBuildTmuxCommandCodexNormalizesExecJSONArgs(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildTmuxCommand(Job{
+		Brief:    "scaffold tests",
+		Executor: ExecutorSpec{Type: "codex", Args: []string{"exec", "--json", "--model", "gpt-5"}},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"codex", "--model", "gpt-5", "scaffold tests"}
+	assertArgsEqual(t, cmd, want)
+}
+
+func TestRegistryRehydrateKeepsRunningTmuxJobs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		Socket:       filepath.Join(dir, "state", "foreman.sock"),
+		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
+		LogFile:      filepath.Join(dir, "state", "foreman.log"),
+	}
+	reg := NewRegistry(paths)
+	job, err := reg.Create(Job{
+		PresetID: "claude",
+		Brief:    "hello",
+		Repo:     dir,
+		Executor: ExecutorSpec{Type: "claude"},
+		Status:   StatusRunning,
+		Runner:   RunnerTmux,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := reg.Save(job.ID); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	reg2 := NewRegistry(paths)
+	if err := reg2.Rehydrate(); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+	got, ok := reg2.Get(job.ID)
+	if !ok {
+		t.Fatalf("missing job %s", job.ID)
+	}
+	if got.Status != StatusRunning {
+		t.Fatalf("status = %s, want %s", got.Status, StatusRunning)
+	}
+}
+
+func assertArgsEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("args len = %d, want %d (%q vs %q)", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q (full=%q)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func waitForJobTerminalState(t *testing.T, mgr *Manager, id JobID) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		j, ok := mgr.GetJob(id)
+		if ok && (j.Status == StatusIdle || j.Status == StatusFailed || j.Status == StatusCompleted || j.Status == StatusBlocked || j.Status == StatusNeedsReview) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	j, _ := mgr.GetJob(id)
+	t.Fatalf("job did not settle: status=%s note=%q", j.Status, j.Note)
 }

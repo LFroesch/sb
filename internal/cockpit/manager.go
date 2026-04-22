@@ -31,6 +31,8 @@ type Manager struct {
 	subsMu sync.RWMutex
 	subs   map[int]chan Event
 	nextID int
+
+	tmux *tmuxRunner // lazy — nil until first tmux job
 }
 
 func NewManager(paths Paths) (*Manager, error) {
@@ -41,13 +43,20 @@ func NewManager(paths Paths) (*Manager, error) {
 	if err := r.Rehydrate(); err != nil {
 		return nil, err
 	}
-	return &Manager{
+	m := &Manager{
 		Paths:    paths,
 		Registry: r,
 		active:   map[JobID]context.CancelFunc{},
 		stopping: map[JobID]bool{},
 		subs:     map[int]chan Event{},
-	}, nil
+	}
+	m.tmux = newTmuxRunner(paths, r, m.emit)
+	// Reconcile any tmux-backed jobs that were mid-run across a daemon
+	// restart. Silently no-ops if tmux is unavailable.
+	if HasTmux() {
+		m.tmux.Rehydrate(r.List())
+	}
+	return m, nil
 }
 
 // Subscribe returns a buffered event channel and a cancel func the
@@ -109,6 +118,7 @@ func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
 	if req.Provider != nil {
 		executor = *req.Provider
 	}
+	runner := resolveRunner(executor)
 	j := Job{
 		PresetID:      req.Preset.ID,
 		Sources:       req.Sources,
@@ -119,16 +129,78 @@ func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
 		Permissions:   req.Preset.Permissions,
 		Status:        StatusQueued,
 		SyncBackState: SyncBackPending,
+		Runner:        runner,
 	}
-	if providerSupportsResume(executor) {
+	if providerSupportsResume(executor) && runner == RunnerExec {
 		j.SessionID = newUUIDv4()
 	}
 	jp, err := m.Registry.Create(j)
 	if err != nil {
 		return Job{}, err
 	}
+	if runner == RunnerTmux {
+		// Pre-shell hooks still fire so post-hooks have symmetry, but we
+		// run them inline on the caller goroutine so any failure flips
+		// the job to blocked before the tmux window is created.
+		if err := m.runPreHooks(jp); err != nil {
+			return *jp, nil // job is persisted with StatusBlocked; UI shows it
+		}
+		if startErr := m.tmux.StartJob(*jp); startErr != nil {
+			_ = m.Registry.Update(jp.ID, func(jj *Job) {
+				jj.Status = StatusFailed
+				jj.Note = "tmux start: " + startErr.Error()
+				jj.FinishedAt = time.Now()
+			})
+			m.emit(Event{TS: time.Now(), JobID: jp.ID, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusFailed), "note": startErr.Error()}})
+			final, _ := m.Registry.Get(jp.ID)
+			return final, nil
+		}
+		final, _ := m.Registry.Get(jp.ID)
+		return final, nil
+	}
 	go m.runFirstTurn(*jp)
 	return *jp, nil
+}
+
+// resolveRunner picks between the exec and tmux runners for a spec.
+// Explicit Runner wins; otherwise we infer (claude/codex → tmux iff
+// tmux is available; everything else → exec).
+func resolveRunner(spec ExecutorSpec) Runner {
+	switch strings.ToLower(strings.TrimSpace(spec.Runner)) {
+	case "tmux":
+		if HasTmux() {
+			return RunnerTmux
+		}
+		return RunnerExec
+	case "exec":
+		return RunnerExec
+	}
+	switch strings.ToLower(spec.Type) {
+	case "claude", "codex":
+		if HasTmux() {
+			return RunnerTmux
+		}
+	}
+	return RunnerExec
+}
+
+// runPreHooks runs any pre-shell hooks and returns an error if any hook
+// exited non-zero. Used by the tmux path to gate window creation.
+func (m *Manager) runPreHooks(jp *Job) error {
+	for _, h := range jp.Hooks.PreShell {
+		m.emit(Event{TS: time.Now(), JobID: jp.ID, Kind: EventHookStarted, Payload: map[string]any{"phase": "pre", "name": h.Name, "cmd": h.Cmd}})
+		res := RunShellHook(context.Background(), h, jp.Repo, os.Environ())
+		_ = appendTranscriptLine(jp.TranscriptPath, fmt.Sprintf("\n$ [pre-hook %s]\n%s\n", h.Name, res.Output))
+		m.emit(Event{TS: time.Now(), JobID: jp.ID, Kind: EventHookFinished, Payload: map[string]any{"phase": "pre", "name": h.Name, "exit": res.ExitCode, "duration_ms": res.Duration.Milliseconds()}})
+		_ = m.Registry.Update(jp.ID, func(jj *Job) {
+			jj.Turns = append(jj.Turns, Turn{Role: TurnHook, Content: res.Output, StartedAt: time.Now(), FinishedAt: time.Now(), ExitCode: res.ExitCode, Note: "pre-hook: " + h.Name})
+		})
+		if res.ExitCode != 0 {
+			m.setStatus(jp.ID, StatusBlocked, fmt.Sprintf("pre-hook %q failed (exit %d)", h.Name, res.ExitCode))
+			return fmt.Errorf("pre-hook %q failed", h.Name)
+		}
+	}
+	return nil
 }
 
 // runFirstTurn runs pre-shell hooks (once per job lifetime) and then
@@ -164,8 +236,12 @@ func (m *Manager) runFirstTurn(j Job) {
 
 // SendInput queues a follow-up turn. For backwards compatibility with
 // the PTY-era signature the payload is still bytes; we treat it as UTF-8
-// text and trim a trailing newline.
+// text and trim a trailing newline. Tmux-backed jobs reject input: the
+// user types in the tmux window directly.
 func (m *Manager) SendInput(id JobID, data []byte) error {
+	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux {
+		return fmt.Errorf("send input in the tmux window — press 'a' to attach")
+	}
 	return m.SendTurn(id, strings.TrimRight(string(data), "\n"))
 }
 
@@ -552,8 +628,18 @@ func (m *Manager) setStatus(id JobID, s Status, note string) {
 	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(s), "note": note}})
 }
 
-// StopJob cancels an in-flight turn. No-op if no turn is active.
+// StopJob cancels an in-flight turn. For tmux-backed jobs it kills the
+// tmux window (after a brief C-c). No-op if nothing is active.
 func (m *Manager) StopJob(id JobID) error {
+	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux {
+		if err := m.tmux.StopJob(j); err != nil {
+			return err
+		}
+		// scan() will flip status when the window actually dies; emit
+		// the stop event immediately so UI feels snappy.
+		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusNeedsReview), "note": "stopped"}})
+		return nil
+	}
 	m.mu.Lock()
 	cancel, ok := m.active[id]
 	if ok {
@@ -565,6 +651,24 @@ func (m *Manager) StopJob(id JobID) error {
 	}
 	cancel()
 	return nil
+}
+
+// AttachTmux switches the active tmux client (running inside sb-cockpit)
+// to the job's window. Returns an error if the job is not tmux-backed
+// or its window is gone.
+func (m *Manager) AttachTmux(id JobID) error {
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %s", id)
+	}
+	if j.Runner != RunnerTmux || j.TmuxTarget == "" {
+		return fmt.Errorf("job %s is not tmux-backed", id)
+	}
+	alive, _ := WindowAlive(j.TmuxTarget)
+	if !alive {
+		return fmt.Errorf("tmux window %s is gone", j.TmuxTarget)
+	}
+	return SelectWindow(j.TmuxTarget)
 }
 
 // ApproveJob runs post-shell hooks (for review gating) then applies the
@@ -632,6 +736,9 @@ func (m *Manager) RetryJob(id JobID, presets []LaunchPreset) (Job, error) {
 // DeleteJob stops any in-flight turn, then removes the job record and
 // on-disk directory.
 func (m *Manager) DeleteJob(id JobID) error {
+	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux && j.TmuxTarget != "" {
+		_ = KillWindow(j.TmuxTarget)
+	}
 	_ = m.StopJob(id)
 	m.mu.Lock()
 	_, running := m.active[id]

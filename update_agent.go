@@ -120,18 +120,27 @@ func (m *model) refreshAttachedViewport(forceBottom bool) {
 	width := m.attachedTranscriptWidth()
 	oldOffset := m.viewport.YOffset
 	follow := forceBottom || m.attachedFocus == 1 || m.viewport.AtBottom()
-	running := false
 	if m.cockpitClient != nil {
 		if j, ok := m.cockpitClient.GetJob(m.attachedJobID); ok {
-			running = j.Status == cockpit.StatusRunning
+			if j.Runner == cockpit.RunnerTmux {
+				m.viewport.SetContent(renderTmuxLogConversation(j, width))
+				if follow {
+					m.viewport.GotoBottom()
+					return
+				}
+				m.viewport.SetYOffset(oldOffset)
+				return
+			}
+			running := j.Status == cockpit.StatusRunning
+			m.viewport.SetContent(renderChatConversation(m.attachedTurns, m.transcriptBuf, width, running))
+			if follow {
+				m.viewport.GotoBottom()
+				return
+			}
+			m.viewport.SetYOffset(oldOffset)
+			return
 		}
 	}
-	m.viewport.SetContent(renderChatConversation(m.attachedTurns, m.transcriptBuf, width, running))
-	if follow {
-		m.viewport.GotoBottom()
-		return
-	}
-	m.viewport.SetYOffset(oldOffset)
 }
 
 func (m *model) recalcAttachedViewportLayout() {
@@ -154,7 +163,9 @@ func (m *model) recalcAttachedViewportLayout() {
 
 	m.attachedInput.SetWidth(m.attachedInputWidth())
 	inputLines := 2
-	if isLive {
+	if j.Runner == cockpit.RunnerTmux {
+		inputLines = 2
+	} else if isLive {
 		inputLines = 1 + lipgloss.Height(m.attachedInput.View())
 	}
 	hintLines := 1
@@ -361,6 +372,10 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, openInEditor(path)
 	case "V":
 		return m, openInEditor(m.cockpitPaths.ProvidersDir)
+	case "x":
+		if m.cockpitDetachQuit {
+			return m, m.quitCmd()
+		}
 	case "n":
 		// n = new job sourced from a WORK.md task bullet
 		m.mode = modeAgentPicker
@@ -399,11 +414,11 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.agentCursor < len(jobs) {
-			return m.attachJob(jobs[m.agentCursor].ID, false)
+			return m.openAgentJob(jobs[m.agentCursor].ID, false)
 		}
 	case "i":
 		if m.agentCursor < len(jobs) {
-			return m.attachJob(jobs[m.agentCursor].ID, true)
+			return m.openAgentJob(jobs[m.agentCursor].ID, true)
 		}
 	case "s":
 		if m.agentCursor < len(jobs) {
@@ -768,7 +783,7 @@ func (m model) doLaunch() (tea.Model, tea.Cmd) {
 	}
 	m.statusMsg = "launched " + preset.Name
 	m.statusExpiry = time.Now().Add(3 * time.Second)
-	return m.attachJob(job.ID, true)
+	return m.openAgentJob(job.ID, true)
 }
 
 func (m model) defaultLaunchRepo() string {
@@ -797,6 +812,11 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "tab":
 			m.attachedFocus = 0
 			m.attachedInput.Blur()
+			return m, nil
+		case "x":
+			if m.cockpitDetachQuit {
+				return m, m.quitCmd()
+			}
 			return m, nil
 		case "enter", "alt+enter", "ctrl+enter":
 			body := strings.TrimSpace(m.attachedInput.Value())
@@ -829,8 +849,18 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeAgentList
 		m.attachedInput.Blur()
 		return m, nil
+	case "x":
+		if m.cockpitDetachQuit {
+			return m, m.quitCmd()
+		}
+		return m, nil
 	case "tab", "i":
 		j, ok := m.cockpitClient.GetJob(m.attachedJobID)
+		if ok && j.Runner == cockpit.RunnerTmux {
+			m.statusMsg = "tmux jobs attach natively while live; this panel is for log/review"
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+			return m, nil
+		}
 		if !ok || j.Status == cockpit.StatusCompleted || j.Status == cockpit.StatusFailed || j.Status == cockpit.StatusBlocked {
 			m.statusMsg = "job is finished — no follow-up turns"
 			m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -887,14 +917,76 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 	case "[":
 		if id, ok := m.attachedJobStep(-1); ok {
-			return m.attachJob(id, false)
+			return m.openAgentJob(id, false)
 		}
 	case "]":
 		if id, ok := m.attachedJobStep(1); ok {
-			return m.attachJob(id, false)
+			return m.openAgentJob(id, false)
 		}
 	}
 	return m, nil
+}
+
+func (m model) openAgentJob(id cockpit.JobID, preferInput bool) (tea.Model, tea.Cmd) {
+	j, ok := m.cockpitClient.GetJob(id)
+	if !ok {
+		m.statusMsg = "job not found"
+		m.statusExpiry = time.Now().Add(2 * time.Second)
+		return m, cockpitRefreshCmd(m.cockpitClient)
+	}
+	if j.Runner == cockpit.RunnerTmux {
+		if j.Status == cockpit.StatusRunning {
+			if j.TmuxTarget == "" {
+				if strings.TrimSpace(j.Note) != "" {
+					m.statusMsg = "tmux launch failed: " + j.Note
+				} else {
+					m.statusMsg = "tmux window not recorded for this job"
+				}
+				m.statusExpiry = time.Now().Add(3 * time.Second)
+				return m, nil
+			}
+			if err := attachTmuxLocal(j); err != nil {
+				m.statusMsg = "attach tmux: " + err.Error()
+				m.statusExpiry = time.Now().Add(3 * time.Second)
+				return m, nil
+			}
+			m.mode = modeAgentList
+			for i, job := range m.orderedAgentJobs() {
+				if job.ID == id {
+					m.agentCursor = i
+					break
+				}
+			}
+			m.statusMsg = "attached to tmux job"
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+			return m, nil
+		}
+		if j.TmuxTarget == "" && j.LogPath == "" {
+			if strings.TrimSpace(j.Note) != "" {
+				m.statusMsg = "tmux launch failed: " + j.Note
+			} else {
+				m.statusMsg = "tmux window not recorded for this job"
+			}
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+			return m, nil
+		}
+		return m.attachJob(id, false)
+	}
+	return m.attachJob(id, preferInput)
+}
+
+func attachTmuxLocal(j cockpit.Job) error {
+	if j.Runner != cockpit.RunnerTmux || j.TmuxTarget == "" {
+		return fmt.Errorf("job %s is not tmux-backed", j.ID)
+	}
+	alive, err := cockpit.WindowAlive(j.TmuxTarget)
+	if err != nil {
+		return err
+	}
+	if !alive {
+		return fmt.Errorf("tmux window %s is gone", j.TmuxTarget)
+	}
+	return cockpit.SelectWindow(j.TmuxTarget)
 }
 
 func (m model) attachJob(id cockpit.JobID, preferInput bool) (tea.Model, tea.Cmd) {

@@ -53,11 +53,21 @@ const (
 //	ollama     — local llm via ollama run
 //	shell      — generic shell escape hatch; Cmd runs with brief on stdin
 type ExecutorSpec struct {
-	Type  string   `json:"type"`            // claude|codex|ollama|shell
-	Model string   `json:"model,omitempty"` // provider model id
-	Cmd   string   `json:"cmd,omitempty"`   // override binary (shell) or executable path
-	Args  []string `json:"args,omitempty"`  // extra CLI args appended after the default set
+	Type   string   `json:"type"`             // claude|codex|ollama|shell
+	Model  string   `json:"model,omitempty"`  // provider model id
+	Cmd    string   `json:"cmd,omitempty"`    // override binary (shell) or executable path
+	Args   []string `json:"args,omitempty"`   // extra CLI args appended after the default set
+	Runner string   `json:"runner,omitempty"` // "tmux"|"exec"|"" (infer by Type)
 }
+
+// Runner identifies the in-Manager code path used to drive a job.
+// Persisted on the job so the poller knows which path owns a record.
+type Runner string
+
+const (
+	RunnerExec Runner = "exec" // legacy per-turn exec.Cmd
+	RunnerTmux Runner = "tmux" // window-per-job in the cockpit tmux session
+)
 
 // PromptHook injects extra context into the final brief before the
 // executor sees it. Kind selects the source: "file" reads BodyRef from
@@ -158,6 +168,12 @@ type Job struct {
 	ArtifactsDir   string        `json:"artifacts_dir"`
 	SyncBackState  SyncBackState `json:"sync_back_state"`
 	Note           string        `json:"note,omitempty"` // last status message (e.g. hook failure reason)
+
+	// Tmux runner fields. Zero values are backwards-compatible with
+	// pre-v2 persisted jobs: empty Runner → treat as exec.
+	Runner      Runner `json:"runner,omitempty"`       // exec | tmux
+	TmuxTarget  string `json:"tmux_target,omitempty"`  // "sb-cockpit:@3"
+	LogPath     string `json:"log_path,omitempty"`     // jobs/<id>/tmux.log (pipe-pane sink)
 }
 
 // Campaign wraps multiple jobs spawned from a shared goal. V0 only

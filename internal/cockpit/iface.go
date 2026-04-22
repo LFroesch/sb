@@ -18,6 +18,10 @@ type Client interface {
 	SendInput(id JobID, data []byte) error
 	ReadTranscript(id JobID) (string, error)
 
+	// AttachTmux switches the tmux client to the job's window. Errors
+	// if the job is not tmux-backed or the window is gone.
+	AttachTmux(id JobID) error
+
 	Subscribe() (<-chan Event, func())
 	Close() error
 }
