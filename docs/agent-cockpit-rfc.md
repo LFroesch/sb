@@ -203,7 +203,9 @@ Open V0.5 follow-ups rolled into V1:
 
 ## V2 — foreman mode
 
-- Night queue runner: picks from `queued` + `NightEligible`, obeys per-repo / per-executor concurrency.
+- Foreman mode runs queued work serially per enabled repo: at most one write-capable job may actively change a given repo at a time, while the foreman moves repo-by-repo through the queue.
+- Queue policy must lock repo ownership explicitly before launch so overlapping changes are impossible by default. Read-only analysis jobs can be a separate policy later; the default operator mental model stays "one repo, one active change".
+- Night queue runner builds on that same queue/lock model: picks from `queued` + `NightEligible`, obeys per-repo / per-executor concurrency, and records why a repo/job was skipped or deferred.
 - Swarms: campaign with `Strategy=parallel`, N jobs off one brief, compare view.
 - Per-repo worktree isolation (git worktrees so two jobs don't clobber).
 - Usage-threshold guards (token budget, days-until-reset).

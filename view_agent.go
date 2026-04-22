@@ -121,12 +121,6 @@ func (m model) renderAgentList() string {
 			listLines = append(listLines, dimStyle.Render(fmt.Sprintf("  ▼ %d more", len(jobs)-endIdx)))
 		}
 	}
-	listLines = append(listLines, "")
-	hint := "  1-5 filter · tab cycle · enter open/attach · i iterate/attach · a approve · s stop · r retry · d delete"
-	if m.cockpitDetachQuit {
-		hint += " · x detach"
-	}
-	listLines = append(listLines, dimStyle.Render(hint))
 	listBody := panelStyle.Width(listWidth).Height(panelHeight).Render(strings.Join(capLines(listLines, innerHeight), "\n"))
 
 	detail := "  no selected job"
@@ -256,19 +250,20 @@ func (m model) renderAgentJobDetail(j cockpit.Job, width int) string {
 		if j.TmuxTarget != "" {
 			lines = append(lines, dimStyle.Render("  target: "+j.TmuxTarget))
 		}
-	} else {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d total turns · %d assistant replies", countUserVisibleTurns(j), countAssistantTurnsForView(j))))
-	}
-	lines = append(lines, "")
-	lines = append(lines, panelHeaderStyle.Render("  Actions"))
-	if j.Runner == cockpit.RunnerTmux {
 		if j.Status == cockpit.StatusRunning {
-			lines = append(lines, dimStyle.Render("  enter attach tmux · i attach tmux · a approve · s stop · r retry · d delete"))
+			lines = append(lines, accentStyle.Render("  live now"))
 		} else {
-			lines = append(lines, dimStyle.Render("  enter review log · a approve · r retry · d delete"))
+			lines = append(lines, dimStyle.Render("  review log / transcript"))
 		}
 	} else {
-		lines = append(lines, dimStyle.Render("  enter attach chat · i focus input · a approve · s stop · r retry · d delete"))
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d total turns · %d assistant replies", countUserVisibleTurns(j), countAssistantTurnsForView(j))))
+		if j.Status == cockpit.StatusRunning {
+			lines = append(lines, accentStyle.Render("  input available"))
+		} else if j.Status == cockpit.StatusIdle {
+			lines = append(lines, accentStyle.Render("  waiting for follow-up"))
+		} else {
+			lines = append(lines, dimStyle.Render("  follow-up closed"))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -842,10 +837,10 @@ func (m model) renderAgentAttached() string {
 
 	turnCount := countUserVisibleTurns(j)
 	sectionLabel := "transcript"
-	sectionMeta := fmt.Sprintf("%d turns · [/] switch sessions · tab/i type", turnCount)
+	sectionMeta := fmt.Sprintf("%d turns", turnCount)
 	if isTmux {
 		sectionLabel = "log"
-		sectionMeta = "tmux session log · [/] switch sessions"
+		sectionMeta = "tmux session log"
 	}
 	if m.attachedFocus == 0 {
 		lines = append(lines, "", accentStyle.Render("  ▸ "+sectionLabel)+dimStyle.Render("  "+sectionMeta))
@@ -891,24 +886,6 @@ func (m model) renderAgentAttached() string {
 	} else {
 		lines = append(lines, dimStyle.Render("  (conversation ended — no more turns)"))
 	}
-
-	var hint string
-	switch {
-	case isTmux && isLive:
-		hint = "  enter/i from jobs list attaches to tmux · j/k scroll log · [/] switch sessions · s stop · r retry · a approve · d delete · esc back"
-	case isTmux:
-		hint = "  j/k scroll log · [/] switch sessions · r retry · a approve · d delete · esc back"
-	case m.attachedFocus == 1:
-		hint = "  enter send · esc/tab leave input"
-	case isLive:
-		hint = "  j/k scroll · [/] switch chats · tab/i type · s stop · r retry · a approve · d delete · esc back"
-	default:
-		hint = "  j/k scroll · [/] switch chats · r retry · a approve · d delete · esc back"
-	}
-	if m.cockpitDetachQuit {
-		hint += " · x detach"
-	}
-	lines = append(lines, dimStyle.Render(hint))
 
 	chat := panelStyle.Width(chatWidth).Height(panelHeight).Render(strings.Join(lines, "\n"))
 	return lipgloss.JoinHorizontal(lipgloss.Top, rail, "  ", chat)

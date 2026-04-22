@@ -190,15 +190,16 @@ From the dashboard, switch to the **Agent** tab:
 2. Step 1 (sourced): pick a file (`enter`)
 3. Step 2 (sourced): `space` toggles items, `enter` continues when at least one is selected
 4. Launch modal: `tab` cycles focus between **preset**, **provider**, and the brief editor. `↑/↓` moves within the focused group. `enter` launches from either picker; when the brief is focused, `alt+enter` launches.
-5. The jobs screen is now a real cockpit: the list shows total/live/running/attention counts plus session usage grouped by provider/model, so you can see at a glance which Claude/Codex/Ollama models are actually in use. `tab` cycles job filters, or press `1-5` for `all/live/running/attention/done`.
-6. Claude and Codex jobs now run in real `tmux` windows under the isolated `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to emulate its UI inside Bubble Tea.
-7. `enter` or `i` on a live tmux-backed job switches the client into that job's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the `sb` window. `Ctrl+C` is forwarded normally only when you're already on the `sb` window itself.
-8. Finished tmux jobs open an in-app log/review view instead of trying to fake a live chat. The detail pane also shows whether the tmux window is still live or already closed.
-9. Ollama and shell jobs stay on the exec-per-turn path. Those still use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
-10. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. `x` is an explicit detach shortcut from the Agent UI. Jobs and the `sb-cockpit` session keep running; relaunching `sb` reattaches to the same session.
-11. `s` stops the selected job. For tmux jobs that sends `C-c` and then closes the job window; exec jobs cancel the in-flight turn and return to `idle` with note `stopped`.
-12. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
-13. `d` asks for confirmation before deleting a job.
+5. New launches now default to the `senior-dev` role with the `codex` provider when those profiles exist. You can still override either one before launch.
+6. The jobs screen is now a real cockpit: the list shows total/live/running/attention counts plus session usage grouped by provider/model, so you can see at a glance which Claude/Codex/Ollama models are actually in use. `tab` cycles job filters, or press `1-5` for `all/live/running/attention/done`.
+7. Claude and Codex jobs now run in real `tmux` windows under the isolated `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to emulate its UI inside Bubble Tea.
+8. `enter` or `i` on a live tmux-backed job switches the client into that job's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the `sb` window. `Ctrl+C` is forwarded normally only when you're already on the `sb` window itself.
+9. Finished tmux jobs open an in-app log/review view instead of trying to fake a live chat. The detail pane also shows whether the tmux window is still live or already closed.
+10. Ollama and shell jobs stay on the exec-per-turn path. Those still use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
+11. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. `x` is an explicit detach shortcut from the Agent UI. Jobs and the `sb-cockpit` session keep running; relaunching `sb` reattaches to the same session.
+12. `s` stops the selected job. For tmux jobs that sends `C-c` and then closes the job window; exec jobs cancel the in-flight turn and return to `idle` with note `stopped`.
+13. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
+14. `d` asks for confirmation before deleting a job.
 
 **Presets** describe the *role* (persona, system prompt, hooks, iteration). **Providers** describe the *executor* (claude CLI, codex CLI, ollama model, shell). Each preset carries a suggested provider; the launch modal lets you override with any loaded provider — so you can drive the `senior-dev` role with Claude, Codex, or a local Ollama model interchangeably.
 
@@ -210,6 +211,14 @@ Edit any `*.json` in those dirs to customise. Each preset supports pre/post shel
 From the Agent page, `p` creates a preset template and opens it in your editor, `v` does the same for a provider template, and `P` / `V` open the presets/providers directories directly.
 
 Older preset files that still contain legacy executor args like Claude `--print` or Codex `exec` / `--json` are normalized at runtime, so they continue to work after the tmux split.
+
+### tmux status bar and scrolling
+
+The bar at the bottom of live Claude/Codex sessions is the `tmux` status bar for the isolated `sb-cockpit` session. `sb` now gives that session its own styling, mouse support, higher scrollback, and no-prefix wheel/page scrolling without touching your personal tmux server or config.
+
+- `mouse` is enabled for the cockpit session, and wheel-up / `PageUp` now enter tmux scrollback automatically for the active pane. Keep scrolling normally; `Esc` or `q` exits tmux copy-mode.
+- If you want the normal `sb` transcript/log view instead of the live native CLI pane, use `F1` / `Ctrl+g` / `F12` to return to `sb`.
+- Finished tmux jobs are easier to review inside `sb` itself, where `j/k`, `pgup/pgdn`, and the sessions rail are handled by the TUI instead of the native CLI.
 
 ### Daemon (sb-foreman)
 

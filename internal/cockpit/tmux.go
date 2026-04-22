@@ -129,13 +129,14 @@ func EnsureSession(name string) error {
 	if err != nil {
 		return err
 	}
-	if exists {
-		return nil
+	if !exists {
+		// -d: don't attach. -x/-y: give it a sane default size; tmux clamps
+		// to the attaching client's terminal once one connects.
+		if _, err = runTmux("new-session", "-d", "-s", name, "-n", "sb", "-x", "200", "-y", "50"); err != nil {
+			return err
+		}
 	}
-	// -d: don't attach. -x/-y: give it a sane default size; tmux clamps
-	// to the attaching client's terminal once one connects.
-	_, err = runTmux("new-session", "-d", "-s", name, "-n", "sb", "-x", "200", "-y", "50")
-	return err
+	return ConfigureSession(name)
 }
 
 // NewWindow creates a window inside `session` running `cmd` in `cwd`.
@@ -295,14 +296,137 @@ func BindKey(key, tmuxCmd string) error {
 	return err
 }
 
+func bindKeyArgs(table, key string, args ...string) error {
+	cmd := []string{"bind-key"}
+	if table != "" {
+		cmd = append(cmd, "-T", table)
+	}
+	cmd = append(cmd, key)
+	cmd = append(cmd, args...)
+	_, err := runTmux(cmd...)
+	return err
+}
+
 // UnbindKey removes a root-table binding. Useful for test cleanup.
 func UnbindKey(key string) error {
 	_, err := runTmux("unbind-key", "-T", "root", key)
 	return err
 }
 
-// ShowOptions / SetOption kept private for now — cockpit v2 touches
-// only the binds it owns.
+func setOption(target, key, value string) error {
+	args := []string{"set-option", "-g"}
+	if strings.TrimSpace(target) != "" {
+		args = append(args, "-t", target)
+	}
+	args = append(args, key, value)
+	_, err := runTmux(args...)
+	return err
+}
+
+func setWindowOption(target, key, value string) error {
+	args := []string{"set-window-option", "-g"}
+	if strings.TrimSpace(target) != "" {
+		args = append(args, "-t", target)
+	}
+	args = append(args, key, value)
+	_, err := runTmux(args...)
+	return err
+}
+
+// ConfigureSession applies a deliberate operator-focused look/feel to the
+// isolated sb tmux session. Because the cockpit always uses its own `-L sb`
+// server, these settings never touch the user's personal tmux setup.
+func ConfigureSession(target string) error {
+	options := []struct {
+		key   string
+		value string
+	}{
+		{"status", "on"},
+		{"status-position", "bottom"},
+		{"mouse", "on"},
+		{"history-limit", "100000"},
+		{"status-left-length", "32"},
+		{"status-right-length", "80"},
+		{"status-style", "bg=#0f172a,fg=#cbd5e1"},
+		{"status-left", "#[bold,bg=#0b5cad,fg=#f8fafc] sb #[default]"},
+		{"status-right", "#[fg=#94a3b8]#S #[fg=#475569]· #[fg=#e2e8f0]#I:#W #[fg=#475569]· #[fg=#94a3b8]%H:%M "},
+		{"window-status-format", "#[fg=#94a3b8] #I:#W "},
+		{"window-status-current-format", "#[bold,bg=#e2e8f0,fg=#0f172a] #I:#W #[default]"},
+		{"window-status-separator", ""},
+		{"message-style", "bg=#e2e8f0,fg=#0f172a"},
+		{"message-command-style", "bg=#dbeafe,fg=#0f172a"},
+		{"pane-border-style", "fg=#334155"},
+		{"pane-active-border-style", "fg=#0b5cad"},
+	}
+	for _, opt := range options {
+		if err := setOption(target, opt.key, opt.value); err != nil {
+			return err
+		}
+	}
+	windowOptions := []struct {
+		key   string
+		value string
+	}{
+		{"mode-keys", "vi"},
+		{"clock-mode-colour", "#0b5cad"},
+	}
+	for _, opt := range windowOptions {
+		if err := setWindowOption(target, opt.key, opt.value); err != nil {
+			return err
+		}
+	}
+	// Make wheel/page scroll behave more like normal terminal scrollback:
+	// scrolling up enters copy-mode automatically, then continued wheel
+	// events/page keys keep moving through history with no tmux prefix.
+	scrollBinds := []struct {
+		table string
+		key   string
+		args  []string
+	}{
+		{
+			table: "root",
+			key:   "WheelUpPane",
+			args: []string{
+				"if-shell", "-F", "#{==:#{window_index},0}",
+				"send-keys -M",
+				`if-shell -F "#{pane_in_mode}" "send-keys -M" "copy-mode -eu"`,
+			},
+		},
+		{
+			table: "root",
+			key:   "WheelDownPane",
+			args: []string{
+				"if-shell", "-F", "#{==:#{window_index},0}",
+				"send-keys -M",
+				`if-shell -F "#{pane_in_mode}" "send-keys -M" ""`,
+			},
+		},
+		{
+			table: "root",
+			key:   "PageUp",
+			args: []string{
+				"if-shell", "-F", "#{==:#{window_index},0}",
+				"send-keys PageUp",
+				"copy-mode -eu",
+			},
+		},
+		{
+			table: "root",
+			key:   "PageDown",
+			args: []string{
+				"if-shell", "-F", "#{==:#{window_index},0}",
+				"send-keys PageDown",
+				`if-shell -F "#{pane_in_mode}" "send-keys -X page-down" ""`,
+			},
+		},
+	}
+	for _, bind := range scrollBinds {
+		if err := bindKeyArgs(bind.table, bind.key, bind.args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // shellQuote single-quotes a string for embedding inside a tmux
 // pipe-pane command. tmux runs pipe-pane commands via /bin/sh.

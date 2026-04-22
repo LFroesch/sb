@@ -394,8 +394,8 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.launchBrief.SetHeight(6)
 		m.launchBrief.Focus()
 		m.launchFocus = 2
-		m.launchPresetIdx = 0
-		m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, 0, m.cockpitProviders)
+		m.launchPresetIdx = defaultPresetIndex(m.cockpitPresets)
+		m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 		m.mode = modeAgentLaunch
 		return m, m.launchBrief.Cursor.BlinkCmd()
 	case "j", "down":
@@ -665,8 +665,8 @@ func (m model) updateAgentPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.launchBrief.SetHeight(6)
 		m.launchBrief.Blur()
 		m.launchFocus = 0
-		m.launchPresetIdx = 0
-		m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, 0, m.cockpitProviders)
+		m.launchPresetIdx = defaultPresetIndex(m.cockpitPresets)
+		m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 		m.mode = modeAgentLaunch
 		return m, nil
 	}
@@ -1022,6 +1022,11 @@ func (m model) attachJob(id cockpit.JobID, preferInput bool) (tea.Model, tea.Cmd
 }
 
 func defaultProviderIndex(presets []cockpit.LaunchPreset, presetIdx int, providers []cockpit.ProviderProfile) int {
+	for i, p := range providers {
+		if strings.EqualFold(p.ID, "codex") {
+			return i
+		}
+	}
 	if presetIdx >= 0 && presetIdx < len(presets) {
 		want := presets[presetIdx].Executor
 		for i, p := range providers {
@@ -1031,6 +1036,21 @@ func defaultProviderIndex(presets []cockpit.LaunchPreset, presetIdx int, provide
 		}
 	}
 	if len(providers) == 0 {
+		return 0
+	}
+	return 0
+}
+
+func defaultPresetIndex(presets []cockpit.LaunchPreset) int {
+	preferred := []string{"senior-dev", "scaffold", "bug-fixer"}
+	for _, want := range preferred {
+		for i, p := range presets {
+			if strings.EqualFold(p.ID, want) {
+				return i
+			}
+		}
+	}
+	if len(presets) == 0 {
 		return 0
 	}
 	return 0

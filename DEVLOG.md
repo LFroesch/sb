@@ -16,6 +16,13 @@
 
 ## DevLog
 
+### 2026-04-22 — Cockpit defaults, tmux styling, and hint cleanup
+- Cleaned up the Agent page so routine controls stay in the footer/help overlay instead of being repeated inside the list, detail pane, and attached views. The cockpit panels now bias toward status and state instead of inline mini-manuals.
+- Added a Codex-first launch default: new sourced/freeform launches now prefer the `senior-dev` preset and the `codex` provider when those profiles are available, instead of always landing on the first alphabetically sorted preset/provider.
+- Styled the isolated `sb-cockpit` tmux session directly in `internal/cockpit/tmux.go`: mouse on, larger scrollback, `vi` copy-mode keys, and a cleaner bottom status bar with clearer active-window styling. Because the cockpit uses its own `-L sb` server, these options do not affect the user's personal tmux config.
+- Added no-prefix scroll bindings for the isolated cockpit tmux session: wheel-up or `PageUp` now enter tmux scrollback automatically for the active pane instead of requiring raw tmux copy-mode commands.
+- Added a regression test in `internal/cockpit/tmux_test.go` to verify the cockpit tmux session config path actually emits the expected tmux option commands.
+
 ### 2026-04-22 — Tmux cockpit path made coherent
 - Finished the first real tmux-backed Claude/Codex path instead of mixing it with the older embedded-chat model. `internal/cockpit/runner_tmux.go` now launches the native interactive CLIs directly in tmux windows, normalizes legacy Claude/Codex args for that mode, and lets windows close cleanly so job status can advance instead of hanging in `running`.
 - Rewired the Agent page so tmux-backed jobs use `AttachTmux` from the job list and on launch, while Ollama/shell jobs continue using the existing attached exec-chat view. Updated cockpit title/detail/help text to make the split visible, including an `exec-fallback` badge when tmux bootstrap is unavailable.
