@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,9 +25,11 @@ type Manager struct {
 	Paths    Paths
 	Registry *Registry
 
-	mu       sync.Mutex
-	active   map[JobID]context.CancelFunc // cancel hook for the in-flight turn
-	stopping map[JobID]bool               // set when user explicitly requested stop
+	mu         sync.Mutex
+	foreman    ForemanState
+	active     map[JobID]context.CancelFunc // cancel hook for the in-flight turn
+	activeDone map[JobID]chan struct{}      // closed when the in-flight turn fully exits
+	stopping   map[JobID]bool               // set when user explicitly requested stop
 
 	subsMu sync.RWMutex
 	subs   map[int]chan Event
@@ -44,18 +47,21 @@ func NewManager(paths Paths) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{
-		Paths:    paths,
-		Registry: r,
-		active:   map[JobID]context.CancelFunc{},
-		stopping: map[JobID]bool{},
-		subs:     map[int]chan Event{},
+		Paths:      paths,
+		Registry:   r,
+		foreman:    loadForemanState(paths),
+		active:     map[JobID]context.CancelFunc{},
+		activeDone: map[JobID]chan struct{}{},
+		stopping:   map[JobID]bool{},
+		subs:       map[int]chan Event{},
 	}
-	m.tmux = newTmuxRunner(paths, r, m.emit)
+	m.tmux = newTmuxRunner(paths, r, m.emit, m.maybeStartQueuedJobs)
 	// Reconcile any tmux-backed jobs that were mid-run across a daemon
 	// restart. Silently no-ops if tmux is unavailable.
 	if HasTmux() {
 		m.tmux.Rehydrate(r.List())
 	}
+	m.maybeStartQueuedJobs()
 	return m, nil
 }
 
@@ -80,6 +86,7 @@ func (m *Manager) Subscribe() (<-chan Event, func()) {
 }
 
 func (m *Manager) emit(e Event) {
+	m.persistEvent(e)
 	m.subsMu.RLock()
 	for _, ch := range m.subs {
 		select {
@@ -95,11 +102,12 @@ func (m *Manager) emit(e Event) {
 // sources list. Provider, if non-nil, overrides the preset's default
 // executor.
 type LaunchRequest struct {
-	Preset   LaunchPreset
-	Sources  []SourceTask
-	Repo     string
-	Freeform string
-	Provider *ExecutorSpec
+	Preset   LaunchPreset  `json:"preset"`
+	Sources  []SourceTask  `json:"sources,omitempty"`
+	Repo     string        `json:"repo"`
+	Freeform string        `json:"freeform,omitempty"`
+	Provider *ExecutorSpec `json:"provider,omitempty"`
+	QueueOnly bool         `json:"queue_only,omitempty"`
 }
 
 // LaunchJob registers a job, runs pre-shell hooks, then launches the
@@ -113,23 +121,114 @@ func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
 		}
 		req.Repo = cwd
 	}
-	brief := ComposeBrief(req.Preset, req.Sources, req.Freeform)
+	if req.Preset.LaunchMode == "" {
+		req.Preset.LaunchMode = LaunchModeSingleJob
+	}
+	if req.Preset.LaunchMode == LaunchModeTaskQueueSequence && len(req.Sources) > 1 {
+		return m.launchQueuedSequence(req)
+	}
+	job, err := m.createQueuedJob(req, req.Sources, "", 0, 1)
+	if err != nil {
+		return Job{}, err
+	}
+	if !req.QueueOnly {
+		m.maybeStartQueuedJobs()
+	}
+	final, _ := m.Registry.Get(job.ID)
+	return final, nil
+}
+
+func (m *Manager) StartJob(id JobID) (Job, error) {
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return Job{}, fmt.Errorf("unknown job %s", id)
+	}
+	if j.Status != StatusQueued {
+		return Job{}, fmt.Errorf("job %s is %s, not queued", id, j.Status)
+	}
+	if repo := strings.TrimSpace(j.Repo); repo != "" {
+		for _, other := range m.ListJobs() {
+			if other.ID == id {
+				continue
+			}
+			if strings.TrimSpace(other.Repo) == repo && jobLocksRepo(other) {
+				return Job{}, fmt.Errorf("repo already has active work")
+			}
+		}
+	}
+	_ = m.Registry.Update(id, func(jj *Job) {
+		if jj.WaitForForeman || jj.ForemanManaged {
+			jj.WaitForForeman = false
+			jj.ForemanManaged = false
+			jj.Note = "started manually"
+		}
+	})
+	if err := m.startQueuedJob(id); err != nil {
+		return Job{}, err
+	}
+	final, _ := m.Registry.Get(id)
+	return final, nil
+}
+
+func (m *Manager) launchQueuedSequence(req LaunchRequest) (Job, error) {
+	campaignID := NewCampaignID()
+	jobIDs := make([]JobID, 0, len(req.Sources))
+	for i, src := range req.Sources {
+		job, err := m.createQueuedJob(req, []SourceTask{src}, campaignID, i, len(req.Sources))
+		if err != nil {
+			return Job{}, err
+		}
+		jobIDs = append(jobIDs, job.ID)
+	}
+	campaign := Campaign{
+		ID:        campaignID,
+		Goal:      strings.TrimSpace(req.Freeform),
+		JobIDs:    jobIDs,
+		Strategy:  "sequence",
+		CreatedAt: time.Now(),
+	}
+	if err := SaveCampaign(m.Paths.CampaignDir, campaign); err != nil {
+		return Job{}, err
+	}
+	if !req.QueueOnly {
+		m.maybeStartQueuedJobs()
+	}
+	first, _ := m.Registry.Get(jobIDs[0])
+	return first, nil
+}
+
+func (m *Manager) createQueuedJob(req LaunchRequest, sources []SourceTask, campaignID CampaignID, queueIndex, queueTotal int) (Job, error) {
+	brief := ComposeBrief(req.Preset, sources, req.Freeform)
+	task := SummarizeTask(sources, req.Freeform)
+	repoStatusAtLaunch := gitStatusSnapshot(req.Repo)
 	executor := req.Preset.Executor
 	if req.Provider != nil {
 		executor = *req.Provider
 	}
 	runner := resolveRunner(executor)
 	j := Job{
-		PresetID:      req.Preset.ID,
-		Sources:       req.Sources,
-		Brief:         brief,
-		Repo:          req.Repo,
-		Executor:      executor,
-		Hooks:         req.Preset.Hooks,
-		Permissions:   req.Preset.Permissions,
-		Status:        StatusQueued,
-		SyncBackState: SyncBackPending,
-		Runner:        runner,
+		CampaignID:         campaignID,
+		PresetID:           req.Preset.ID,
+		Task:               task,
+		Sources:            sources,
+		Brief:              task,
+		Prompt:             brief,
+		Freeform:           strings.TrimSpace(req.Freeform),
+		RepoStatusAtLaunch: repoStatusAtLaunch,
+		Repo:               req.Repo,
+		Executor:           executor,
+		Hooks:              req.Preset.Hooks,
+		Permissions:        req.Preset.Permissions,
+		Status:             StatusQueued,
+		SyncBackState:      SyncBackPending,
+		Runner:             runner,
+		QueueIndex:         queueIndex,
+		QueueTotal:         queueTotal,
+		WaitForForeman:     req.QueueOnly,
+		ForemanManaged:     req.QueueOnly,
+	}
+	if req.QueueOnly {
+		j.Note = "sent to Foreman"
 	}
 	if providerSupportsResume(executor) && runner == RunnerExec {
 		j.SessionID = newUUIDv4()
@@ -138,28 +237,112 @@ func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	if runner == RunnerTmux {
-		// Pre-shell hooks still fire so post-hooks have symmetry, but we
-		// run them inline on the caller goroutine so any failure flips
-		// the job to blocked before the tmux window is created.
-		if err := m.runPreHooks(jp); err != nil {
-			return *jp, nil // job is persisted with StatusBlocked; UI shows it
+	return *jp, nil
+}
+
+func (m *Manager) startQueuedJob(id JobID) error {
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %s", id)
+	}
+	if j.Status != StatusQueued {
+		return nil
+	}
+	if j.WaitForForeman {
+		_ = m.Registry.Update(j.ID, func(jj *Job) {
+			jj.WaitForForeman = false
+			jj.Note = "started by Foreman"
+		})
+		j, _ = m.Registry.Get(j.ID)
+	}
+	if j.Runner == RunnerTmux {
+		if err := m.runPreHooks(&j); err != nil {
+			return nil
 		}
-		if startErr := m.tmux.StartJob(*jp); startErr != nil {
-			_ = m.Registry.Update(jp.ID, func(jj *Job) {
+		if startErr := m.tmux.StartJob(j); startErr != nil {
+			_ = m.Registry.Update(j.ID, func(jj *Job) {
 				jj.Status = StatusFailed
 				jj.Note = "tmux start: " + startErr.Error()
 				jj.FinishedAt = time.Now()
 			})
-			m.emit(Event{TS: time.Now(), JobID: jp.ID, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusFailed), "note": startErr.Error()}})
-			final, _ := m.Registry.Get(jp.ID)
-			return final, nil
+			m.emit(Event{TS: time.Now(), JobID: j.ID, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusFailed), "note": startErr.Error()}})
+			return nil
 		}
-		final, _ := m.Registry.Get(jp.ID)
-		return final, nil
+		return nil
 	}
-	go m.runFirstTurn(*jp)
-	return *jp, nil
+	go m.runFirstTurn(j)
+	return nil
+}
+
+func (m *Manager) maybeStartQueuedJobs() {
+	jobs := orderQueuedJobs(m.ListJobs())
+	m.mu.Lock()
+	foremanEnabled := m.foreman.Enabled
+	m.mu.Unlock()
+	lockedRepos := map[string]bool{}
+	for _, j := range jobs {
+		if jobLocksRepo(j) {
+			lockedRepos[j.Repo] = true
+		}
+	}
+	for _, j := range jobs {
+		if j.Status != StatusQueued {
+			continue
+		}
+		if j.WaitForForeman && !foremanEnabled {
+			continue
+		}
+		if strings.TrimSpace(j.Repo) != "" && lockedRepos[j.Repo] {
+			continue
+		}
+		if err := m.startQueuedJob(j.ID); err == nil && strings.TrimSpace(j.Repo) != "" {
+			lockedRepos[j.Repo] = true
+		}
+	}
+}
+
+func (m *Manager) SetForemanEnabled(enabled bool) (ForemanState, error) {
+	m.mu.Lock()
+	m.foreman.Enabled = enabled
+	m.foreman.UpdatedAt = time.Now()
+	state := m.foreman
+	m.mu.Unlock()
+	if err := saveForemanState(m.Paths, state); err != nil {
+		return ForemanState{}, err
+	}
+	m.emit(Event{TS: time.Now(), Kind: EventForemanState, Payload: state})
+	if enabled {
+		m.maybeStartQueuedJobs()
+	}
+	return state, nil
+}
+
+func jobLocksRepo(j Job) bool {
+	if strings.TrimSpace(j.Repo) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(j.Permissions)) {
+	case "", "scoped-write", "wide-open":
+	default:
+		return false
+	}
+	switch j.Status {
+	case StatusRunning, StatusIdle, StatusNeedsReview, StatusBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+func orderQueuedJobs(jobs []Job) []Job {
+	out := append([]Job(nil), jobs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CampaignID != "" && out[i].CampaignID == out[j].CampaignID && out[i].QueueIndex != out[j].QueueIndex {
+			return out[i].QueueIndex < out[j].QueueIndex
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
 }
 
 // resolveRunner picks between the exec and tmux runners for a spec.
@@ -228,7 +411,7 @@ func (m *Manager) runFirstTurn(j Job) {
 		}
 	})
 
-	if ok := m.startTurn(j.ID, j.Brief); !ok {
+	if ok := m.startTurn(j.ID, j.launchPrompt()); !ok {
 		return
 	}
 	go m.runTurn(j.ID)
@@ -301,14 +484,18 @@ func (m *Manager) runTurn(id JobID) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
+	turnDone := make(chan struct{})
 	m.mu.Lock()
 	m.active[id] = cancel
+	m.activeDone[id] = turnDone
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
 		delete(m.active, id)
+		delete(m.activeDone, id)
 		delete(m.stopping, id)
 		m.mu.Unlock()
+		close(turnDone)
 	}()
 
 	lastUserInput := ""
@@ -489,6 +676,9 @@ func (m *Manager) finishTurn(id JobID, reply string, exit int, note string, stat
 		}
 	})
 	final, _ := m.Registry.Get(id)
+	if final.Status == StatusIdle || final.Status == StatusNeedsReview || final.Status == StatusCompleted {
+		_ = CaptureReviewArtifact(final)
+	}
 	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventTurnFinished, Payload: map[string]any{"exit": exit, "note": note}})
 	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(final.Status), "note": note}})
 }
@@ -531,13 +721,18 @@ func buildTurnCmd(ctx context.Context, j Job, userInput string) (*exec.Cmd, stri
 		if bin == "" {
 			bin = "codex"
 		}
-		extraArgs := normalizedCodexArgs(spec.Args)
+		extraArgs, positionalArgs := splitCodexArgs(spec.Args)
+		if len(positionalArgs) > 0 {
+			return nil, "", fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
+		}
 		if j.SessionID != "" {
-			args := append([]string{"exec", "resume", "--json"}, extraArgs...)
+			args := append([]string{"exec", "resume"}, extraArgs...)
+			args = append(args, "--json")
 			args = append(args, j.SessionID, userInput)
 			return exec.CommandContext(ctx, bin, args...), "", nil
 		}
-		args := append([]string{"exec", "--json"}, extraArgs...)
+		args := append([]string{"exec"}, extraArgs...)
+		args = append(args, "--json")
 		args = append(args, userInput)
 		return exec.CommandContext(ctx, bin, args...), "", nil
 	case "ollama":
@@ -577,25 +772,47 @@ func normalizedClaudeArgs(args []string) []string {
 	return out
 }
 
-func normalizedCodexArgs(args []string) []string {
-	out := make([]string, 0, len(args))
+func splitCodexArgs(args []string) ([]string, []string) {
+	opts := make([]string, 0, len(args))
+	positionals := make([]string, 0)
+	expectsValue := false
 	for _, arg := range args {
 		switch arg {
 		case "exec", "resume", "--json":
+			expectsValue = false
 			continue
 		default:
-			out = append(out, arg)
+			if strings.HasPrefix(arg, "-") {
+				opts = append(opts, arg)
+				expectsValue = !strings.Contains(arg, "=")
+				continue
+			}
+			if expectsValue {
+				opts = append(opts, arg)
+				expectsValue = false
+				continue
+			}
+			positionals = append(positionals, arg)
 		}
 	}
-	return out
+	return opts, positionals
 }
 
 // renderHistoryReplay turns the turn history into a plain-text prompt
 // for providers without a native resume flag. The newest user turn is
 // already on j.Turns at call time.
+//
+// On the first turn (len(Turns)==1) we replay the full launch prompt
+// verbatim — that's the model's only chance to see the system prompt,
+// hooks, and source tasks. On replay (len(Turns)>1) we substitute that
+// first user turn with the compact j.Task, since the assistant's reply
+// has already absorbed the launch context. This keeps unattended/replay
+// providers from re-shipping the full composed brief on every turn.
 func renderHistoryReplay(j Job) string {
 	var b strings.Builder
-	for _, t := range j.Turns {
+	replay := len(j.Turns) > 1
+	compactTask := strings.TrimSpace(j.Task)
+	for i, t := range j.Turns {
 		switch t.Role {
 		case TurnUser:
 			b.WriteString("User: ")
@@ -604,7 +821,11 @@ func renderHistoryReplay(j Job) string {
 		case TurnHook:
 			continue // hooks don't feed the model
 		}
-		b.WriteString(t.Content)
+		content := t.Content
+		if replay && i == 0 && t.Role == TurnUser && compactTask != "" {
+			content = compactTask
+		}
+		b.WriteString(content)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Assistant: ")
@@ -628,16 +849,19 @@ func (m *Manager) setStatus(id JobID, s Status, note string) {
 	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(s), "note": note}})
 }
 
-// StopJob cancels an in-flight turn. For tmux-backed jobs it kills the
-// tmux window (after a brief C-c). No-op if nothing is active.
+// StopJob interrupts the current turn. For tmux-backed jobs it sends
+// C-c but keeps the session/window alive so the operator can re-enter.
+// No-op if nothing is active.
 func (m *Manager) StopJob(id JobID) error {
 	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux {
 		if err := m.tmux.StopJob(j); err != nil {
 			return err
 		}
-		// scan() will flip status when the window actually dies; emit
-		// the stop event immediately so UI feels snappy.
-		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusNeedsReview), "note": "stopped"}})
+		_ = m.Registry.Update(id, func(jj *Job) {
+			jj.Status = StatusIdle
+			jj.Note = "interrupted"
+		})
+		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusIdle), "note": "interrupted"}})
 		return nil
 	}
 	m.mu.Lock()
@@ -651,6 +875,34 @@ func (m *Manager) StopJob(id JobID) error {
 	}
 	cancel()
 	return nil
+}
+
+func (m *Manager) SoftStopJob(id JobID) error {
+	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux {
+		if err := m.tmux.SoftStopJob(j); err != nil {
+			return err
+		}
+		_ = m.Registry.Update(id, func(jj *Job) {
+			jj.Note = "sent Esc"
+		})
+		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(j.Status), "note": "sent Esc"}})
+		return nil
+	}
+	return m.StopJob(id)
+}
+
+func (m *Manager) ContinueJob(id JobID) error {
+	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux {
+		if err := m.tmux.ContinueJob(j); err != nil {
+			return err
+		}
+		_ = m.Registry.Update(id, func(jj *Job) {
+			jj.Note = "sent continue"
+		})
+		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(j.Status), "note": "sent continue"}})
+		return nil
+	}
+	return m.SendTurn(id, "continue")
 }
 
 // AttachTmux switches the active tmux client (running inside sb-cockpit)
@@ -678,6 +930,13 @@ func (m *Manager) ApproveJob(id JobID, devlogPath string) error {
 	if !ok {
 		return fmt.Errorf("unknown job %s", id)
 	}
+	if err := ensureSyncBackTargetsClean(j, devlogPath); err != nil {
+		_ = m.Registry.Update(id, func(jj *Job) {
+			jj.Note = err.Error()
+		})
+		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventReviewSet, Payload: map[string]any{"ok": false, "error": err.Error()}})
+		return err
+	}
 
 	// Post-shell hooks fire on approve, not per turn. A non-zero exit
 	// flips sync-back into skipped state and notes the reason; sync-back
@@ -687,6 +946,9 @@ func (m *Manager) ApproveJob(id JobID, devlogPath string) error {
 		res := RunShellHook(context.Background(), h, j.Repo, os.Environ())
 		_ = appendTranscriptLine(j.TranscriptPath, fmt.Sprintf("\n$ [post-hook %s]\n%s\n", h.Name, res.Output))
 		m.emit(Event{TS: time.Now(), JobID: id, Kind: EventHookFinished, Payload: map[string]any{"phase": "post", "name": h.Name, "exit": res.ExitCode, "output": res.Output}})
+	}
+	if latest, ok := m.Registry.Get(id); ok {
+		_ = CaptureReviewArtifact(latest)
 	}
 
 	touched, err := ApplySyncBack(j, devlogPath)
@@ -704,8 +966,12 @@ func (m *Manager) ApproveJob(id JobID, devlogPath string) error {
 		jj.FinishedAt = time.Now()
 		jj.Note = ""
 	})
+	if latest, ok := m.Registry.Get(id); ok {
+		_ = CaptureReviewArtifact(latest)
+	}
 	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventSyncedBack, Payload: map[string]any{"ok": true, "files": touched}})
 	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusCompleted)}})
+	m.maybeStartQueuedJobs()
 	return nil
 }
 
@@ -727,26 +993,111 @@ func (m *Manager) RetryJob(id JobID, presets []LaunchPreset) (Job, error) {
 		return Job{}, fmt.Errorf("preset %s not found", j.PresetID)
 	}
 	return m.LaunchJob(LaunchRequest{
-		Preset:  preset,
-		Sources: j.Sources,
-		Repo:    j.Repo,
+		Preset:   preset,
+		Sources:  j.Sources,
+		Repo:     j.Repo,
+		Freeform: j.Freeform,
 	})
+}
+
+// SkipJob marks a queued/reviewed item as intentionally skipped while
+// preserving the job record for operator history, then advances any
+// blocked queue for the repo/campaign.
+func (m *Manager) SkipJob(id JobID) error {
+	if err := m.skipOneJob(id, "skipped by operator"); err != nil {
+		return err
+	}
+	m.maybeStartQueuedJobs()
+	return nil
+}
+
+// SkipCampaign marks the selected job and every later queued job in the
+// same campaign as skipped, preserving the records while aborting the
+// rest of the serial sequence from this point forward.
+func (m *Manager) SkipCampaign(id JobID) error {
+	current, ok := m.Registry.Get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %s", id)
+	}
+	if current.CampaignID == "" || current.QueueTotal <= 1 {
+		return fmt.Errorf("job %s is not part of a queued campaign", id)
+	}
+	for _, job := range orderQueuedJobs(m.ListJobs()) {
+		if job.CampaignID != current.CampaignID || job.QueueIndex < current.QueueIndex {
+			continue
+		}
+		if job.Status == StatusCompleted {
+			continue
+		}
+		note := "skipped by operator"
+		if job.ID != current.ID {
+			note = "skipped by campaign abort"
+		}
+		if err := m.skipOneJob(job.ID, note); err != nil {
+			return err
+		}
+	}
+	m.maybeStartQueuedJobs()
+	return nil
+}
+
+func (m *Manager) skipOneJob(id JobID, note string) error {
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %s", id)
+	}
+	if j.Runner == RunnerTmux && j.TmuxTarget != "" {
+		_ = KillWindow(j.TmuxTarget)
+	}
+	m.mu.Lock()
+	cancel, running := m.active[id]
+	done := m.activeDone[id]
+	if running {
+		m.stopping[id] = true
+	}
+	m.mu.Unlock()
+	if running {
+		cancel()
+		<-done
+	}
+	if err := m.Registry.Update(id, func(jj *Job) {
+		jj.SyncBackState = SyncBackSkipped
+		jj.Status = StatusCompleted
+		jj.Note = note
+		jj.FinishedAt = time.Now()
+	}); err != nil {
+		return err
+	}
+	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{
+		"status": string(StatusCompleted),
+		"note":   note,
+	}})
+	return nil
 }
 
 // DeleteJob stops any in-flight turn, then removes the job record and
 // on-disk directory.
 func (m *Manager) DeleteJob(id JobID) error {
-	if j, ok := m.Registry.Get(id); ok && j.Runner == RunnerTmux && j.TmuxTarget != "" {
+	j, ok := m.Registry.Get(id)
+	if ok && j.Runner == RunnerTmux && j.TmuxTarget != "" {
 		_ = KillWindow(j.TmuxTarget)
 	}
-	_ = m.StopJob(id)
 	m.mu.Lock()
-	_, running := m.active[id]
+	cancel, running := m.active[id]
+	done := m.activeDone[id]
+	if running {
+		m.stopping[id] = true
+	}
 	m.mu.Unlock()
 	if running {
-		time.Sleep(50 * time.Millisecond)
+		cancel()
+		<-done
 	}
-	return m.Registry.Delete(id)
+	if err := m.Registry.Delete(id); err != nil {
+		return err
+	}
+	m.maybeStartQueuedJobs()
+	return nil
 }
 
 // ReadTranscript returns the on-disk transcript bytes.
@@ -786,12 +1137,24 @@ func newUUIDv4() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// openEventLog kept for registry/rehydrate paths that still reference it.
-func openEventLog(path string) (*json.Encoder, func() error, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, func() error { return nil }, err
+func (m *Manager) persistEvent(e Event) {
+	if e.JobID == "" {
+		return
 	}
-	enc := json.NewEncoder(f)
-	return enc, f.Close, nil
+	j, ok := m.Registry.Get(e.JobID)
+	if !ok || strings.TrimSpace(j.EventLogPath) == "" {
+		return
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+	_ = appendTranscriptLine(j.EventLogPath, string(b)+"\n")
+}
+
+func (j Job) launchPrompt() string {
+	if prompt := strings.TrimSpace(j.Prompt); prompt != "" {
+		return prompt
+	}
+	return j.Brief
 }

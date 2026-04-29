@@ -308,6 +308,7 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 	cleaned = normalizeContent(strings.TrimSpace(cleaned))
 	cleaned = stripProjectTagsFromBullets(cleaned, project)
 	cleaned = reconcileMissingBullets(content, cleaned)
+	cleaned = reconcileMissingSections(content, cleaned)
 	cleaned = ensureHeaderNewlines(cleaned)
 	return cleaned + "\n", nil
 }
@@ -479,9 +480,7 @@ func reconcileMissingBullets(original, cleaned string) string {
 					i++
 					_ = i
 				}
-				for _, m := range missing {
-					out = append(out, m)
-				}
+				out = append(out, missing...)
 				inserted = true
 			}
 		}
@@ -491,6 +490,53 @@ func reconcileMissingBullets(original, cleaned string) string {
 	result := strings.TrimRight(cleaned, "\n") + "\n\n## Unsorted\n\n"
 	for _, m := range missing {
 		result += m + "\n"
+	}
+	return result
+}
+
+func reconcileMissingSections(original, cleaned string) string {
+	canonical := map[string]bool{
+		"## Current Phase":      true,
+		"## Current Tasks":      true,
+		"## Bugs + Blockers":    true,
+		"## Updates + Features": true,
+		"## Backlog":            true,
+		"## Unsorted":           true,
+	}
+
+	type sectionBlock struct {
+		header string
+		body   []string
+	}
+
+	var blocks []sectionBlock
+	var current *sectionBlock
+	for _, line := range strings.Split(original, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			if current != nil && !canonical[current.header] {
+				blocks = append(blocks, *current)
+			}
+			current = &sectionBlock{header: trimmed, body: []string{line}}
+			continue
+		}
+		if current != nil {
+			current.body = append(current.body, line)
+		}
+	}
+	if current != nil && !canonical[current.header] {
+		blocks = append(blocks, *current)
+	}
+	if len(blocks) == 0 {
+		return cleaned
+	}
+
+	result := strings.TrimRight(cleaned, "\n")
+	for _, block := range blocks {
+		if strings.Contains(cleaned, block.header) {
+			continue
+		}
+		result += "\n\n" + strings.TrimRight(strings.Join(block.body, "\n"), "\n")
 	}
 	return result
 }

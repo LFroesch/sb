@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -22,6 +24,74 @@ const (
 	EnvInCockpit = "SB_IN_COCKPIT" // set to 1 by the re-exec child
 	EnvNoTmux    = "SB_NO_TMUX"    // user opt-out
 )
+
+const cockpitDashboardTarget = CockpitSession + ":" + CockpitDashboardWindow
+
+func dashboardShellCommand(self string) string {
+	return fmt.Sprintf("export %s=1; exec %s", EnvInCockpit, shellQuote(self))
+}
+
+func createDashboardSession(self string) error {
+	if _, err := runTmux(
+		"new-session", "-d", "-s", CockpitSession,
+		"-n", CockpitDashboardWindow,
+		"-x", "200", "-y", "50",
+		dashboardShellCommand(self),
+	); err != nil {
+		return err
+	}
+	return ConfigureSession(CockpitSession)
+}
+
+func dashboardWindowAlive(self string) (bool, error) {
+	out, err := runTmux("list-panes", "-t", cockpitDashboardTarget, "-F", "#{pane_pid}\t#{pane_dead}\t#{pane_current_command}")
+	if err != nil {
+		if isTmuxMissingResourceError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) < 3 {
+			continue
+		}
+		pid, _ := strconv.Atoi(fields[0])
+		if fields[1] == "0" && processAlive(pid) && sameExecutableName(fields[2], self) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func ensureDashboardWindow(self string) error {
+	alive, err := dashboardWindowAlive(self)
+	if err != nil {
+		return err
+	}
+	if alive {
+		return nil
+	}
+
+	out, err := runTmux("list-panes", "-t", cockpitDashboardTarget, "-F", "#{pane_dead}")
+	if err != nil {
+		if isTmuxMissingResourceError(err) {
+			_, err = runTmux(
+				"new-window", "-d",
+				"-t", CockpitSession+":",
+				"-n", CockpitDashboardWindow,
+				dashboardShellCommand(self),
+			)
+			return err
+		}
+		return err
+	}
+	if strings.TrimSpace(out) == "" {
+		return fmt.Errorf("dashboard target %s exists but has no panes", cockpitDashboardTarget)
+	}
+	_, err = runTmux("respawn-window", "-k", "-t", cockpitDashboardTarget, dashboardShellCommand(self))
+	return err
+}
 
 // MaybeReExecIntoTmux re-execs sb inside the cockpit tmux session if
 // conditions are right. Call early in main() before any TTY setup.
@@ -51,49 +121,37 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 		return false, true, fmt.Errorf("resolve self: %w", err)
 	}
 
-	// Ensure the cockpit session exists.
-	if err := EnsureSession(CockpitSession); err != nil {
+	exists, err := tmuxSessionExists(CockpitSession)
+	if err != nil {
 		ExecFallback = true
 		return false, true, fmt.Errorf("ensure cockpit session: %w", err)
 	}
-
-	// Kill any stale sb window from a previous crashed run. We look for
-	// the first window named "sb" and replace its command.
-	// Simpler: respawn-kill-respawn. We send select-window + respawn-window.
-	// For v2 we assume the user runs one sb per host; if there is a
-	// previous sb window, just reuse its slot.
-	//
-	// Easiest correct path: try kill-window on sb-cockpit:sb (ignore
-	// error if missing), then create a new one running this binary.
-	_, _ = runTmux("kill-window", "-t", CockpitSession+":sb")
-
-	_, err = runTmux(
-		"new-window", "-t", CockpitSession+":0",
-		"-n", "sb",
-		"-e", EnvInCockpit+"=1",
-		"--",
-		self,
-	)
-	if err != nil {
+	if !exists {
+		if err := createDashboardSession(self); err != nil {
+			ExecFallback = true
+			return false, true, fmt.Errorf("create cockpit session: %w", err)
+		}
+	} else if err := ensureDashboardWindow(self); err != nil {
 		ExecFallback = true
-		return false, true, fmt.Errorf("new-window sb: %w", err)
+		return false, true, fmt.Errorf("ensure dashboard window: %w", err)
 	}
 
-	// Root-table bindings for getting back to window 0 (sb itself).
+	// Root-table bindings for getting back to the shared dashboard window.
 	// F1 is nice when terminals pass it through, but VS Code / Cursor
 	// often intercept function keys, so bind plain-key fallbacks too.
-	_ = BindKey("F1", "select-window -t "+CockpitSession+":0")
-	_ = BindKey("C-g", "select-window -t "+CockpitSession+":0")
-	_ = BindKey("F12", "select-window -t "+CockpitSession+":0")
-	// Make Ctrl+C safer in attached job windows: when you're on window 0
-	// (sb itself), preserve the normal Ctrl+C behavior by forwarding it
-	// into the pane. Everywhere else, treat Ctrl+C as "back to sb"
-	// instead of sending SIGINT to the agent process.
+	_ = BindKey("F1", "select-window -t "+cockpitDashboardTarget)
+	_ = BindKey("C-g", "select-window -t "+cockpitDashboardTarget)
+	_ = BindKey("F12", "select-window -t "+cockpitDashboardTarget)
+	// Make Ctrl+C safer in attached job windows: on the shared dashboard,
+	// detach just the current client when multiple terminals are attached
+	// so one operator does not kill sb for everyone else. Everywhere else,
+	// treat Ctrl+C as "back to sb" instead of sending SIGINT into the
+	// agent process.
 	_, _ = runTmux(
 		"bind-key", "-T", "root", "C-c",
-		"if-shell", "-F", "#{==:#{window_index},0}",
-		"send-keys C-c",
-		"select-window -t "+CockpitSession+":0",
+		"if-shell", "-F", dashboardWindowCondition(),
+		fmt.Sprintf(`if-shell -F "#{>:#{session_attached},1}" "detach-client" "send-keys C-c"`),
+		"select-window -t "+cockpitDashboardTarget,
 	)
 
 	// Finally, exec tmux attach so the user lands in the session. We
@@ -105,7 +163,7 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 		ExecFallback = true
 		return false, true, fmt.Errorf("lookpath tmux: %w", err)
 	}
-	args := []string{tmux, "-L", TmuxServerLabel, "attach", "-t", CockpitSession + ":sb"}
+	args := []string{tmux, "-L", TmuxServerLabel, "attach", "-t", CockpitSession}
 	env := os.Environ()
 	if execErr := syscall.Exec(tmux, args, env); execErr != nil {
 		ExecFallback = true

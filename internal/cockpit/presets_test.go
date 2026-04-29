@@ -3,6 +3,7 @@ package cockpit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,30 @@ func TestWriteDefaultPresets_SeedsThenNoops(t *testing.T) {
 	}
 	if n2 != 0 {
 		t.Fatalf("expected no-op on second seed, wrote %d", n2)
+	}
+}
+
+func TestLoadPresets_SortsCoreBeforeUtility(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []LaunchPreset{
+		{ID: "shell-test", Name: "Shell test", Executor: ExecutorSpec{Type: "shell"}},
+		{ID: "senior-dev", Name: "Senior dev", Executor: ExecutorSpec{Type: "claude"}},
+		{ID: "custom-role", Name: "Custom role", Executor: ExecutorSpec{Type: "codex"}},
+	} {
+		if err := SavePreset(dir, p); err != nil {
+			t.Fatalf("SavePreset(%s): %v", p.ID, err)
+		}
+	}
+
+	got, err := LoadPresets(dir)
+	if err != nil {
+		t.Fatalf("LoadPresets: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	if got[0].ID != "custom-role" || got[1].ID != "senior-dev" || got[2].ID != "shell-test" {
+		t.Fatalf("unexpected order: %q, %q, %q", got[0].ID, got[1].ID, got[2].ID)
 	}
 }
 
@@ -87,6 +112,9 @@ func TestComposeBrief_Order(t *testing.T) {
 			t.Fatalf("order broken for %q; brief:\n%s", w, out)
 		}
 		last = idx
+	}
+	if !strings.Contains(out, SupervisorWaitingHumanMarker) || !strings.Contains(out, SupervisorReadyReviewMarker) {
+		t.Fatalf("missing supervisor markers:\n%s", out)
 	}
 }
 

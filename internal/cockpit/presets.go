@@ -39,12 +39,22 @@ func LoadPresets(dir string) ([]LaunchPreset, error) {
 		if p.Name == "" {
 			p.Name = p.ID
 		}
+		if p.LaunchMode == "" {
+			p.LaunchMode = LaunchModeSingleJob
+		}
 		if p.Hooks.Iteration.Mode == "" {
 			p.Hooks.Iteration.Mode = IterationOneShot
 		}
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool {
+		ri := presetSortRank(out[i].ID)
+		rj := presetSortRank(out[j].ID)
+		if ri != rj {
+			return ri < rj
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 
@@ -61,6 +71,24 @@ func SavePreset(dir string, p LaunchPreset) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, p.ID+".json"), append(b, '\n'), 0o644)
+}
+
+// DeletePreset removes <dir>/<id>.json. Missing files are treated as
+// success so the UI can call it without a pre-check race.
+func DeletePreset(dir, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("preset missing id")
+	}
+	path := filepath.Join(dir, id+".json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// PresetPath returns the on-disk path <dir>/<id>.json for a preset.
+func PresetPath(dir, id string) string {
+	return filepath.Join(dir, id+".json")
 }
 
 // WriteDefaultPresets materialises the seed presets into dir if no
@@ -98,7 +126,6 @@ var DefaultPresetCount = len(defaultPresets())
 func defaultPresets() []LaunchPreset {
 	claude := ExecutorSpec{Type: "claude"}
 	codex := ExecutorSpec{Type: "codex"}
-	ollama := ExecutorSpec{Type: "ollama", Model: "qwen2.5:7b"}
 	bash := ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}}
 
 	diffStat := []ShellHook{{Name: "git diff --stat", Cmd: "git diff --stat"}}
@@ -180,60 +207,23 @@ func defaultPresets() []LaunchPreset {
 			Permissions: "scoped-write",
 		},
 		{
-			ID: "rfc", Name: "RFC drafter", Role: "rfc",
-			SystemPrompt: "You draft a concise RFC from the brief. Sections: Context, Decision, Alternatives, " +
-				"Risks, Phased plan. No filler; cite files where relevant.",
-			Executor:    codex,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "read-only",
-		},
-		{
-			ID: "docs-tidy", Name: "Docs tidy", Role: "docs",
-			SystemPrompt: "You tidy markdown docs without changing intent. Keep headings and bullet structure. " +
-				"Return the full revised file on stdout.",
-			Executor:    ollama,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "read-only",
-		},
-		{
-			ID: "classify", Name: "Classifier", Role: "classifier",
-			SystemPrompt: "You classify the input into one of the labels given in the brief. " +
-				"Return only the label, no prose.",
-			Executor:    ollama,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "read-only",
-		},
-		{
-			ID: "summarize", Name: "Summarizer", Role: "summarizer",
-			SystemPrompt: "You summarize the input into at most five bullets capturing concrete facts. " +
-				"Skip preamble.",
-			Executor:    ollama,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "read-only",
-		},
-		{
-			ID: "shell-test", Name: "Shell — run tests", Role: "test-runner",
-			Executor:    bash,
-			Hooks:       HookSpec{PostShell: gitStatus, Iteration: one},
-			Permissions: "read-only",
-		},
-		{
-			ID: "shell-lint", Name: "Shell — lint & fix", Role: "linter",
-			Executor:    bash,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "scoped-write",
-		},
-		{
-			ID: "shell-build", Name: "Shell — build", Role: "build",
-			Executor:    bash,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "read-only",
-		},
-		{
 			ID: "shell-escape", Name: "Shell — escape hatch", Role: "shell",
 			Executor:    bash,
 			Hooks:       HookSpec{Iteration: one},
 			Permissions: "wide-open",
 		},
+	}
+}
+
+func presetSortRank(id string) int {
+	switch id {
+	case "senior-dev", "bug-fixer", "test-writer", "refactor", "scaffold", "docs-writer":
+		return 10
+	case "code-analyzer", "explainer", "pm", "rfc":
+		return 20
+	case "docs-tidy", "classify", "summarize", "shell-test", "shell-lint", "shell-build", "shell-escape":
+		return 30
+	default:
+		return 0
 	}
 }

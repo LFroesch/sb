@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
 // Serve accepts connections on l and handles cockpit requests against
@@ -42,7 +43,13 @@ func Serve(ctx context.Context, l net.Listener, mgr *Manager) error {
 // ListenUnix prepares a unix socket at path, removing any stale socket
 // file first. The caller owns the returned listener.
 func ListenUnix(path string) (net.Listener, error) {
-	_ = os.Remove(path) // stale socket from a crashed daemon
+	if conn, err := net.DialTimeout("unix", path, 150*time.Millisecond); err == nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("listen unix %s: socket already active", path)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
 	if err := os.MkdirAll(parentDir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -90,8 +97,8 @@ func handleConn(ctx context.Context, c net.Conn, mgr *Manager) {
 	}
 
 	var (
-		subMu       sync.Mutex
-		subCancel   func()
+		subMu     sync.Mutex
+		subCancel func()
 	)
 	unsubscribe := func() {
 		subMu.Lock()
@@ -155,24 +162,71 @@ func dispatch(_ context.Context, mgr *Manager, req Envelope, activateSub func())
 		j, ok := mgr.GetJob(p.ID)
 		reply.Result = mustJSON(GetJobResult{Job: j, OK: ok})
 
-	case MethodLaunchJob:
-		var p LaunchJobParams
+	case MethodGetForeman:
+		reply.Result = mustJSON(GetForemanStateResult{State: mgr.GetForemanState()})
+
+	case MethodSetForeman:
+		var p SetForemanEnabledParams
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			reply.Error = err.Error()
 			return reply
 		}
-		j, err := mgr.LaunchJob(LaunchRequest{
-			Preset:   p.Preset,
-			Sources:  p.Sources,
-			Repo:     p.Repo,
-			Freeform: p.Freeform,
-			Provider: p.Provider,
-		})
+		state, err := mgr.SetForemanEnabled(p.Enabled)
+		if err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(GetForemanStateResult{State: state})
+
+	case MethodLaunchJob:
+		var p LaunchRequest
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		j, err := mgr.LaunchJob(p)
 		if err != nil {
 			reply.Error = err.Error()
 			return reply
 		}
 		reply.Result = mustJSON(LaunchJobResult{Job: j})
+
+	case MethodStartJob:
+		var p StartJobParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		j, err := mgr.StartJob(p.ID)
+		if err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(LaunchJobResult{Job: j})
+
+	case MethodSoftStopJob:
+		var p StopJobParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		if err := mgr.SoftStopJob(p.ID); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(map[string]any{"ok": true})
+
+	case MethodContinueJob:
+		var p StopJobParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		if err := mgr.ContinueJob(p.ID); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(map[string]any{"ok": true})
 
 	case MethodStopJob:
 		var p StopJobParams
@@ -193,6 +247,30 @@ func dispatch(_ context.Context, mgr *Manager, req Envelope, activateSub func())
 			return reply
 		}
 		if err := mgr.DeleteJob(p.ID); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(map[string]any{"ok": true})
+
+	case MethodSkipJob:
+		var p SkipJobParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		if err := mgr.SkipJob(p.ID); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(map[string]any{"ok": true})
+
+	case MethodSkipCampaign:
+		var p SkipCampaignParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		if err := mgr.SkipCampaign(p.ID); err != nil {
 			reply.Error = err.Error()
 			return reply
 		}

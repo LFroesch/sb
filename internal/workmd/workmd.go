@@ -420,7 +420,7 @@ func resolveCollisionGroup(projects []Project, candidates []nameCandidate, idxs 
 
 	nameCounts := make(map[string]int)
 	for _, idx := range idxs {
-		name := candidates[idx].base
+		var name string
 		if candidates[idx].explicit {
 			name = decorateExplicitName(candidates[idx].base, suffixes[idx])
 		} else {

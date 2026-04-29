@@ -104,3 +104,50 @@ func TestApplySyncBack_RefusesMismatch(t *testing.T) {
 		t.Fatal("expected mismatch error")
 	}
 }
+
+func TestPreviewSyncBack_ShowsWorkAndDevlogChangesWithoutWriting(t *testing.T) {
+	dir := t.TempDir()
+	workPath := filepath.Join(dir, "WORK.md")
+	devlogPath := filepath.Join(dir, "DEVLOG.md")
+
+	work := `# WORK - demo
+
+## Current Tasks
+
+- keep me
+- delete me
+`
+	if err := os.WriteFile(workPath, []byte(work), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job := Job{
+		ID:       "j-test",
+		PresetID: "senior-dev",
+		Sources: []SourceTask{
+			{File: workPath, Line: 6, Text: "delete me"},
+		},
+	}
+
+	previews, err := PreviewSyncBack(job, devlogPath)
+	if err != nil {
+		t.Fatalf("PreviewSyncBack: %v", err)
+	}
+	if len(previews) != 2 {
+		t.Fatalf("expected 2 previews, got %d", len(previews))
+	}
+	if strings.Contains(previews[0].After, "delete me") {
+		t.Fatalf("work preview did not remove task:\n%s", previews[0].After)
+	}
+	if !strings.Contains(previews[1].After, "delete me") {
+		t.Fatalf("devlog preview missing task entry:\n%s", previews[1].After)
+	}
+
+	afterDisk, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(afterDisk), "delete me") {
+		t.Fatalf("preview wrote changes to disk unexpectedly:\n%s", afterDisk)
+	}
+}

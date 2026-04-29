@@ -9,6 +9,7 @@ package cockpit
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type tmuxRunner struct {
 	paths Paths
 	reg   *Registry
 	emit  func(Event)
+	afterYield func()
 
 	mu    sync.Mutex
 	alive map[JobID]string // jobID -> tmux target
@@ -29,11 +31,12 @@ type tmuxRunner struct {
 	stop      chan struct{}
 }
 
-func newTmuxRunner(paths Paths, reg *Registry, emit func(Event)) *tmuxRunner {
+func newTmuxRunner(paths Paths, reg *Registry, emit func(Event), afterYield func()) *tmuxRunner {
 	return &tmuxRunner{
 		paths: paths,
 		reg:   reg,
 		emit:  emit,
+		afterYield: afterYield,
 		alive: map[JobID]string{},
 		stop:  make(chan struct{}),
 	}
@@ -102,16 +105,37 @@ func (r *tmuxRunner) StartJob(j Job) error {
 	return nil
 }
 
-// StopJob sends C-c then kills the window. Used by both explicit stop
-// and delete paths.
+// StopJob sends C-c to the live CLI but keeps the tmux window open so
+// the operator can re-enter the session immediately after interrupting
+// the current turn.
 func (r *tmuxRunner) StopJob(j Job) error {
 	if j.TmuxTarget == "" {
 		return nil
 	}
-	// Best-effort C-c so the CLI can shut down gracefully.
-	_, _ = runTmux("send-keys", "-t", j.TmuxTarget, "C-c")
-	time.Sleep(200 * time.Millisecond)
-	return KillWindow(j.TmuxTarget)
+	// Best-effort C-c so the CLI can stop the current turn gracefully.
+	return SendKeys(j.TmuxTarget, "C-c")
+}
+
+func (r *tmuxRunner) SoftStopJob(j Job) error {
+	if j.TmuxTarget == "" {
+		return nil
+	}
+	return SendKeys(j.TmuxTarget, "Escape")
+}
+
+func (r *tmuxRunner) ContinueJob(j Job) error {
+	if j.TmuxTarget == "" {
+		return nil
+	}
+	_ = r.reg.Update(j.ID, func(jj *Job) {
+		jj.Status = StatusRunning
+		jj.Note = ""
+	})
+	r.mu.Lock()
+	r.alive[j.ID] = j.TmuxTarget
+	r.mu.Unlock()
+	r.ensureLoop()
+	return SendKeys(j.TmuxTarget, "continue", "Enter")
 }
 
 // Rehydrate is called once at startup. Any tmux-backed job whose target
@@ -143,6 +167,9 @@ func (r *tmuxRunner) Rehydrate(jobs []Job) {
 				jj.Note = "tmux window closed before rehydrate"
 			}
 		})
+		if next, ok := r.reg.Get(j.ID); ok {
+			_ = CaptureReviewArtifact(next)
+		}
 	}
 	if any {
 		r.ensureLoop()
@@ -189,6 +216,7 @@ func (r *tmuxRunner) scan() {
 	}
 	for id, target := range snapshot {
 		if live[target] {
+			r.observeLiveJob(id, target)
 			continue
 		}
 		// window is gone or dead → terminal transition
@@ -199,21 +227,85 @@ func (r *tmuxRunner) scan() {
 			r.mu.Unlock()
 			continue
 		}
+		if j.LogPath != "" {
+			if snapshot, err := CapturePane(target); err == nil && strings.TrimSpace(snapshot) != "" {
+				_ = os.WriteFile(j.LogPath, []byte(snapshot), 0o644)
+			}
+		}
 		next := StatusIdle
-		if len(j.Sources) > 0 {
-			next = StatusNeedsReview
+		note := "tmux window closed"
+		switch j.Status {
+		case StatusRunning:
+			if len(j.Sources) > 0 {
+				next = StatusNeedsReview
+			}
+		case StatusIdle, StatusPaused:
+			next = StatusFailed
+			note = "tmux session ended"
+		default:
+			next = j.Status
 		}
 		_ = r.reg.Update(id, func(jj *Job) {
-			if jj.Status == StatusRunning {
+			if jj.Status == StatusRunning || jj.Status == StatusIdle || jj.Status == StatusPaused {
 				jj.Status = next
 				jj.FinishedAt = time.Now()
+				jj.Note = note
 			}
 		})
-		r.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(next)}})
+		if updated, ok := r.reg.Get(id); ok && (updated.Status == StatusNeedsReview || updated.Status == StatusIdle || updated.Status == StatusCompleted) {
+			_ = CaptureReviewArtifact(updated)
+		}
+		r.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(next), "note": note}})
 		r.mu.Lock()
 		delete(r.alive, id)
 		r.mu.Unlock()
 	}
+}
+
+func (r *tmuxRunner) observeLiveJob(id JobID, target string) {
+	j, ok := r.reg.Get(id)
+	if !ok || j.Status != StatusRunning {
+		return
+	}
+	body, err := CapturePane(target)
+	if err != nil {
+		return
+	}
+	next, note, yielded := supervisorStateFromPane(body)
+	if !yielded {
+		return
+	}
+	_ = r.reg.Update(id, func(jj *Job) {
+		jj.Status = next
+		jj.Note = note
+		if next == StatusNeedsReview {
+			jj.FinishedAt = time.Now()
+		}
+	})
+	if updated, ok := r.reg.Get(id); ok && (updated.Status == StatusNeedsReview || updated.Status == StatusIdle) {
+		_ = CaptureReviewArtifact(updated)
+	}
+	r.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(next), "note": note}})
+	r.mu.Lock()
+	delete(r.alive, id)
+	r.mu.Unlock()
+	if r.afterYield != nil {
+		r.afterYield()
+	}
+}
+
+func supervisorStateFromPane(body string) (Status, string, bool) {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		switch line {
+		case SupervisorReadyReviewMarker:
+			return StatusNeedsReview, "ready for review", true
+		case SupervisorWaitingHumanMarker:
+			return StatusIdle, "waiting for human input", true
+		}
+	}
+	return "", "", false
 }
 
 // Shutdown stops the poll loop. Called from Manager.Close (reserved;
@@ -228,8 +320,14 @@ func (r *tmuxRunner) Shutdown() {
 }
 
 // windowName builds a short human-identifying window title from the
-// job's id + preset. Example: "j-1713...-senior-dev".
+// job's repo basename. Falls back to preset slug / executor / id tail
+// when the repo is unknown (e.g. freeform launches without a repo).
 func windowName(j Job) string {
+	if repo := strings.TrimSpace(j.Repo); repo != "" {
+		if base := strings.TrimSpace(filepath.Base(repo)); base != "" && base != "." && base != "/" {
+			return base
+		}
+	}
 	slug := strings.ReplaceAll(strings.ToLower(j.PresetID), " ", "-")
 	if slug == "" {
 		slug = strings.ToLower(j.Executor.Type)
@@ -248,7 +346,7 @@ func windowName(j Job) string {
 // interactive job. Unlike the exec-per-turn path, this must launch the
 // real upstream CLI and let it own the entire UX in the pane.
 func buildTmuxCommand(j Job) ([]string, error) {
-	brief := strings.TrimSpace(j.Brief)
+	brief := strings.TrimSpace(j.launchPrompt())
 	spec := j.Executor
 	switch strings.ToLower(spec.Type) {
 	case "claude":
@@ -266,7 +364,10 @@ func buildTmuxCommand(j Job) ([]string, error) {
 		if bin == "" {
 			bin = "codex"
 		}
-		args := append([]string{}, normalizedCodexArgs(spec.Args)...)
+		args, positionalArgs := splitCodexArgs(spec.Args)
+		if len(positionalArgs) > 0 {
+			return nil, fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
+		}
 		if brief != "" {
 			args = append(args, brief)
 		}

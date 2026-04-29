@@ -3,11 +3,16 @@ package cockpit
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
+
+type SyncBackPreview struct {
+	Path   string
+	Before string
+	After  string
+}
 
 // ApplySyncBack is the V0 sync-back: for each source task, delete its
 // exact line from the file, then append a dated DevLog entry summarising
@@ -17,6 +22,21 @@ import (
 //
 // Returns the list of files it modified so the TUI can refresh state.
 func ApplySyncBack(job Job, devlogPath string) ([]string, error) {
+	previews, err := PreviewSyncBack(job, devlogPath)
+	if err != nil {
+		return nil, err
+	}
+	var touched []string
+	for _, preview := range previews {
+		if err := os.WriteFile(preview.Path, []byte(preview.After), 0o644); err != nil {
+			return touched, err
+		}
+		touched = append(touched, preview.Path)
+	}
+	return touched, nil
+}
+
+func PreviewSyncBack(job Job, devlogPath string) ([]SyncBackPreview, error) {
 	if len(job.Sources) == 0 {
 		return nil, nil
 	}
@@ -30,33 +50,48 @@ func ApplySyncBack(job Job, devlogPath string) ([]string, error) {
 		bySource[s.File] = append(bySource[s.File], s)
 	}
 
-	var touched []string
+	var previews []SyncBackPreview
 	for file, sources := range bySource {
-		if err := deleteLines(file, sources); err != nil {
-			return touched, fmt.Errorf("sync-back %s: %w", file, err)
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return previews, fmt.Errorf("sync-back %s: %w", file, err)
 		}
-		touched = append(touched, file)
+		next, err := deleteLinesContent(string(raw), file, sources)
+		if err != nil {
+			return previews, fmt.Errorf("sync-back %s: %w", file, err)
+		}
+		previews = append(previews, SyncBackPreview{
+			Path:   file,
+			Before: string(raw),
+			After:  next,
+		})
 	}
 
 	if devlogPath != "" {
-		if err := appendDevlog(devlogPath, job); err != nil {
-			return touched, fmt.Errorf("sync-back devlog %s: %w", devlogPath, err)
+		raw, err := os.ReadFile(devlogPath)
+		exists := err == nil
+		if err != nil && !os.IsNotExist(err) {
+			return previews, fmt.Errorf("sync-back devlog %s: %w", devlogPath, err)
 		}
-		touched = append(touched, devlogPath)
+		next, err := appendDevlogContent(string(raw), exists, job)
+		if err != nil {
+			return previews, fmt.Errorf("sync-back devlog %s: %w", devlogPath, err)
+		}
+		previews = append(previews, SyncBackPreview{
+			Path:   devlogPath,
+			Before: string(raw),
+			After:  next,
+		})
 	}
-	return touched, nil
+	return previews, nil
 }
 
-// deleteLines removes lines from file whose (1-indexed) line number
-// matches one of sources *and* whose content matches the recorded Raw
-// text. The content check keeps us safe when the file has been edited
-// since the job launched: a mismatch aborts with an error.
-func deleteLines(path string, sources []SourceTask) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(raw), "\n")
+// deleteLinesContent removes lines from content whose (1-indexed) line
+// number matches one of sources *and* whose content matches the recorded
+// Raw text. The content check keeps us safe when the file has been
+// edited since the job launched: a mismatch aborts with an error.
+func deleteLinesContent(content, path string, sources []SourceTask) (string, error) {
+	lines := strings.Split(content, "\n")
 
 	// Build a map of line -> expected text, and sort sources so the
 	// error message points at the first divergence.
@@ -73,12 +108,12 @@ func deleteLines(path string, sources []SourceTask) error {
 	sort.Ints(keys)
 	for _, ln := range keys {
 		if ln-1 >= len(lines) {
-			return fmt.Errorf("line %d missing in %s (file shrunk since launch)", ln, path)
+			return "", fmt.Errorf("line %d missing in %s (file shrunk since launch)", ln, path)
 		}
 		got := strings.TrimSpace(lines[ln-1])
 		expect := strings.TrimSpace(want[ln])
 		if got != expect {
-			return fmt.Errorf("line %d in %s changed since launch: %q vs %q", ln, path, got, expect)
+			return "", fmt.Errorf("line %d in %s changed since launch: %q vs %q", ln, path, got, expect)
 		}
 	}
 
@@ -88,13 +123,13 @@ func deleteLines(path string, sources []SourceTask) error {
 		lines = append(lines[:ln-1], lines[ln:]...)
 	}
 
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	return strings.Join(lines, "\n"), nil
 }
 
-// appendDevlog adds a dated entry under `## DevLog`, creating the
-// section if the file has none. The entry lists every source line that
-// was just removed.
-func appendDevlog(path string, job Job) error {
+// appendDevlogContent inserts a dated entry under `## DevLog`, creating
+// the section if the file has none. The entry lists every source line
+// that was just removed.
+func appendDevlogContent(content string, exists bool, job Job) (string, error) {
 	date := time.Now().Format("2006-01-02")
 	title := fmt.Sprintf("### %s — Agent: %s", date, job.PresetID)
 	var body strings.Builder
@@ -105,20 +140,13 @@ func appendDevlog(path string, job Job) error {
 		body.WriteString(s.Text)
 		body.WriteString("\n")
 	}
-
-	existing, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		header := "# DEVLOG\n\n## DevLog\n\n" + body.String() + "\n"
-		return os.WriteFile(path, []byte(header), 0o644)
+	entry := body.String()
+	if !strings.HasSuffix(entry, "\n") {
+		entry += "\n"
 	}
-	if err != nil {
-		return err
+	if !exists {
+		return "# DEVLOG\n\n## DevLog\n\n" + entry + "\n", nil
 	}
-
-	content := string(existing)
 	if idx := strings.Index(content, "## DevLog"); idx >= 0 {
 		// Insert right after the `## DevLog` header + its blank line.
 		lines := strings.Split(content, "\n")
@@ -134,7 +162,7 @@ func appendDevlog(path string, job Job) error {
 				} else {
 					out = append(out, "")
 				}
-				out = append(out, body.String())
+				out = append(out, entry)
 				// Consume the blank line we appended above if it was from source.
 				if j < len(lines) && strings.TrimSpace(lines[j]) == "" {
 					lines[j] = "__CONSUMED__"
@@ -150,13 +178,13 @@ func appendDevlog(path string, job Job) error {
 			}
 			final = append(final, l)
 		}
-		return os.WriteFile(path, []byte(strings.Join(final, "\n")), 0o644)
+		return strings.Join(final, "\n"), nil
 	}
 
 	// No `## DevLog` section yet — append one at the end.
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	content += "\n## DevLog\n\n" + body.String() + "\n"
-	return os.WriteFile(path, []byte(content), 0o644)
+	content += "\n## DevLog\n\n" + entry + "\n"
+	return content, nil
 }

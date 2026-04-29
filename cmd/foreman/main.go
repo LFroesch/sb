@@ -52,6 +52,15 @@ func main() {
 	// Default mode is serve. -serve is accepted for explicitness.
 	_ = serveCmd
 
+	lock, err := acquireLock(paths.PIDFile + ".lock")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sb-foreman: already running or locked (%v)\n", err)
+		return
+	}
+	defer func() {
+		_ = lock.Close()
+	}()
+
 	l, err := cockpit.ListenUnix(paths.Socket)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "foreman: %v\n", err)
@@ -85,4 +94,16 @@ func main() {
 
 func writePID(path string) error {
 	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
+}
+
+func acquireLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }

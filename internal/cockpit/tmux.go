@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // TmuxServerLabel is the -L value we pin every tmux call to. Keep in sync
@@ -25,6 +27,10 @@ const TmuxServerLabel = "sb"
 // CockpitSession is the session name used by the bootstrap and runner.
 // Window 0 of this session is the sb TUI itself; windows 1..N are jobs.
 const CockpitSession = "sb-cockpit"
+
+// CockpitDashboardWindow is the fixed window title for slot 0, which hosts
+// the main sb TUI inside the cockpit session.
+const CockpitDashboardWindow = "main"
 
 // WindowInfo is the parsed result of `list-panes` / `list-windows`.
 type WindowInfo struct {
@@ -95,11 +101,22 @@ func tmuxSessionExists(name string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server") {
+	if isTmuxMissingResourceError(err) {
 		return false, nil
 	}
 	return false, err
+}
+
+func isTmuxMissingResourceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "can't find session") ||
+		strings.Contains(msg, "can't find window") ||
+		strings.Contains(msg, "no server") ||
+		strings.Contains(msg, "error connecting to") ||
+		strings.Contains(msg, "no such file or directory")
 }
 
 func tmuxCmdEnv() []string {
@@ -121,6 +138,10 @@ func tmuxCmdEnv() []string {
 	return append(env, "TERM=xterm-256color")
 }
 
+func dashboardWindowCondition() string {
+	return "#{==:#{window_name}," + CockpitDashboardWindow + "}"
+}
+
 // EnsureSession creates the session if it does not yet exist. Uses
 // an explicit `has-session` probe first so detached daemon launches do
 // not accidentally hit tmux's attach/reuse path.
@@ -132,7 +153,7 @@ func EnsureSession(name string) error {
 	if !exists {
 		// -d: don't attach. -x/-y: give it a sane default size; tmux clamps
 		// to the attaching client's terminal once one connects.
-		if _, err = runTmux("new-session", "-d", "-s", name, "-n", "sb", "-x", "200", "-y", "50"); err != nil {
+		if _, err = runTmux("new-session", "-d", "-s", name, "-n", CockpitDashboardWindow, "-x", "200", "-y", "50"); err != nil {
 			return err
 		}
 	}
@@ -182,11 +203,24 @@ func PipePane(target, logPath string) error {
 	return err
 }
 
+// CapturePane returns tmux's current rendered pane contents rather than the
+// raw terminal byte stream. This is much more useful for full-screen TUIs
+// like Claude/Codex than pipe-pane logs.
+func CapturePane(target string) (string, error) {
+	return runTmux("capture-pane", "-p", "-J", "-t", target)
+}
+
 // SelectWindow jumps the current client to the target window. Only
 // meaningful when a tmux client is attached to the sb-cockpit session —
 // inside the bootstrap re-exec we always are.
 func SelectWindow(target string) error {
 	_, err := runTmux("select-window", "-t", target)
+	return err
+}
+
+func SendKeys(target string, keys ...string) error {
+	args := append([]string{"send-keys", "-t", target}, keys...)
+	_, err := runTmux(args...)
 	return err
 }
 
@@ -211,14 +245,6 @@ func KillWindow(target string) error {
 	return err
 }
 
-// KillSession kills the entire cockpit session. Currently unused — the
-// cockpit does not offer a global shutdown path in v2; exposed here for
-// tests and future work.
-func KillSession(name string) error {
-	_, err := runTmux("kill-session", "-t", name)
-	return err
-}
-
 // WindowAlive checks whether the given target still exists and its pane
 // hasn't died. A killed-window target returns (false, nil) — that's the
 // expected lifecycle signal for a finished job.
@@ -227,7 +253,7 @@ func WindowAlive(target string) (bool, error) {
 	if err != nil {
 		// tmux prints "can't find window" when the window is gone;
 		// treat that as a clean "not alive" rather than an error.
-		if strings.Contains(err.Error(), "can't find") || strings.Contains(err.Error(), "no server") {
+		if isTmuxMissingResourceError(err) {
 			return false, nil
 		}
 		return false, err
@@ -251,7 +277,7 @@ func ListWindows(session string) ([]WindowInfo, error) {
 		"#{session_name}:#{window_id}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}")
 	if err != nil {
 		// No server yet → empty list.
-		if strings.Contains(err.Error(), "no server") {
+		if isTmuxMissingResourceError(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -279,12 +305,12 @@ func ListWindows(session string) ([]WindowInfo, error) {
 	return wins, nil
 }
 
-// SendKeys is the programmatic input path. Reserved for future use; the
-// v2 cockpit returns an error from SendInput on tmux-backed jobs and
-// asks the user to attach instead.
-func SendKeys(target, keys string) error {
-	_, err := runTmux("send-keys", "-t", target, keys, "Enter")
-	return err
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 // BindKey binds a key at the `root` table (no prefix needed) so F1 etc.
@@ -337,6 +363,14 @@ func setWindowOption(target, key, value string) error {
 // isolated sb tmux session. Because the cockpit always uses its own `-L sb`
 // server, these settings never touch the user's personal tmux setup.
 func ConfigureSession(target string) error {
+	sbBin, err := os.Executable()
+	if err != nil || strings.TrimSpace(sbBin) == "" {
+		sbBin = "sb"
+	}
+	// `sb tmux-status` emits a tmux-format line with Claude + Codex rolling
+	// usage. Keep the right side focused on operator-relevant signal rather
+	// than repeating the fixed cockpit session/window labels.
+	statusRight := fmt.Sprintf("#(%s tmux-status) ", sbBin)
 	options := []struct {
 		key   string
 		value string
@@ -346,12 +380,13 @@ func ConfigureSession(target string) error {
 		{"mouse", "on"},
 		{"history-limit", "100000"},
 		{"status-left-length", "32"},
-		{"status-right-length", "80"},
+		{"status-right-length", "220"},
+		{"status-interval", "15"},
 		{"status-style", "bg=#0f172a,fg=#cbd5e1"},
 		{"status-left", "#[bold,bg=#0b5cad,fg=#f8fafc] sb #[default]"},
-		{"status-right", "#[fg=#94a3b8]#S #[fg=#475569]· #[fg=#e2e8f0]#I:#W #[fg=#475569]· #[fg=#94a3b8]%H:%M "},
-		{"window-status-format", "#[fg=#94a3b8] #I:#W "},
-		{"window-status-current-format", "#[bold,bg=#e2e8f0,fg=#0f172a] #I:#W #[default]"},
+		{"status-right", statusRight},
+		{"window-status-format", "#[fg=#94a3b8] #W "},
+		{"window-status-current-format", "#[bold,bg=#e2e8f0,fg=#0f172a] #W #[default]"},
 		{"window-status-separator", ""},
 		{"message-style", "bg=#e2e8f0,fg=#0f172a"},
 		{"message-command-style", "bg=#dbeafe,fg=#0f172a"},
@@ -376,8 +411,8 @@ func ConfigureSession(target string) error {
 		}
 	}
 	// Make wheel/page scroll behave more like normal terminal scrollback:
-	// scrolling up enters copy-mode automatically, then continued wheel
-	// events/page keys keep moving through history with no tmux prefix.
+	// on the shared dashboard window we forward the events into sb itself;
+	// elsewhere tmux handles copy-mode navigation for the attached job.
 	scrollBinds := []struct {
 		table string
 		key   string
@@ -387,7 +422,7 @@ func ConfigureSession(target string) error {
 			table: "root",
 			key:   "WheelUpPane",
 			args: []string{
-				"if-shell", "-F", "#{==:#{window_index},0}",
+				"if-shell", "-F", dashboardWindowCondition(),
 				"send-keys -M",
 				`if-shell -F "#{pane_in_mode}" "send-keys -M" "copy-mode -eu"`,
 			},
@@ -396,7 +431,7 @@ func ConfigureSession(target string) error {
 			table: "root",
 			key:   "WheelDownPane",
 			args: []string{
-				"if-shell", "-F", "#{==:#{window_index},0}",
+				"if-shell", "-F", dashboardWindowCondition(),
 				"send-keys -M",
 				`if-shell -F "#{pane_in_mode}" "send-keys -M" ""`,
 			},
@@ -405,7 +440,7 @@ func ConfigureSession(target string) error {
 			table: "root",
 			key:   "PageUp",
 			args: []string{
-				"if-shell", "-F", "#{==:#{window_index},0}",
+				"if-shell", "-F", dashboardWindowCondition(),
 				"send-keys PageUp",
 				"copy-mode -eu",
 			},
@@ -414,7 +449,7 @@ func ConfigureSession(target string) error {
 			table: "root",
 			key:   "PageDown",
 			args: []string{
-				"if-shell", "-F", "#{==:#{window_index},0}",
+				"if-shell", "-F", dashboardWindowCondition(),
 				"send-keys PageDown",
 				`if-shell -F "#{pane_in_mode}" "send-keys -X page-down" ""`,
 			},
@@ -432,4 +467,8 @@ func ConfigureSession(target string) error {
 // pipe-pane command. tmux runs pipe-pane commands via /bin/sh.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func sameExecutableName(cmd, self string) bool {
+	return strings.TrimSpace(cmd) == filepath.Base(strings.TrimSpace(self))
 }

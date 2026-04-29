@@ -13,6 +13,7 @@ type Paths struct {
 	StateDir    string // ~/.local/state/sb
 	JobsDir     string // <state>/jobs
 	CampaignDir string // <state>/campaigns
+	ForemanFile string // <state>/foreman.json
 	Socket      string // <state>/foreman.sock
 	PIDFile     string // <state>/foreman.pid
 	LogFile      string // ~/.local/share/sb/logs/foreman.log
@@ -34,6 +35,7 @@ func DefaultPaths() Paths {
 		StateDir:    sbState,
 		JobsDir:     filepath.Join(sbState, "jobs"),
 		CampaignDir: filepath.Join(sbState, "campaigns"),
+		ForemanFile: filepath.Join(sbState, "foreman.json"),
 		Socket:      filepath.Join(sbState, "foreman.sock"),
 		PIDFile:     filepath.Join(sbState, "foreman.pid"),
 		LogFile:      filepath.Join(sbData, "logs", "foreman.log"),

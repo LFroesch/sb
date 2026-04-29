@@ -9,13 +9,18 @@ import (
 	"time"
 )
 
+const (
+	SupervisorWaitingHumanMarker = "SB_STATUS:WAITING_HUMAN"
+	SupervisorReadyReviewMarker  = "SB_STATUS:READY_REVIEW"
+)
+
 // ComposeBrief builds the final prompt string handed to the executor.
 // Ordering (top → bottom):
 //
-//	1. system prompt (persona/framing)
-//	2. prompt hooks with placement="before"
-//	3. the raw user brief (sources + freeform text)
-//	4. prompt hooks with placement="after"
+//  1. system prompt (persona/framing)
+//  2. prompt hooks with placement="before"
+//  3. the raw user brief (sources + freeform text)
+//  4. prompt hooks with placement="after"
 //
 // Each hook renders as "### <Label>\n\n<body>\n" so the final prompt is
 // human-readable markdown. File-kind hooks that fail to read are
@@ -77,7 +82,37 @@ func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string) st
 		}
 	}
 
+	sb.WriteString("### Supervisor Protocol\n\n")
+	sb.WriteString("When you need the operator to respond in the terminal, print exactly `")
+	sb.WriteString(SupervisorWaitingHumanMarker)
+	sb.WriteString("` on its own line and then stop.\n")
+	sb.WriteString("When the task is done and ready for review, print exactly `")
+	sb.WriteString(SupervisorReadyReviewMarker)
+	sb.WriteString("` on its own line and then stop.\n\n")
+
 	return strings.TrimRight(sb.String(), "\n") + "\n"
+}
+
+func SummarizeTask(sources []SourceTask, freeform string) string {
+	var parts []string
+	for _, s := range sources {
+		text := strings.TrimSpace(s.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	if extra := strings.TrimSpace(freeform); extra != "" {
+		parts = append(parts, extra)
+	}
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	default:
+		return strings.Join(parts, "\n")
+	}
 }
 
 // RunShellHook executes a ShellHook with `sh -c`. Cwd defaults to

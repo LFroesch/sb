@@ -1,6 +1,8 @@
 # sb
 
-Second Brain control plane. TUI for managing WORK.md files across projects — brain dump ideas and clean up backlogs with a local LLM.
+Second Brain control plane. `sb` is a terminal app for managing `WORK.md`-style project backlogs, sorting brain dumps, launching/supervising coding agents against real tasks, and running unattended Foreman batches when you are away.
+
+For the intended product shape, see [docs/product-definition.md](docs/product-definition.md). For the lower-level Agent architecture, see [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md).
 
 ## Quick Install
 
@@ -25,6 +27,12 @@ Or build from source:
 ```bash
 make install
 ```
+
+Project structure:
+
+- `main.go` is the small CLI entrypoint and subcommand dispatch layer.
+- `internal/tui/` contains the Bubble Tea application (`tui.Run()` plus the `model`/`update`/`view` split).
+- `cmd/foreman/` contains the `sb-foreman` daemon used by the Agents workflow.
 
 Command:
 
@@ -180,43 +188,64 @@ Press `t` on any project — the active model reads the WORK.md and tells you th
 
 Scans WORK.md for lines that aren't proper list items and fixes them in-place. Useful after messy manual edits.
 
-### Agent Cockpit (Agent tab)
+### Agents (Agents tab)
 
-Launch coding agents against `- ` items from your WORK.md files. See [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md) for the full design.
+Launch coding agents against `- ` items from your `WORK.md` files. The core flow is: choose a task, start a run, monitor it, review the result, and accept it back into your task system. See [docs/product-definition.md](docs/product-definition.md) for the product model and [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md) for the lower-level architecture.
 
-From the dashboard, switch to the **Agent** tab:
+From the dashboard, switch to the **Agents** tab:
 
-1. `n` — new job sourced from the current project's WORK.md when possible · `N` — freeform chat (no sources, defaults to the current project's repo or the current working directory)
-2. Step 1 (sourced): if you want a different file, use `b` to jump back to the file list and pick one with `enter`
-3. Step 2 (sourced): `space` toggles items, `enter` continues when at least one is selected
-4. Launch modal: `tab` cycles focus between **preset**, **provider**, and the brief editor. `↑/↓` moves within the focused group. `enter` launches from either picker; when the brief is focused, `alt+enter` launches.
-5. New launches now default to the `senior-dev` role with the `codex` provider when those profiles exist. You can still override either one before launch.
-6. The jobs screen is now a real cockpit: the list shows total/live/running/attention counts plus session usage grouped by provider/model, so you can see at a glance which Claude/Codex/Ollama models are actually in use. `tab` cycles job filters, or press `1-5` for `all/live/running/attention/done`.
-7. Claude and Codex jobs now run in real `tmux` windows under the isolated `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to emulate its UI inside Bubble Tea.
-8. `enter` or `i` on a live tmux-backed job switches the client into that job's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the `sb` window. `Ctrl+C` is forwarded normally only when you're already on the `sb` window itself.
-9. Finished tmux jobs open an in-app log/review view instead of trying to fake a live chat. The detail pane also shows whether the tmux window is still live or already closed.
-10. Ollama and shell jobs stay on the exec-per-turn path. Those still use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
-11. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. `x` is an explicit detach shortcut from the Agent UI. Jobs and the `sb-cockpit` session keep running; relaunching `sb` reattaches to the same session.
-12. `s` stops the selected job. For tmux jobs that sends `C-c` and then closes the job window; exec jobs cancel the in-flight turn and return to `idle` with note `stopped`.
-13. `a` asks for confirmation, then approves the conversation — the selected source lines are removed from their file and a dated entry is appended to the project's `DEVLOG.md`. Approve also runs post-shell hooks and ends the conversation.
-14. `d` asks for confirmation before deleting a job.
-15. `m` opens an in-app settings surface for presets/providers. Edit a field with `enter`, then `ctrl+s` to save it back to the underlying JSON file.
+1. `n` starts a sourced run from a task file. `N` starts a freeform run with an explicit repo picker.
+   From the dashboard, `A` jumps straight into the current project's task picker.
+2. Step 1 (sourced): pick a file with `enter`
+3. Step 2 (sourced): `space` toggles task items, `enter` continues when at least one is selected, `b` or `esc` returns to the file list with a clean selection state
+4. The new-run composer stays as small as possible. Task-backed runs cycle through **Role**, **Engine**, **Note**, and **Review** because the repo already comes from the selected task. Freeform runs add an explicit **Repo** step. `↑/↓` moves within the focused list or review pane, `pgup/pgdn` pages the review pane, `enter` launches from any non-note tab, and `alt+enter` launches from the note editor.
+   While a textarea is focused, typing `?` stays in that textarea instead of toggling help.
+   Press `F` in the composer to switch between **start now** and **send to Foreman**.
+   On shorter terminals, the composer now stays within the visible body area instead of pushing the global header/footer off-screen; longer role/review content scrolls inside the composer.
+   Scroll positions are also clamped to the last real screenful now, so paging past the end of review/setup/detail panes should not leave you stuck "below" the visible content.
+5. New runs default to the `senior-dev` role with the `codex` engine when those profiles exist. Multi-task launches can stay bundled or become a queued run sequence, depending on the selected role.
+6. The Agents tab is the main supervision surface: the left pane shows repo/task/queue/status/role, and the right pane shows a live peek into the selected transcript or tmux log.
+   The list uses stable columns and compacts multiline task text to a single line so scanning multiple runs stays readable.
+   Queued runs also show explicit progress (`solo`, `1/2 active`, `2/2 next`, `1/3 review`, etc.) without forcing you into the detail pane first.
+   `pgup/pgdn` scroll that right-side peek directly from the jobs list.
+   Local control copy now stays in the footer instead of being repeated inside each body pane, so picker / new-run / attached / setup content areas stay focused on the actual run state and content.
+7. `f` or `tab` cycles the run filters (`all/live/running/attention/foreman/done`). The header also shows provider/model session mix, Foreman on/off state, and Claude/Codex limit rows.
+8. Claude and Codex runs use real `tmux` windows under the shared `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to fake it inside Bubble Tea.
+9. `enter` or `i` on a live tmux-backed run switches the client into that run's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the shared `sb` `main` window.
+10. Finished tmux runs open an in-app log/review view. The peek prefers tmux pane snapshots and falls back to captured transcript/log output only when needed.
+11. Ollama and shell runs stay on the exec-per-turn path and use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
+12. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. Relaunching `sb` reattaches to the same session, and a second `sb` reuses the same shared cockpit/foreman.
+13. `F` from the Agents list toggles **Foreman** on or off. When Foreman is off, runs explicitly sent to Foreman stay parked as `waiting for Foreman`, show up in the `foreman` filter, and do not auto-start. Turning Foreman on lets eligible Foreman runs launch unattended in their own tmux sessions, while same-repo write-capable work stays serialized.
+14. Session controls are now literal. `s` sends `Esc` to a tmux-backed session as a soft stop/back action. `S` sends `Ctrl+C` as a hard interrupt. `c` literally sends `continue`. For exec runs, `S` still cancels the in-flight turn, while `c` sends a normal follow-up turn with `continue`.
+15. `a` accepts the selected reviewed run. For sourced runs this syncs back into `WORK.md` plus `DEVLOG.md`; for freeform runs it marks the run complete without editing task files.
+   Review surfaces preview the task removals, `DEVLOG.md` additions, changed files, diff stat, hook activity, and preexisting dirty files before you accept.
+   Accept will refuse sync-back when the target `WORK.md` or `DEVLOG.md` already has uncommitted changes.
+16. `R` starts a waiting Foreman job immediately if it is still queued, or opens the selected existing session if it is already live/stopped.
+17. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
+18. `m` opens **Agent Setup**. This is the advanced authoring surface for saved roles and engines. `tab` switches focus between the item list and field list. `enter` edits a field, `ctrl+s` saves, `esc` cancels, `n` adds a new item, `D` duplicates, `d` deletes, and `pgup/pgdn` page through longer lists and field groups.
+   Role editing is now a little less schema-heavy: `Name` leads, `File ID` is pushed into an advanced section, and leaving that ID blank auto-fills it from the name.
+   The picker, setup, list, and attached-session views now share the same terminal-height budget, so local scrolling should not hide the app chrome on short terminals.
 
-**Presets** describe the *role* (persona, system prompt, hooks, iteration). **Providers** describe the *executor* (claude CLI, codex CLI, ollama model, shell). Each preset carries a suggested provider; the launch modal lets you override with any loaded provider — so you can drive the `senior-dev` role with Claude, Codex, or a local Ollama model interchangeably.
+tmux-backed jobs now also carry an explicit supervisor protocol inside the launch prompt. When a session needs the user to respond, it should print `SB_STATUS:WAITING_HUMAN`. When it is done and ready for review, it should print `SB_STATUS:READY_REVIEW`. `sb` watches the pane for those markers so normal jobs visibly flip into `waiting for input` / `needs review`, and Foreman can treat that as a real yield signal instead of guessing from whether the tmux window is still open.
 
-Seed **presets** materialise in `~/.config/sb/presets/` on first run: `senior-dev`, `bug-fixer`, `test-writer`, `refactor`, `code-analyzer`, `explainer`, `pm`, `docs-writer`, `scaffold`, `rfc`, `docs-tidy`, `classify`, `summarize`, plus shell-specific `shell-test`, `shell-lint`, `shell-build`, `shell-escape`.
+**Roles** describe reusable launch behavior: role/persona, launch mode, system prompt, hooks, iteration, policies, and a suggested engine. **Engines** describe the concrete executor/runtime (Claude CLI, Codex CLI, Ollama model, shell). A role can be launched with any loaded engine.
 
-Seed **providers** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`, `shell`.
+Seed **roles** currently materialise in `~/.config/sb/presets/` on first run: `senior-dev`, `bug-fixer`, `test-writer`, `refactor`, `code-analyzer`, `explainer`, `docs-writer`, `scaffold`, plus `shell-escape`.
 
-Edit any `*.json` in those dirs to customise. Each preset supports pre/post shell hooks, prompt-template injection, and role labels; see the RFC for the full schema.
-From the Agent page, `m` opens the in-app preset/provider editor. `p` creates a preset template and opens it in your editor, `v` does the same for a provider template, and `P` / `V` open the presets/providers directories directly.
+Seed **engines** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`, `shell`.
 
-Older preset files that still contain legacy executor args like Claude `--print` or Codex `exec` / `--json` are normalized at runtime, so they continue to work after the tmux split.
+Edit any `*.json` in those dirs to customise. The on-disk schema still uses `presets` and `providers` for compatibility, even though the UI now frames them as roles and engines. Older utility roles still load if you already have them; they now sort below the core coding roles instead of crowding the top of the picker.
+From the Agents page, `m` opens in-app Agent Setup. `p` creates a role file in the presets dir and opens it in your editor, `v` does the same for an engine file, and `P` / `V` open the presets/providers directories directly.
+
+Older preset/recipe files that still contain legacy executor args like Claude `--print` or Codex `exec` / `--json` are normalized at runtime, so they continue to work after the tmux split.
 
 ### tmux status bar and scrolling
 
 The bar at the bottom of live Claude/Codex sessions is the `tmux` status bar for the isolated `sb-cockpit` session. `sb` now gives that session its own styling, mouse support, higher scrollback, and no-prefix wheel/page scrolling without touching your personal tmux server or config.
 
+- The tmux bar refreshes on a moderate interval, and Claude usage snapshots are cached for a few minutes so the status command does not hammer the usage API.
+- The right side now shows only Claude/Codex limits; it no longer repeats the fixed `sb-cockpit` / `0:main` labels there, and any available 5h reset time is shown with the same `@3pm` marker for both providers.
+- Tmux window tabs render by name only instead of `N:name`, so the status line stays focused on the actual window names without duplicating numeric indices.
 - `mouse` is enabled for the cockpit session, and wheel-up / `PageUp` now enter tmux scrollback automatically for the active pane. Keep scrolling normally; `Esc` or `q` exits tmux copy-mode.
 - If you want the normal `sb` transcript/log view instead of the live native CLI pane, use `F1` / `Ctrl+g` / `F12` to return to `sb`.
 - Finished tmux jobs are easier to review inside `sb` itself, where `j/k`, `pgup/pgdn`, and the sessions rail are handled by the TUI instead of the native CLI.
@@ -224,7 +253,10 @@ The bar at the bottom of live Claude/Codex sessions is the `tmux` status bar for
 ### Mouse wheel and long-file editing
 
 - The main `sb` surfaces now respond to the mouse wheel: dashboard preview, project view, help overlay, Agent jobs list, Agent settings, and attached transcript/log review.
+- On the dashboard, `pgup/pgdn` page the project list itself, while preview paging uses `ctrl+b` / `ctrl+f`.
+- The top header nav is mouse-clickable too: left-click `Dashboard`, `Dump`, or `Agent` to switch pages directly.
 - Inline `.md` edit mode supports `ctrl+home` / `ctrl+end` to jump to the top or bottom of long files.
+- Agent list, attached chat, launch flow, and library views now clamp themselves to short terminals instead of rendering past the footer; when space is tight, the viewport shrinks first and long status lines are truncated.
 
 ### Daemon (sb-foreman)
 
@@ -245,10 +277,14 @@ Job state is persisted under `~/.local/state/sb/jobs/<id>/`, rehydrated on every
 | Key | Action |
 |-----|--------|
 | `j/k` | Navigate |
+| `pgup/pgdn` | Page through the project list |
+| `home/end` | Jump to the first / last project |
+| `J/K` | Scroll the WORK.md preview |
+| `ctrl+b` / `ctrl+f` | Page the WORK.md preview |
 | `enter` | Open project |
 | `e` | Edit WORK.md inline |
 | `d` | Brain dump |
-| `a` | Agent cockpit |
+| `a` | Agents |
 | `c` / `C` | Cleanup (single / chain) |
 | `P` | Daily plan |
 | `t` | Next todo |
@@ -260,27 +296,31 @@ Job state is persisted under `~/.local/state/sb/jobs/<id>/`, rehydrated on every
 | `,` | Open `config.json` in editor |
 | `?` | Help |
 
-Agent tab:
+Agents tab:
 
 | Key | Action |
 |-----|--------|
-| `n` | New launch (pick file → tasks → preset) |
+| `n` | New launch (pick file → tasks → template) |
 | `N` | Freeform launch |
-| `1-5` | Filter jobs by `all/live/running/attention/done` |
-| `tab` | List: cycle filters · Launch modal: cycle preset → provider → brief · Attached exec-chat: swap transcript ↔ input |
-| `p` / `v` | Create preset / provider template and open it |
+| `F` | List: toggle Foreman on/off · New run: toggle immediate launch vs send to Foreman |
+| `f` | List: cycle job filters |
+| `tab` | List: cycle filters · New run: cycle role → engine → note → review (freeform also includes repo) · Attached exec-chat: swap transcript ↔ input |
+| `p` / `v` | Create template / runtime file and open it |
 | `P` / `V` | Open presets / providers directory |
 | `space` | Toggle task in picker |
 | `i` | List: open selected job (`tmux` attach while live, input focus for exec-chat jobs) · Attached exec-chat: focus input |
-| `enter` | Launch (from preset/provider picker) · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
-| `alt+enter` | Launch from brief |
+| `pgup/pgdn` | List: page the right-side peek · Attached/review: page the transcript/log |
+| `enter` | Launch (from role/engine/review tabs) · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
+| `alt+enter` | Launch from note |
+| `R` | Start waiting job now, or open the selected session |
+| `s` | Send `Esc` to the selected tmux-backed session |
+| `S` | Send `Ctrl+C` to the selected session / hard interrupt the active turn |
+| `c` | Send literal `continue` |
 | `j/k` | Scroll transcript or tmux log in the attached view |
 | `[` / `]` | Attached view: previous / next job |
-| `a` | Approve (confirm, then sync-back) |
-| `s` | Stop running job |
-| `r` | Retry |
+| `K` | Skip queued/reviewed job and keep it in history (confirm) |
+| `C` | Skip current item and the rest of its queued run sequence (confirm) |
 | `d` | Delete job (confirm) |
-| `x` | Detach cockpit client immediately when running inside `sb-cockpit` |
 | `q` | Detach cockpit client when running inside `sb-cockpit`; otherwise quit/go back |
 | `esc` | Back (or leave input focus when typing) |
 

@@ -220,20 +220,50 @@ func (c *SocketClient) GetJob(id JobID) (Job, bool) {
 	return out.Job, out.OK
 }
 
+func (c *SocketClient) GetForemanState() ForemanState {
+	var out GetForemanStateResult
+	if err := c.call(MethodGetForeman, nil, &out); err != nil {
+		return ForemanState{}
+	}
+	return out.State
+}
+
+func (c *SocketClient) SetForemanEnabled(enabled bool) (ForemanState, error) {
+	var out GetForemanStateResult
+	err := c.call(MethodSetForeman, SetForemanEnabledParams{Enabled: enabled}, &out)
+	return out.State, err
+}
+
 func (c *SocketClient) LaunchJob(req LaunchRequest) (Job, error) {
 	var out LaunchJobResult
-	err := c.call(MethodLaunchJob, LaunchJobParams{
-		Preset:   req.Preset,
-		Sources:  req.Sources,
-		Repo:     req.Repo,
-		Freeform: req.Freeform,
-		Provider: req.Provider,
-	}, &out)
+	err := c.call(MethodLaunchJob, req, &out)
 	return out.Job, err
+}
+
+func (c *SocketClient) StartJob(id JobID) (Job, error) {
+	var out LaunchJobResult
+	err := c.call(MethodStartJob, StartJobParams{ID: id}, &out)
+	return out.Job, err
+}
+
+func (c *SocketClient) SoftStopJob(id JobID) error {
+	return c.call(MethodSoftStopJob, StopJobParams{ID: id}, nil)
+}
+
+func (c *SocketClient) ContinueJob(id JobID) error {
+	return c.call(MethodContinueJob, StopJobParams{ID: id}, nil)
 }
 
 func (c *SocketClient) StopJob(id JobID) error {
 	return c.call(MethodStopJob, StopJobParams{ID: id}, nil)
+}
+
+func (c *SocketClient) SkipJob(id JobID) error {
+	return c.call(MethodSkipJob, SkipJobParams{ID: id}, nil)
+}
+
+func (c *SocketClient) SkipCampaign(id JobID) error {
+	return c.call(MethodSkipCampaign, SkipCampaignParams{ID: id}, nil)
 }
 
 func (c *SocketClient) DeleteJob(id JobID) error {

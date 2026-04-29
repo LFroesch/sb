@@ -83,6 +83,24 @@ func SaveProvider(dir string, p ProviderProfile) error {
 	return os.WriteFile(filepath.Join(dir, p.ID+".json"), append(b, '\n'), 0o644)
 }
 
+// DeleteProvider removes <dir>/<id>.json. Missing files are treated as
+// success so the UI can call it without a pre-check race.
+func DeleteProvider(dir, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("provider missing id")
+	}
+	path := filepath.Join(dir, id+".json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// ProviderPath returns the on-disk path <dir>/<id>.json for a provider.
+func ProviderPath(dir, id string) string {
+	return filepath.Join(dir, id+".json")
+}
+
 // WriteDefaultProviders seeds the providers dir on first run. No-op if
 // any provider file already exists.
 func WriteDefaultProviders(dir string) (int, error) {

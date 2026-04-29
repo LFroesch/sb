@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -91,6 +92,11 @@ func (r *Registry) Create(j Job) (*Job, error) {
 	}
 	if err := os.WriteFile(filepath.Join(jobDir, "brief.md"), []byte(j.Brief), 0o644); err != nil {
 		return nil, err
+	}
+	if prompt := strings.TrimSpace(j.Prompt); prompt != "" {
+		if err := os.WriteFile(filepath.Join(jobDir, "prompt.md"), []byte(j.Prompt), 0o644); err != nil {
+			return nil, err
+		}
 	}
 	r.mu.Lock()
 	r.jobs[j.ID] = &j

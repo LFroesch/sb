@@ -17,11 +17,26 @@ The previous revision of this doc was product stance + hidden-requirement checkl
 ## Locked decisions
 
 - Cockpit lives inside `sb` as a new **Agent** tab, backed by a small **`sb-foreman`** daemon that owns PTYs + job state over a local unix socket. Jobs survive `sb` restart; the TUI is a thin client.
+- Product stance: `sb` is a **work orchestration cockpit first**, with config/library authoring as a secondary workflow. Quick launch must stay task-first; deeper prompt/hook/provider authoring belongs in a separate library/editor flow.
 - Architecture must anticipate **swarms** (N parallel jobs from one task), **campaigns**, **night queue**, **master console**, **approval gates** — but V0 ships none of that.
 - Executors out of the box: Claude Code CLI, Codex CLI, local Ollama/llm scripts, and a generic shell brief escape hatch.
 - V0 task picker: pick a discovered file, list its `- ` items as selectable, multi-select → **one bundled job**. Repo auto-inferred from the file's project. Freeform brief + manual repo also supported.
 - Hooks: pre-launch shell, post-run shell, prompt-template injection, iteration policy (one-shot / loop-N / until-signal), plus named **role profiles** (code-analyzer, PM, senior-dev, etc.).
 - V0 sync-back: on "accept result", **delete** the source `- ` line and **append** an entry to the project's DEVLOG.md.
+
+## Big-picture information architecture
+
+The cockpit should stop pretending one "preset settings" page can do every kind of agent authoring. The cleaner model is:
+
+- **Providers**: concrete runtimes and executors (Claude/Codex/Ollama/shell, runner, model, args, auth/env expectations).
+- **Components**: reusable prompt and behavior building blocks (system prompts, prompt snippets, hook packs, iteration policies, permission profiles). Some of these do not exist as first-class persisted objects yet, but the UI/terminology should move in this direction.
+- **Recipes**: launchable compositions that bundle role/persona plus selected components and a suggested provider/runtime. Internally the current `LaunchPreset` struct continues to back this concept until the schema expands.
+
+That split should drive the UI:
+
+- **Quick launch** (`n`): task-first, choose a saved recipe, optionally override provider, add a brief note, review, launch.
+- **Guided composition** (future): step through intent -> recipe/components -> provider -> review, with the option to save the assembled configuration as a recipe.
+- **Agent Library** (`m`): authoring surface for reusable objects. Today that means recipes and providers; future component types should land here rather than being bolted into the launch flow.
 
 ## Architecture (forward-compatible, ships in slices)
 
@@ -105,7 +120,6 @@ type LaunchPreset struct {
     PostShell      []ShellHook     // run after executor exits; gates needs_review
     Iteration      IterationPolicy // one-shot | loop_n{N} | until_signal{sentinel|file}
     Permissions    string
-    NightEligible  bool            // V2, recorded now
 }
 
 type Event struct { // append-only JSONL per job
@@ -115,7 +129,7 @@ type Event struct { // append-only JSONL per job
 }
 ```
 
-**Why this shape holds for V1/V2/V3:** Campaigns already wrap jobs, so a swarm is just N jobs sharing a CampaignID. `NightEligible` + `Status=queued` lets a scheduler run later without schema churn. Iteration is a policy on the job, not baked into the executor — the same executor implementation handles all three modes. Hooks are ordered lists, so prompt-template injection + repo-context fetch compose cleanly.
+**Why this shape holds for V1/V2/V3:** Campaigns already wrap jobs, so a swarm is just N jobs sharing a CampaignID. Foreman-managed jobs can still use the same `Status=queued` state plus explicit scheduler metadata without baking "night eligibility" into presets. Iteration is a policy on the job, not baked into the executor — the same executor implementation handles all three modes. Hooks are ordered lists, so prompt-template injection + repo-context fetch compose cleanly.
 
 ### Protocol (sb ↔ foreman)
 
@@ -128,6 +142,8 @@ Events (push, when attached or subscribed): `job_status_changed`, `job_output`, 
 Keep it JSON-RPC-ish but boring — one Go `encoding/json` Decoder per direction. No gRPC, no MCP in V0.
 
 ### Storage layout
+
+Compatibility note: the current on-disk schema still uses `presets` / `LaunchPreset`. User-facing copy can call these **recipes** now, but migration of file names / type names can happen later once the broader component model settles.
 
 ```
 ~/.config/sb/presets/               # user-editable; seeded on first run
@@ -159,10 +175,10 @@ Goal: single daily-loop path; proves the core data model + daemon + TUI wiring.
 2. `internal/cockpit/` package in sb with types, socket client, and an in-proc fallback (so tests don't require the daemon).
 3. New **Agent** tab in sb TUI:
    - job list (grouped: needs-attn, running, recent)
-   - task-picker page: file list (reuses `workmd.Discover`) → `- ` items with checkboxes → multi-select → launch modal
-   - launch modal: pick preset, edit brief, confirm
+   - task-picker page: file list (reuses `workmd.Discover`) → `- ` items with checkboxes → multi-select → new-job composer
+   - new-job composer: pick recipe, optionally override provider, edit brief, review, confirm
    - attached view: tail transcript, send input, stop
-4. Four seed presets materialized in `~/.config/sb/presets/` on first run (claude-senior-dev, codex-scaffold, ollama-docs-tidy, shell-escape).
+4. Four seed recipes (still stored as presets on disk) materialized in `~/.config/sb/presets/` on first run (claude-senior-dev, codex-scaffold, ollama-docs-tidy, shell-escape).
 5. Hook execution: pre-shell + post-shell + prompt-template injection. Iteration policy wired but V0 only exercises `one-shot`.
 6. Sync-back: on approve, delete source `- ` line in its file, append dated entry under `## DevLog` in the project's DEVLOG.md (or create the section if missing). Reuses `workmd` project-root logic.
 7. Persistence: jobs survive sb quit and daemon restart (read `jobs/<id>/job.json` on startup, reconcile live PTYs).
@@ -183,7 +199,7 @@ V0 ran the cockpit in-proc inside sb; jobs died when sb quit. V0.5 closes that g
 - `cmd/foreman` is now a real daemon. `cockpit.ListenUnix` + `cockpit.Serve` wrap `Manager` behind an NDJSON unix socket (`~/.local/state/sb/foreman.sock`). Protocol: `launch_job`, `list_jobs`, `get_job`, `stop_job`, `approve_job`, `retry_job`, `send_input`, `read_transcript`, `subscribe`, `ping`.
 - `SocketClient` in `internal/cockpit/client.go` implements a new `Client` interface that `Manager` also satisfies. sb always holds a `Client`, never a `*Manager` directly.
 - `EnsureDaemon(paths, binary)` dials the socket; if nothing answers it forks `sb-foreman -serve` (detached via `setsid` on unix), waits up to 3s for the socket, and re-dials. Failure falls back to in-proc `Manager` so the TUI still works offline.
-- Presets were split from providers. Presets are role-centric (`senior-dev`, `bug-fixer`, `explainer`, `pm`, …) and carry a *suggested* executor. `ProviderProfile` (new) describes an executor independently (`claude`, `ollama-qwen`, `shell`, …). `LaunchRequest.Provider` overrides the preset's default at launch time, so any preset can drive any provider. The launch modal gets a dedicated provider picker (`tab` cycles preset → provider → brief).
+- Presets were split from providers. In the current product language these presets are **recipes**: role-centric (`senior-dev`, `bug-fixer`, `explainer`, `pm`, …) launch definitions with a *suggested* executor. `ProviderProfile` describes an executor independently (`claude`, `ollama-qwen`, `shell`, …). `LaunchRequest.Provider` overrides the recipe's default at launch time, so any recipe can drive any provider. The new-job composer gets a dedicated provider picker.
 - Config gains `cockpit_daemon` (default `true`) and `cockpit_foreman_bin` (optional). Header shows `[daemon]` / `[in-proc]`.
 - Covered by `socket_test.go` (end-to-end: launch → stdout event → status=completed → transcript round-trip).
 
@@ -194,7 +210,7 @@ Open V0.5 follow-ups rolled into V1:
 
 ## V1 — next slice (architecture already supports)
 
-- Launch presets/providers editable in-app (currently: hand-edit JSON).
+- Launch recipes/providers editable in-app as the first part of a broader Agent Library; prompt snippets / hook packs / policy profiles should become first-class library objects instead of more fields on one flat preset editor.
 - Master console pane: a text box that drives `launch_job` / `list_jobs` / `approve_job` via the LLM.
 - Post-hook gating: non-zero exit from post-shell → `needs_review` instead of `completed`.
 - Iteration: `loop_n` and `until_signal` wired end-to-end.
@@ -205,7 +221,7 @@ Open V0.5 follow-ups rolled into V1:
 
 - Foreman mode runs queued work serially per enabled repo: at most one write-capable job may actively change a given repo at a time, while the foreman moves repo-by-repo through the queue.
 - Queue policy must lock repo ownership explicitly before launch so overlapping changes are impossible by default. Read-only analysis jobs can be a separate policy later; the default operator mental model stays "one repo, one active change".
-- Night queue runner builds on that same queue/lock model: picks from `queued` + `NightEligible`, obeys per-repo / per-executor concurrency, and records why a repo/job was skipped or deferred.
+- Foreman-managed unattended execution builds on that same queue/lock model, but should launch all eligible jobs it safely can instead of pretending everything is one serial queue. Same-repo write-capable work stays serialized; different repos can run in parallel; skipped/deferred reasons stay visible.
 - Swarms: campaign with `Strategy=parallel`, N jobs off one brief, compare view.
 - Per-repo worktree isolation (git worktrees so two jobs don't clobber).
 - Usage-threshold guards (token budget, days-until-reset).

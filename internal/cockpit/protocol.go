@@ -18,8 +18,15 @@ type Method string
 const (
 	MethodListJobs       Method = "list_jobs"
 	MethodGetJob         Method = "get_job"
+	MethodGetForeman     Method = "get_foreman_state"
+	MethodSetForeman     Method = "set_foreman_enabled"
 	MethodLaunchJob      Method = "launch_job"
+	MethodStartJob       Method = "start_job"
+	MethodSoftStopJob    Method = "soft_stop_job"
+	MethodContinueJob    Method = "continue_job"
 	MethodStopJob        Method = "stop_job"
+	MethodSkipJob        Method = "skip_job"
+	MethodSkipCampaign   Method = "skip_campaign"
 	MethodDeleteJob      Method = "delete_job"
 	MethodApproveJob     Method = "approve_job"
 	MethodRetryJob       Method = "retry_job"
@@ -58,20 +65,37 @@ type GetJobResult struct {
 	OK  bool `json:"ok"`
 }
 
-type LaunchJobParams struct {
-	Preset   LaunchPreset  `json:"preset"`
-	Sources  []SourceTask  `json:"sources,omitempty"`
-	Repo     string        `json:"repo"`
-	Freeform string        `json:"freeform,omitempty"`
-	Provider *ExecutorSpec `json:"provider,omitempty"`
+type GetForemanStateResult struct {
+	State ForemanState `json:"state"`
 }
+
+type SetForemanEnabledParams struct {
+	Enabled bool `json:"enabled"`
+}
+
 type LaunchJobResult struct {
 	Job Job `json:"job"`
 }
 
-type StopJobParams struct{ ID JobID `json:"id"` }
+type StartJobParams struct {
+	ID JobID `json:"id"`
+}
 
-type DeleteJobParams struct{ ID JobID `json:"id"` }
+type StopJobParams struct {
+	ID JobID `json:"id"`
+}
+
+type SkipJobParams struct {
+	ID JobID `json:"id"`
+}
+
+type SkipCampaignParams struct {
+	ID JobID `json:"id"`
+}
+
+type DeleteJobParams struct {
+	ID JobID `json:"id"`
+}
 
 type ApproveJobParams struct {
 	ID         JobID  `json:"id"`
@@ -82,16 +106,26 @@ type RetryJobParams struct {
 	ID      JobID          `json:"id"`
 	Presets []LaunchPreset `json:"presets"`
 }
-type RetryJobResult struct{ Job Job `json:"job"` }
+type RetryJobResult struct {
+	Job Job `json:"job"`
+}
 
 type SendInputParams struct {
 	ID   JobID  `json:"id"`
 	Data []byte `json:"data"`
 }
 
-type ReadTranscriptParams struct{ ID JobID `json:"id"` }
-type ReadTranscriptResult struct{ Body string `json:"body"` }
+type ReadTranscriptParams struct {
+	ID JobID `json:"id"`
+}
+type ReadTranscriptResult struct {
+	Body string `json:"body"`
+}
 
-type AttachTmuxParams struct{ ID JobID `json:"id"` }
+type AttachTmuxParams struct {
+	ID JobID `json:"id"`
+}
 
-type ListJobsResult struct{ Jobs []Job `json:"jobs"` }
+type ListJobsResult struct {
+	Jobs []Job `json:"jobs"`
+}
