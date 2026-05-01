@@ -13,6 +13,8 @@ func TestRegistryCreateRehydrate(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "campaigns"),
 		PresetsDir:   filepath.Join(dir, "presets"),
 		ProvidersDir: filepath.Join(dir, "providers"),
+		PromptsDir:   filepath.Join(dir, "prompts"),
+		HooksDir:     filepath.Join(dir, "hooks"),
 		LogFile:      filepath.Join(dir, "foreman.log"),
 	}
 	if err := paths.EnsureDirs(); err != nil {

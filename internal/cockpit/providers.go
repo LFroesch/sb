@@ -132,6 +132,5 @@ func defaultProviders() []ProviderProfile {
 		{ID: "ollama-qwen", Name: "Ollama · qwen2.5:7b", Executor: ExecutorSpec{Type: "ollama", Model: "qwen2.5:7b"}},
 		{ID: "ollama-llama", Name: "Ollama · llama3.1:8b", Executor: ExecutorSpec{Type: "ollama", Model: "llama3.1:8b"}},
 		{ID: "ollama-gemma", Name: "Ollama · gemma2:9b", Executor: ExecutorSpec{Type: "ollama", Model: "gemma2:9b"}},
-		{ID: "shell", Name: "Shell (bash -lc)", Executor: ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}}},
 	}
 }

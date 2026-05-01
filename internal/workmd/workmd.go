@@ -36,13 +36,16 @@ type Task struct {
 
 type Project struct {
 	Name          string
-	Description   string // optional one-line description from "# WORK - name | description" title
+	Description   string // one-line summary from preamble or legacy H1 metadata
 	Path          string // absolute path to WORK.md
 	Dir           string // directory containing WORK.md
 	RootName      string
 	RelativePath  string
 	Content       string
+	Title         string
+	FileName      string
 	Phase         string
+	ActivePreview []string
 	Tasks         []Task
 	TaskCount     int // non-done tasks
 	CurrentCount  int
@@ -153,9 +156,11 @@ func loadProject(path string, root discoverRoot, cfg *config.Config) (Project, b
 		return Project{}, false
 	}
 	text := string(content)
-	meta := extractTitleMetadata(text)
+	meta := extractProjectMetadata(text)
 	rel := relativeProjectPath(path, root)
 	tasks := extractTasks(text)
+	phase := extractPhase(text)
+	activePreview := activeTaskPreview(tasks, 2)
 
 	var cur, bugs, unsorted, backlog int
 	for _, t := range tasks {
@@ -187,6 +192,10 @@ func loadProject(path string, root discoverRoot, cfg *config.Config) (Project, b
 		RootName:      root.Name,
 		RelativePath:  rel,
 		Content:       text,
+		Title:         meta.Title,
+		FileName:      filepath.Base(path),
+		Phase:         phase,
+		ActivePreview: activePreview,
 		Tasks:         tasks,
 		TaskCount:     cur + bugs + unsorted + backlog,
 		CurrentCount:  cur,
@@ -199,33 +208,70 @@ func loadProject(path string, root discoverRoot, cfg *config.Config) (Project, b
 }
 
 type titleMetadata struct {
+	Title       string
 	Label       string
 	Description string
 }
 
-// extractTitleMetadata parses a title line like:
-// "# WORK - sb | Second Brain TUI"
-// "# ROADMAP - toolkit | v1 polish"
-// "# WORK - sb"
-func extractTitleMetadata(content string) titleMetadata {
-	for _, line := range strings.SplitN(content, "\n", 5) {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "# ") {
-			continue
+// extractProjectMetadata supports both:
+//   - legacy title metadata: "# WORK - sb | description"
+//   - structured preamble: first H1 is display name, first plain text line
+//     below it is the project summary.
+func extractProjectMetadata(content string) titleMetadata {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+			meta := parseLegacyTitleMetadata(title)
+			if meta.Title == "" {
+				meta.Title = title
+			}
+			if meta.Label == "" {
+				meta.Label = meta.Title
+			}
+			if meta.Description == "" {
+				meta.Description = extractPreambleSummary(lines[i+1:])
+			}
+			return meta
 		}
-		title := strings.TrimSpace(strings.TrimPrefix(line, "# "))
-		beforePipe, desc, hasDesc := strings.Cut(title, "|")
-		label := ""
-		if _, afterDash, ok := strings.Cut(strings.TrimSpace(beforePipe), " - "); ok {
-			label = strings.TrimSpace(afterDash)
-		}
-		meta := titleMetadata{Label: label}
+	}
+	return titleMetadata{}
+}
+
+func parseLegacyTitleMetadata(title string) titleMetadata {
+	meta := titleMetadata{Title: strings.TrimSpace(title)}
+	beforePipe, desc, hasDesc := strings.Cut(meta.Title, "|")
+	if _, afterDash, ok := strings.Cut(strings.TrimSpace(beforePipe), " - "); ok {
+		meta.Label = strings.TrimSpace(afterDash)
 		if hasDesc {
 			meta.Description = strings.TrimSpace(desc)
 		}
-		return meta
 	}
-	return titleMetadata{}
+	return meta
+}
+
+func extractPreambleSummary(lines []string) string {
+	inCode := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCode = !inCode
+			continue
+		}
+		if inCode || trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") ||
+			strings.HasPrefix(trimmed, "> ") || strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		return trimmed
+	}
+	return ""
 }
 
 // discoverFlatDir loads all .md files from dir (non-recursive), deduplicating
@@ -330,6 +376,78 @@ func SplitDevlog(content string) (string, string) {
 	main := strings.Join(lines[:devlogStart], "\n")
 	devlog := strings.Join(lines[devlogStart:], "\n")
 	return strings.TrimRight(main, "\n") + "\n", devlog
+}
+
+func (p Project) RelativePathOrFile() string {
+	if strings.TrimSpace(p.RelativePath) != "" {
+		return p.RelativePath
+	}
+	if strings.TrimSpace(p.FileName) != "" {
+		return p.FileName
+	}
+	return filepath.Base(p.Path)
+}
+
+func extractPhase(content string) string {
+	lines := strings.Split(content, "\n")
+	inPhase := false
+	var parts []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			if strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(trimmed, "## ")), "Current Phase") {
+				inPhase = true
+				parts = nil
+				continue
+			}
+			if inPhase {
+				break
+			}
+		}
+		if !inPhase {
+			continue
+		}
+		if trimmed == "" {
+			if len(parts) > 0 {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			trimmed = strings.TrimSpace(trimmed[2:])
+		}
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+		if len(parts) >= 2 {
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func activeTaskPreview(tasks []Task, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	sections := []string{"current", "bugs", "unsorted", "backlog"}
+	var out []string
+	for _, section := range sections {
+		for _, task := range tasks {
+			if task.Done || task.Section != section {
+				continue
+			}
+			name := strings.TrimSpace(task.Name)
+			if name == "" {
+				continue
+			}
+			out = append(out, name)
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // --- helpers ---

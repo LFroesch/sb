@@ -247,7 +247,11 @@ func (m model) rediscover() []workmd.Project {
 			Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
 		})
 	}
-	_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets)
+	_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets, workmd.IndexOptions{
+		ScanRoots:    m.cfg.ExpandedScanRoots(),
+		FilePatterns: m.cfg.FilePatterns,
+		IdeaDirs:     m.cfg.ExpandedIdeaDirs(),
+	})
 	return projects
 }
 
@@ -256,7 +260,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.viewport = viewport.New(m.width-4, m.height-8)
+		m.viewport = viewport.New(m.width-4, m.contentAreaHeight())
 		if m.page == pageProject && m.selected < len(m.projects) {
 			m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
 		} else if m.page == pageDashboard && m.cursor < len(m.projects) {
@@ -266,13 +270,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshAttachedViewport(false)
 		}
 		// Resize dump textarea to fill available space
-		dumpH := m.height - 10
-		if dumpH < 6 {
-			dumpH = 6
+		dumpH := m.contentViewportHeight(2)
+		if dumpH < 3 {
+			dumpH = 3
 		}
 		m.dumpArea.SetWidth(m.width - 6)
 		m.dumpArea.SetHeight(dumpH)
 		m.launchBrief.SetWidth(m.width - 6)
+		m.launchRepoCustom.Width = maxInt(1, m.width-14)
 		m.attachedInput.SetWidth(m.attachedInputWidth())
 		return m, nil
 
@@ -319,7 +324,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeAgentManage && m.agentManageEditing {
 			return m.updateAgent(msg)
 		}
-		if m.mode == modeAgentLaunch && m.launchFocus == m.launchNoteFocus() {
+		if m.mode == modeAgentLaunch && (m.launchFocus == m.launchNoteFocus() || m.launchRepoEditing) {
 			return m.updateAgent(msg)
 		}
 
@@ -712,7 +717,10 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.editArea.SetValue(m.projects[m.selected].Content)
 			rightW := m.rightPanelWidth()
 			m.editArea.SetWidth(rightW - 4)
-			panelH := m.height - 8           // availableHeight - 2 borders
+			panelH := m.contentAreaHeight() - 2
+			if panelH < 3 {
+				panelH = 3
+			}
 			m.editArea.SetHeight(panelH - 2) // subtract header + blank line
 			m.editArea.Focus()
 			return m, m.editArea.Cursor.BlinkCmd()
@@ -866,7 +874,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "refreshed"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 	case ",":
-		if path, err := config.Path(); err == nil {
+		if path, err := config.Dir(); err == nil {
 			return m, openInEditor(path)
 		}
 	}
@@ -893,7 +901,7 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeEdit
 			m.editArea.SetValue(m.projects[m.selected].Content)
 			m.editArea.SetWidth(m.width - 4)
-			m.editArea.SetHeight(m.height - 8)
+			m.editArea.SetHeight(m.contentViewportHeight(2))
 			m.editArea.Focus()
 			return m, m.editArea.Cursor.BlinkCmd()
 		}
@@ -1531,7 +1539,12 @@ func (m model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func projectDescs(projects []workmd.Project) []llm.ProjectDesc {
 	out := make([]llm.ProjectDesc, len(projects))
 	for i, p := range projects {
-		out[i] = llm.ProjectDesc{Name: p.Name, Description: p.Description}
+		out[i] = llm.ProjectDesc{
+			Name:        p.Name,
+			Description: p.Description,
+			Phase:       p.Phase,
+			Preview:     p.ActivePreview,
+		}
 	}
 	return out
 }

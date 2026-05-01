@@ -9,13 +9,9 @@ import (
 func (m model) renderAgentManage() string {
 	kindLabel := agentManageKindLabel(m.agentManageKind)
 	var headerLines []string
-	if m.agentManageKind == "provider" {
-		headerLines = append(headerLines, titleStyle.Render("Agent Setup")+
-			dimStyle.Render("  ·  advanced  ·  focus: engines  ·  [ roles ] / [ engines ]"))
-	} else {
-		headerLines = append(headerLines, titleStyle.Render("Agent Setup")+
-			dimStyle.Render("  ·  advanced  ·  focus: roles  ·  [ roles ] / [ engines ]"))
-	}
+	hint := "  ·  advanced  ·  focus: " + strings.ToLower(kindLabel) +
+		"  ·  [ / ] cycle: presets · prompts · hooks · runtimes"
+	headerLines = append(headerLines, titleStyle.Render("Agent Setup")+dimStyle.Render(hint))
 	headerLines = append(headerLines, "")
 
 	panelHeight, innerHeight := m.agentManagePanelHeights()
@@ -44,7 +40,11 @@ func (m model) renderAgentManage() string {
 		items = append(items, truncate(prefix+label, leftWidth-4))
 	}
 	items = scrollWindow(items, m.agentManageListOffset, innerHeight)
-	left := panelStyle.Width(leftWidth).Height(panelHeight).Render(strings.Join(capLines(items, innerHeight), "\n"))
+	leftStyle := panelStyle
+	if m.agentManageFocus == 0 {
+		leftStyle = panelActiveStyle
+	}
+	left := leftStyle.Width(leftWidth).Height(panelHeight).Render(strings.Join(capLines(items, innerHeight), "\n"))
 
 	specs := m.agentManageFieldSpecs()
 	var detail []string
@@ -62,13 +62,17 @@ func (m model) renderAgentManage() string {
 		detail = append(detail, "")
 		detail = append(detail, renderManageFieldList(m, rightWidth-4, innerHeight-len(detail))...)
 	}
-	right := panelStyle.Width(rightWidth).Height(panelHeight).Render(strings.Join(capLines(detail, innerHeight), "\n"))
+	rightStyle := panelStyle
+	if m.agentManageFocus == 1 {
+		rightStyle = panelActiveStyle
+	}
+	right := rightStyle.Width(rightWidth).Height(panelHeight).Render(strings.Join(capLines(detail, innerHeight), "\n"))
 
 	return strings.Join(append(headerLines, lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)), "\n")
 }
 
 func (m model) agentManagePanelHeights() (panelHeight, innerHeight int) {
-	headerLines := 3
+	headerLines := 2
 	panelHeight = m.agentContentHeight() - headerLines - 2
 	if panelHeight < 3 {
 		panelHeight = 3
@@ -91,4 +95,26 @@ func (m model) agentManageDetailVisibleRows() int {
 		visible = 1
 	}
 	return visible
+}
+
+func (m model) agentManageEditorDims() (width, height int) {
+	panelHeight, innerHeight := m.agentManagePanelHeights()
+	_ = panelHeight
+	leftWidth := m.width * 29 / 100
+	if leftWidth < 30 {
+		leftWidth = 30
+	}
+	rightWidth := m.width - leftWidth - 6
+	if rightWidth < 52 {
+		rightWidth = 52
+	}
+	width = rightWidth - 4
+	if width < 20 {
+		width = 20
+	}
+	height = innerHeight - 3
+	if height < 3 {
+		height = 3
+	}
+	return width, height
 }

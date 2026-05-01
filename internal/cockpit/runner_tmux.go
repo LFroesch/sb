@@ -239,14 +239,14 @@ func (r *tmuxRunner) scan() {
 			if len(j.Sources) > 0 {
 				next = StatusNeedsReview
 			}
-		case StatusIdle, StatusPaused:
+		case StatusIdle:
 			next = StatusFailed
 			note = "tmux session ended"
 		default:
 			next = j.Status
 		}
 		_ = r.reg.Update(id, func(jj *Job) {
-			if jj.Status == StatusRunning || jj.Status == StatusIdle || jj.Status == StatusPaused {
+			if jj.Status == StatusRunning || jj.Status == StatusIdle {
 				jj.Status = next
 				jj.FinishedAt = time.Now()
 				jj.Note = note

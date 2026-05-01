@@ -9,14 +9,29 @@ import (
 	"strings"
 )
 
-// LoadPresets reads every *.json file under dir and returns them sorted
-// by ID. Invalid files are logged to stderr and skipped so a single bad
+// LoadPresets reads every *.json file under dir, resolves each preset's
+// library refs (prompt / hook bundle / engine) into the runtime fields,
+// and returns the slice sorted by sort rank then ID. Invalid files and
+// presets with unresolvable refs are logged and skipped so a single bad
 // preset doesn't block the TUI.
-func LoadPresets(dir string) ([]LaunchPreset, error) {
+func LoadPresets(dir string, prompts []PromptTemplate, bundles []HookBundle, providers []ProviderProfile) ([]LaunchPreset, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
+	promptByID := map[string]PromptTemplate{}
+	for _, p := range prompts {
+		promptByID[p.ID] = p
+	}
+	bundleByID := map[string]HookBundle{}
+	for _, b := range bundles {
+		bundleByID[b.ID] = b
+	}
+	providerByID := map[string]ProviderProfile{}
+	for _, p := range providers {
+		providerByID[p.ID] = p
+	}
+
 	var out []LaunchPreset
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
@@ -42,8 +57,9 @@ func LoadPresets(dir string) ([]LaunchPreset, error) {
 		if p.LaunchMode == "" {
 			p.LaunchMode = LaunchModeSingleJob
 		}
-		if p.Hooks.Iteration.Mode == "" {
-			p.Hooks.Iteration.Mode = IterationOneShot
+		if err := resolveInto(&p, promptByID, bundleByID, providerByID); err != nil {
+			fmt.Fprintf(os.Stderr, "cockpit: resolve preset %s: %v\n", path, err)
+			continue
 		}
 		out = append(out, p)
 	}
@@ -58,7 +74,73 @@ func LoadPresets(dir string) ([]LaunchPreset, error) {
 	return out, nil
 }
 
+// ResolvePreset fills the runtime fields (SystemPrompt, Hooks, Executor)
+// from the libraries based on the preset's refs. Returns an error if any
+// ref is set but missing in the corresponding library. Callers building a
+// preset in-memory (e.g. per-run override before LaunchJob) use this to
+// flesh out the runtime values before passing into LaunchRequest.
+func ResolvePreset(p LaunchPreset, prompts []PromptTemplate, bundles []HookBundle, providers []ProviderProfile) (LaunchPreset, error) {
+	promptByID := map[string]PromptTemplate{}
+	for _, pt := range prompts {
+		promptByID[pt.ID] = pt
+	}
+	bundleByID := map[string]HookBundle{}
+	for _, b := range bundles {
+		bundleByID[b.ID] = b
+	}
+	providerByID := map[string]ProviderProfile{}
+	for _, pr := range providers {
+		providerByID[pr.ID] = pr
+	}
+	if err := resolveInto(&p, promptByID, bundleByID, providerByID); err != nil {
+		return LaunchPreset{}, err
+	}
+	return p, nil
+}
+
+func resolveInto(p *LaunchPreset, prompts map[string]PromptTemplate, bundles map[string]HookBundle, providers map[string]ProviderProfile) error {
+	// Always reset runtime fields so a stale value never sneaks through.
+	p.SystemPrompt = ""
+	p.Hooks = HookSpec{}
+	p.Executor = ExecutorSpec{}
+
+	if p.PromptID != "" {
+		pt, ok := prompts[p.PromptID]
+		if !ok {
+			return fmt.Errorf("prompt %q not found", p.PromptID)
+		}
+		p.SystemPrompt = pt.Body
+	}
+	if p.HookBundleID != "" {
+		b, ok := bundles[p.HookBundleID]
+		if !ok {
+			return fmt.Errorf("hook bundle %q not found", p.HookBundleID)
+		}
+		p.Hooks = HookSpec{
+			Prompt:    b.Prompt,
+			PreShell:  b.PreShell,
+			PostShell: b.PostShell,
+			Iteration: b.Iteration,
+		}
+	}
+	if p.EngineID != "" {
+		pr, ok := providers[p.EngineID]
+		if !ok {
+			return fmt.Errorf("engine %q not found", p.EngineID)
+		}
+		p.Executor = pr.Executor
+	}
+	if p.Hooks.Iteration.Mode == "" {
+		p.Hooks.Iteration.Mode = IterationOneShot
+	}
+	return nil
+}
+
 // SavePreset writes a single preset to <dir>/<id>.json with pretty JSON.
+// Only the on-disk fields (identity + refs + permissions/launch_mode) are
+// emitted; runtime-resolved fields (SystemPrompt, Executor, Hooks) are
+// stripped via a disk-specific struct so an empty struct doesn't leak as
+// `"executor": {...}` in the JSON.
 func SavePreset(dir string, p LaunchPreset) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -66,11 +148,33 @@ func SavePreset(dir string, p LaunchPreset) error {
 	if p.ID == "" {
 		return fmt.Errorf("preset missing id")
 	}
-	b, err := json.MarshalIndent(p, "", "  ")
+	disk := presetOnDisk{
+		ID:           p.ID,
+		Name:         p.Name,
+		LaunchMode:   p.LaunchMode,
+		Permissions:  p.Permissions,
+		PromptID:     p.PromptID,
+		HookBundleID: p.HookBundleID,
+		EngineID:     p.EngineID,
+	}
+	b, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, p.ID+".json"), append(b, '\n'), 0o644)
+}
+
+// presetOnDisk mirrors LaunchPreset's persisted shape. Kept separate so
+// the runtime struct can carry resolved fields without leaking them into
+// the JSON file.
+type presetOnDisk struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	LaunchMode   string `json:"launch_mode,omitempty"`
+	Permissions  string `json:"permissions,omitempty"`
+	PromptID     string `json:"prompt_id,omitempty"`
+	HookBundleID string `json:"hook_bundle_id,omitempty"`
+	EngineID     string `json:"engine_id,omitempty"`
 }
 
 // DeletePreset removes <dir>/<id>.json. Missing files are treated as
@@ -102,7 +206,7 @@ func WriteDefaultPresets(dir string) (int, error) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".json") {
-			return 0, nil // user already has presets, leave them alone
+			return 0, nil
 		}
 	}
 	seeds := defaultPresets()
@@ -118,99 +222,56 @@ func WriteDefaultPresets(dir string) (int, error) {
 // Exposed so tests have one source of truth for the count assertion.
 var DefaultPresetCount = len(defaultPresets())
 
-// defaultPresets returns role-centric seeds. Each carries a *suggested*
-// provider in its Executor field; at launch time the user can override
-// the provider with any ProviderProfile. Shell-flavoured presets
-// (test/lint/build/escape) stay provider-locked since the role is the
-// shell invocation.
+// defaultPresets returns ref-based seeds. Each composes a prompt + a hook
+// bundle + an engine from the libraries. The corresponding library
+// entries are seeded by defaultPrompts() and defaultHookBundles() (in
+// prompts.go and hookbundles.go) plus the existing defaultProviders().
 func defaultPresets() []LaunchPreset {
-	claude := ExecutorSpec{Type: "claude"}
-	codex := ExecutorSpec{Type: "codex"}
-	bash := ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}}
-
-	diffStat := []ShellHook{{Name: "git diff --stat", Cmd: "git diff --stat"}}
-	gitStatus := []ShellHook{{Name: "git status", Cmd: "git status --short"}}
-	one := IterationPolicy{Mode: IterationOneShot}
-
 	return []LaunchPreset{
 		{
-			ID: "senior-dev", Name: "Senior dev", Role: "senior-dev",
-			SystemPrompt: "You are a senior engineer working in this repo. Make the smallest change that solves the task. " +
-				"Before editing, read the relevant files. After editing, run the project's build and tests. " +
-				"Commit nothing; the user will review your diff.",
-			Executor:    claude,
-			Hooks:       HookSpec{PostShell: diffStat, Iteration: one},
+			ID: "senior-dev", Name: "Senior dev",
+			PromptID: "senior-dev", HookBundleID: "diff-stat", EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
-			ID: "bug-fixer", Name: "Bug fixer", Role: "bug-fixer",
-			SystemPrompt: "You fix the specific bug described in the brief. Reproduce first, then fix, then verify. " +
-				"Do not refactor surrounding code. If the root cause is outside the reported surface, stop and explain.",
-			Executor:    claude,
-			Hooks:       HookSpec{PostShell: diffStat, Iteration: one},
+			ID: "bug-fixer", Name: "Bug fixer",
+			PromptID: "bug-fixer", HookBundleID: "diff-stat", EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
-			ID: "test-writer", Name: "Test writer", Role: "test-writer",
-			SystemPrompt: "You add tests that cover the behaviour described in the brief. Match the project's test style. " +
-				"Do not modify production code. If a test can't be written without touching prod code, explain why.",
-			Executor:    claude,
-			Hooks:       HookSpec{PostShell: gitStatus, Iteration: one},
+			ID: "test-writer", Name: "Test writer",
+			PromptID: "test-writer", HookBundleID: "git-status", EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
-			ID: "refactor", Name: "Refactor (narrow)", Role: "refactor",
-			SystemPrompt: "You refactor within the bounds the user specifies, without changing behaviour. " +
-				"Preserve public APIs unless told otherwise. Keep diffs small and mechanical.",
-			Executor:    claude,
-			Hooks:       HookSpec{PostShell: diffStat, Iteration: one},
+			ID: "refactor", Name: "Refactor (narrow)",
+			PromptID: "refactor", HookBundleID: "diff-stat", EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
-			ID: "code-analyzer", Name: "Code analyzer (read-only)", Role: "code-analyzer",
-			SystemPrompt: "You analyse the code described in the brief and return a short findings report. " +
-				"Do not edit any files. Cover: what the code does, likely bugs, missing tests, risky assumptions.",
-			Executor:    claude,
-			Hooks:       HookSpec{Iteration: one},
+			ID: "code-analyzer", Name: "Code analyzer (read-only)",
+			PromptID: "code-analyzer", HookBundleID: "no-hooks", EngineID: "claude",
 			Permissions: "read-only",
 		},
 		{
-			ID: "explainer", Name: "Explainer", Role: "explainer",
-			SystemPrompt: "You explain the code or concept in the brief in plain language. " +
-				"Return: one-line summary, the mental model, concrete examples from this repo, common pitfalls.",
-			Executor:    claude,
-			Hooks:       HookSpec{Iteration: one},
+			ID: "explainer", Name: "Explainer",
+			PromptID: "explainer", HookBundleID: "no-hooks", EngineID: "claude",
 			Permissions: "read-only",
 		},
 		{
-			ID: "pm", Name: "PM (plan mode)", Role: "pm",
-			SystemPrompt: "You plan work. Do not write code. Produce: goal, scope cut, ordered task list, risks, " +
-				"open questions. Keep the plan tight; prefer cuts over additions.",
-			Executor:    claude,
-			Hooks:       HookSpec{Iteration: one},
+			ID: "pm", Name: "PM (plan mode)",
+			PromptID: "pm", HookBundleID: "no-hooks", EngineID: "claude",
 			Permissions: "read-only",
 		},
 		{
-			ID: "docs-writer", Name: "Docs writer", Role: "docs-writer",
-			SystemPrompt: "You write or update markdown docs based on current code. Be concrete, cite file paths, " +
-				"and avoid marketing language. Update existing files in place rather than creating new ones.",
-			Executor:    claude,
-			Hooks:       HookSpec{PostShell: gitStatus, Iteration: one},
+			ID: "docs-writer", Name: "Docs writer",
+			PromptID: "docs-writer", HookBundleID: "git-status", EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
-			ID: "scaffold", Name: "Scaffold / generate", Role: "scaffolder",
-			SystemPrompt: "You generate new files or scaffolding. Do not modify unrelated files. " +
-				"Prefer small, well-named modules and no speculative abstractions.",
-			Executor:    codex,
-			Hooks:       HookSpec{PostShell: gitStatus, Iteration: one},
+			ID: "scaffold", Name: "Scaffold / generate",
+			PromptID: "scaffold", HookBundleID: "git-status", EngineID: "codex",
 			Permissions: "scoped-write",
-		},
-		{
-			ID: "shell-escape", Name: "Shell — escape hatch", Role: "shell",
-			Executor:    bash,
-			Hooks:       HookSpec{Iteration: one},
-			Permissions: "wide-open",
 		},
 	}
 }
@@ -221,7 +282,7 @@ func presetSortRank(id string) int {
 		return 10
 	case "code-analyzer", "explainer", "pm", "rfc":
 		return 20
-	case "docs-tidy", "classify", "summarize", "shell-test", "shell-lint", "shell-build", "shell-escape":
+	case "docs-tidy", "classify", "summarize":
 		return 30
 	default:
 		return 0

@@ -31,21 +31,37 @@ func Run() error {
 	// fall back to an in-proc Manager so the TUI still works.
 	paths := cockpit.DefaultPaths()
 	m.cockpitPaths = paths
-	if _, err := cockpit.WriteDefaultPresets(paths.PresetsDir); err != nil {
-		slog.Warn("cockpit: preset seed failed", "err", err)
+	if _, err := cockpit.WriteDefaultPrompts(paths.PromptsDir); err != nil {
+		slog.Warn("cockpit: prompt seed failed", "err", err)
+	}
+	if _, err := cockpit.WriteDefaultHookBundles(paths.HooksDir); err != nil {
+		slog.Warn("cockpit: hook bundle seed failed", "err", err)
 	}
 	if _, err := cockpit.WriteDefaultProviders(paths.ProvidersDir); err != nil {
 		slog.Warn("cockpit: provider seed failed", "err", err)
 	}
-	if presets, err := cockpit.LoadPresets(paths.PresetsDir); err != nil {
-		m.cockpitErr = "load presets: " + err.Error()
+	if _, err := cockpit.WriteDefaultPresets(paths.PresetsDir); err != nil {
+		slog.Warn("cockpit: preset seed failed", "err", err)
+	}
+	if prompts, err := cockpit.LoadPrompts(paths.PromptsDir); err != nil {
+		slog.Warn("cockpit: load prompts", "err", err)
 	} else {
-		m.cockpitPresets = presets
+		m.cockpitPrompts = prompts
+	}
+	if bundles, err := cockpit.LoadHookBundles(paths.HooksDir); err != nil {
+		slog.Warn("cockpit: load hook bundles", "err", err)
+	} else {
+		m.cockpitHookBundles = bundles
 	}
 	if providers, err := cockpit.LoadProviders(paths.ProvidersDir); err != nil {
 		slog.Warn("cockpit: load providers", "err", err)
 	} else {
 		m.cockpitProviders = providers
+	}
+	if presets, err := cockpit.LoadPresets(paths.PresetsDir, m.cockpitPrompts, m.cockpitHookBundles, m.cockpitProviders); err != nil {
+		m.cockpitErr = "load presets: " + err.Error()
+	} else {
+		m.cockpitPresets = presets
 	}
 
 	var client cockpit.Client

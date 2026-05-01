@@ -19,6 +19,28 @@ func truncate(s string, max int) string {
 	return xansi.Truncate(s, max, "...")
 }
 
+func wrapLine(s string, width int) string {
+	if width < 4 {
+		return truncate(s, width)
+	}
+	var wrapped []string
+	for _, line := range strings.Split(s, "\n") {
+		if line == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		wrapped = append(wrapped, strings.Split(xansi.Wordwrap(line, width, " "), "\n")...)
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+func wrapLines(s string, width int) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(wrapLine(s, width), "\n")
+}
+
 func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading..."
@@ -73,6 +95,14 @@ func (m model) contentAreaHeight() int {
 	if m.hasStatusLine() {
 		height--
 	}
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
+func (m model) contentViewportHeight(prefixLines int) int {
+	height := m.contentAreaHeight() - prefixLines
 	if height < 1 {
 		return 1
 	}
@@ -213,7 +243,7 @@ func (m model) renderDashboard() string {
 		return m.renderEmpty("No WORK.md files found", "Check ~/projects")
 	}
 
-	availableHeight := m.height - 6 // header + separators + footer
+	availableHeight := m.contentAreaHeight()
 	if availableHeight < 5 {
 		availableHeight = 5
 	}
@@ -468,10 +498,7 @@ func (m model) renderProject() string {
 	}
 
 	if m.mode == modeCleanupWait {
-		h := m.height - 8
-		if h < 5 {
-			h = 5
-		}
+		h := m.contentAreaHeight()
 		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
 			m.spinner.View()+" "+dimStyle.Render("model cleaning up..."),
 			"",
@@ -479,7 +506,8 @@ func (m model) renderProject() string {
 		)
 		return lipgloss.Place(m.width-4, h, lipgloss.Center, lipgloss.Center, content)
 	}
-
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = m.contentAreaHeight()
 	return m.viewport.View()
 }
 
@@ -496,10 +524,7 @@ func (m model) renderCleanup() string {
 	case modeCleanupFeedback:
 		return m.renderSingleCleanupFeedback()
 	case modeCleanupWait:
-		h := m.height - 8
-		if h < 5 {
-			h = 5
-		}
+		h := m.contentAreaHeight()
 		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
 			m.spinner.View()+" "+dimStyle.Render("regenerating with feedback..."),
 			"", dimStyle.Render("please wait..."),
@@ -511,6 +536,8 @@ func (m model) renderCleanup() string {
 	if m.selected < len(m.projects) {
 		p = m.projects[m.selected].Name
 	}
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = m.contentViewportHeight(2)
 	banner := warnStyle.Render("CLEANUP DIFF") +
 		dimStyle.Render(" — "+p)
 	return lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
@@ -523,11 +550,9 @@ func (m model) renderSingleCleanupFeedback() string {
 	}
 	banner := warnStyle.Render("FEEDBACK") +
 		dimStyle.Render(" — "+p)
-	vpH := m.height - 14
-	if vpH < 5 {
-		vpH = 5
-	}
 	m.viewport.Width = m.width - 4
+	inputHeight := lipgloss.Height(m.chainFeedback.View())
+	vpH := m.contentViewportHeight(4 + inputHeight)
 	m.viewport.Height = vpH
 	return lipgloss.JoinVertical(lipgloss.Left,
 		banner, "",
@@ -551,10 +576,7 @@ func (m model) chainProjectName() string {
 func (m model) renderChainCleanupWait() string {
 	total := len(m.chainQueue)
 	pos := m.chainCursor + 1
-	h := m.height - 8
-	if h < 5 {
-		h = 5
-	}
+	h := m.contentAreaHeight()
 	progress := fmt.Sprintf("%d / %d", pos, total)
 	content := lipgloss.JoinVertical(lipgloss.Center, "", "",
 		warnStyle.Render("CHAIN CLEANUP")+" "+dimStyle.Render(progress),
@@ -572,11 +594,8 @@ func (m model) renderChainCleanupReview() string {
 	progress := fmt.Sprintf("%d/%d", pos, total)
 	banner := warnStyle.Render("CHAIN CLEANUP") +
 		dimStyle.Render(" "+progress+" — "+m.chainProjectName())
-	vpH := m.height - 8
-	if vpH < 5 {
-		vpH = 5
-	}
 	m.viewport.Width = m.width - 4
+	vpH := m.contentViewportHeight(2)
 	m.viewport.Height = vpH
 	return lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
 }
@@ -587,11 +606,9 @@ func (m model) renderChainCleanupFeedback() string {
 	progress := fmt.Sprintf("%d/%d", pos, total)
 	banner := warnStyle.Render("FEEDBACK") +
 		dimStyle.Render(" "+progress+" — "+m.chainProjectName())
-	vpH := m.height - 14
-	if vpH < 5 {
-		vpH = 5
-	}
 	m.viewport.Width = m.width - 4
+	inputHeight := lipgloss.Height(m.chainFeedback.View())
+	vpH := m.contentViewportHeight(4 + inputHeight)
 	m.viewport.Height = vpH
 	return lipgloss.JoinVertical(lipgloss.Left,
 		banner, "",
@@ -663,12 +680,10 @@ func (m model) renderDump() string {
 			progress := fmt.Sprintf("(%d/%d)", m.dumpCursor+1, len(m.dumpItems))
 
 			lines = append(lines, warnStyle.Render("  REVIEW ")+dimStyle.Render(progress))
-			lines = append(lines, "")
 			lines = append(lines, accentStyle.Render("  "+item.Text))
 			lines = append(lines, "")
 			lines = append(lines, dimStyle.Render("  route to: ")+
 				accentStyle.Render(item.Project)+dimStyle.Render(" / ")+accentStyle.Render(item.Section))
-			lines = append(lines, "")
 		}
 		return strings.Join(lines, "\n")
 
@@ -678,17 +693,19 @@ func (m model) renderDump() string {
 			progress := fmt.Sprintf("(%d/%d)", m.dumpCursor+1, len(m.dumpItems))
 
 			lines = append(lines, warnStyle.Render("  CLARIFY ")+dimStyle.Render(progress))
-			lines = append(lines, "")
 			lines = append(lines, accentStyle.Render("  "+item.Text))
 			lines = append(lines, "")
 			lines = append(lines, dimStyle.Render("  which project does this belong to?"))
-			lines = append(lines, "")
+			m.dumpClarifyArea.SetWidth(m.width - 6)
+			m.dumpClarifyArea.SetHeight(m.contentViewportHeight(6))
 			lines = append(lines, m.dumpClarifyArea.View())
 		}
 		return strings.Join(lines, "\n")
 	}
 
 	// modeDumpInput (default)
+	m.dumpArea.SetWidth(m.width - 6)
+	m.dumpArea.SetHeight(m.contentViewportHeight(2))
 	lines = append(lines, m.dumpArea.View())
 	return strings.Join(lines, "\n")
 }
@@ -735,11 +752,7 @@ func (m model) dumpSummaryLines() []string {
 }
 
 func (m model) summaryVisibleHeight() int {
-	visibleH := m.height - 8
-	if visibleH < 5 {
-		visibleH = 5
-	}
-	return visibleH
+	return m.contentAreaHeight()
 }
 
 func isDumpSkipped(item llm.RouteItem, skipped []llm.RouteItem) bool {
@@ -816,6 +829,7 @@ func (m model) renderFooter() string {
 		case modeAgentLaunch:
 			add("tab", "focus")
 			add("enter", "launch")
+			add("alt+enter", "launch from note")
 			if m.launchFocus == m.launchNoteFocus() {
 				inInput = true
 			}
@@ -829,6 +843,7 @@ func (m model) renderFooter() string {
 				add("s", "send Esc")
 				add("S", "send Ctrl+C")
 				add("c", "send continue")
+				add("ctrl+g", "tmux -> sb")
 			}
 		case modeAgentManage:
 			if m.agentManageEditing {
@@ -911,7 +926,7 @@ func (m model) helpLines() []string {
 			{"A", "Open current project directly in Agent task picker"},
 			{"/", "Search across all WORK.md files"},
 			{"r", "Refresh (re-scan WORK.md files)"},
-			{",", "Open config.json in editor"},
+			{",", "Open sb config dir in editor"},
 			{"?", "Toggle this help overlay"},
 		}},
 		{"Project View", []struct{ key, desc string }{
@@ -940,8 +955,7 @@ func (m model) helpLines() []string {
 			{"esc", "Cancel / abort remaining"},
 		}},
 		{"Agents", []struct{ key, desc string }{
-			{"n", "New launch (current project first)"},
-			{"N", "Freeform launch"},
+			{"n", "New run (pick a task file or skip task lines)"},
 			{"m", "Open advanced Agent Setup (templates/runtimes; edit/add/duplicate/delete)"},
 			{"F", "List: toggle Foreman on/off · New run: toggle immediate launch vs send to Foreman"},
 			{"f / tab", "List: cycle job filters"},
@@ -951,6 +965,7 @@ func (m model) helpLines() []string {
 			{"enter", "Launch · open selected job (tmux attach if live, log review if finished, chat for exec jobs) · send when typing"},
 			{"alt+enter", "Launch from note"},
 			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
+			{"ctrl+g", "Live tmux session: jump back to the shared sb main window"},
 			{"R", "Start waiting job now, or open the selected session"},
 			{"j/k", "Scroll transcript/log in attached view"},
 			{"wheel", "List nav / transcript scroll"},
@@ -1027,9 +1042,6 @@ func (m model) helpVisibleHeight() int {
 
 func (m model) renderEmpty(title, subtitle string) string {
 	content := lipgloss.JoinVertical(lipgloss.Center, "", "", dimStyle.Render(title), "", dimStyle.Render(subtitle))
-	h := m.height - 8
-	if h < 5 {
-		h = 5
-	}
+	h := m.contentAreaHeight()
 	return lipgloss.Place(m.width-4, h, lipgloss.Center, lipgloss.Center, content)
 }

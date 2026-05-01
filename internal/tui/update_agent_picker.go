@@ -18,14 +18,15 @@ func (m *model) resetAgentPicker() {
 }
 
 func (m model) updateAgentPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Step 1: pick a file
+	// Step 1: pick a file (row 0 is the "no task source" sentinel)
 	if m.pickerFile == "" {
+		max := len(m.projects) // sentinel + N projects → cursor range [0, N]
 		switch msg.String() {
 		case "esc", "q":
 			m.mode = modeAgentList
 			return m, nil
 		case "j", "down":
-			if m.agentCursor < len(m.projects)-1 {
+			if m.agentCursor < max {
 				m.agentCursor++
 			}
 		case "k", "up":
@@ -33,8 +34,21 @@ func (m model) updateAgentPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.agentCursor--
 			}
 		case "enter":
-			if m.agentCursor < len(m.projects) {
-				p := m.projects[m.agentCursor]
+			if m.agentCursor == 0 {
+				m.resetAgentLaunch()
+				m.launchSources = nil
+				m.launchRepo = m.defaultLaunchRepo()
+				// Land on the Repo tab so the user explicitly picks (or
+				// types) the repo before composing the brief — Lucas's
+				// feedback was the implicit-cwd default felt "stuck".
+				m.launchFocus = 2
+				m.launchBrief.Blur()
+				m.mode = modeAgentLaunch
+				return m, nil
+			}
+			projectIdx := m.agentCursor - 1
+			if projectIdx >= 0 && projectIdx < len(m.projects) {
+				p := m.projects[projectIdx]
 				items, err := cockpit.ReadItems(p.Path)
 				if err != nil {
 					m.statusMsg = "read items: " + err.Error()

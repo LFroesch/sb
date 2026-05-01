@@ -427,6 +427,15 @@ func Path() (string, error) {
 	return configPath()
 }
 
+// Dir returns the sb config directory, creating it if needed.
+func Dir() (string, error) {
+	path, err := configPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(path), nil
+}
+
 // configPath returns the path to the config file, creating the dir if needed.
 func configPath() (string, error) {
 	dir := filepath.Join(os.Getenv("HOME"), ".config", "sb")

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LFroesch/sb/internal/statusbar"
 )
 
 // Manager is the in-process orchestrator that owns job lifecycles.
@@ -62,7 +64,19 @@ func NewManager(paths Paths) (*Manager, error) {
 		m.tmux.Rehydrate(r.List())
 	}
 	m.maybeStartQueuedJobs()
+	go m.scheduleTicker()
 	return m, nil
+}
+
+// scheduleTicker re-evaluates queued jobs at a low cadence so a quota
+// reset or external state change can pick up parked work without an
+// operator nudge. Runs forever; the manager has no shutdown hook.
+func (m *Manager) scheduleTicker() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		m.tickScheduler()
+	}
 }
 
 // Subscribe returns a buffered event channel and a cancel func the
@@ -131,9 +145,7 @@ func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	if !req.QueueOnly {
-		m.maybeStartQueuedJobs()
-	}
+	m.maybeStartQueuedJobs()
 	final, _ := m.Registry.Get(job.ID)
 	return final, nil
 }
@@ -190,9 +202,7 @@ func (m *Manager) launchQueuedSequence(req LaunchRequest) (Job, error) {
 	if err := SaveCampaign(m.Paths.CampaignDir, campaign); err != nil {
 		return Job{}, err
 	}
-	if !req.QueueOnly {
-		m.maybeStartQueuedJobs()
-	}
+	m.maybeStartQueuedJobs()
 	first, _ := m.Registry.Get(jobIDs[0])
 	return first, nil
 }
@@ -274,31 +284,152 @@ func (m *Manager) startQueuedJob(id JobID) error {
 	return nil
 }
 
-func (m *Manager) maybeStartQueuedJobs() {
+// maybeStartQueuedJobs is the historical name for tickScheduler; kept so
+// callers (tmux runner callback, post-approve / post-skip / post-delete
+// triggers, tests) don't need to change.
+func (m *Manager) maybeStartQueuedJobs() { m.tickScheduler() }
+
+// tickScheduler walks queued jobs in priority order and either starts
+// them or records why they were deferred (waiting for foreman, repo busy,
+// concurrency cap, near rate limit). Idempotent — safe to call from
+// event handlers and from the background ticker.
+func (m *Manager) tickScheduler() {
 	jobs := orderQueuedJobs(m.ListJobs())
-	m.mu.Lock()
-	foremanEnabled := m.foreman.Enabled
-	m.mu.Unlock()
-	lockedRepos := map[string]bool{}
+	state := m.GetForemanState()
+	maxConcurrent := state.MaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = ForemanMaxConcurrentDefault
+	}
+	limitGuard := state.LimitGuardPct
+	if limitGuard <= 0 {
+		limitGuard = ForemanLimitGuardPctDefault
+	}
+
+	lockedRepos := map[string]JobID{}
+	activeForeman := 0
 	for _, j := range jobs {
 		if jobLocksRepo(j) {
-			lockedRepos[j.Repo] = true
+			if _, ok := lockedRepos[j.Repo]; !ok {
+				lockedRepos[j.Repo] = j.ID
+			}
+		}
+		if j.ForemanManaged {
+			switch j.Status {
+			case StatusRunning, StatusIdle, StatusNeedsReview, StatusBlocked:
+				activeForeman++
+			}
 		}
 	}
+
 	for _, j := range jobs {
 		if j.Status != StatusQueued {
 			continue
 		}
-		if j.WaitForForeman && !foremanEnabled {
+		reason := m.eligibilityReason(j, state, lockedRepos, activeForeman, maxConcurrent, limitGuard)
+		if reason != "" {
+			m.recordEligibilityReason(j.ID, reason)
 			continue
 		}
-		if strings.TrimSpace(j.Repo) != "" && lockedRepos[j.Repo] {
+		prevReason := j.EligibilityReason
+		if err := m.startQueuedJob(j.ID); err != nil {
 			continue
 		}
-		if err := m.startQueuedJob(j.ID); err == nil && strings.TrimSpace(j.Repo) != "" {
-			lockedRepos[j.Repo] = true
+		if prevReason != "" {
+			m.clearEligibilityReason(j.ID)
+		}
+		if strings.TrimSpace(j.Repo) != "" {
+			if _, ok := lockedRepos[j.Repo]; !ok {
+				lockedRepos[j.Repo] = j.ID
+			}
+		}
+		if j.ForemanManaged {
+			activeForeman++
 		}
 	}
+}
+
+// eligibilityReason returns the first gate that blocks this queued job,
+// or "" if it is dispatchable. Gate order (first match wins): foreman
+// off, repo busy, concurrency cap, provider near rate limit.
+func (m *Manager) eligibilityReason(j Job, state ForemanState, lockedRepos map[string]JobID, activeForeman, maxConcurrent, limitGuard int) string {
+	if j.WaitForForeman && !state.Enabled {
+		return "waiting for foreman"
+	}
+	if repo := strings.TrimSpace(j.Repo); repo != "" {
+		if other, ok := lockedRepos[repo]; ok && other != j.ID {
+			return "repo busy: " + shortDisplayJobID(other)
+		}
+	}
+	if j.ForemanManaged && maxConcurrent > 0 && activeForeman >= maxConcurrent {
+		return fmt.Sprintf("foreman concurrency cap (%d/%d)", activeForeman, maxConcurrent)
+	}
+	if j.ForemanManaged && providerNeedsLimitGuard(j.Executor) {
+		provider := strings.ToLower(strings.TrimSpace(j.Executor.Type))
+		if pct, ok := providerLimitPct(provider); ok && pct >= limitGuard {
+			return fmt.Sprintf("%s near 5h limit (%d%%)", provider, pct)
+		}
+	}
+	return ""
+}
+
+// recordEligibilityReason persists the deferral reason on the job and
+// emits a status_changed event so the TUI surfaces it. No-op if the
+// reason hasn't changed.
+func (m *Manager) recordEligibilityReason(id JobID, reason string) {
+	current, ok := m.Registry.Get(id)
+	if !ok || current.EligibilityReason == reason {
+		return
+	}
+	_ = m.Registry.Update(id, func(jj *Job) {
+		jj.EligibilityReason = reason
+		jj.EligibilityCheckedAt = time.Now()
+	})
+	m.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(StatusQueued), "note": reason}})
+}
+
+func (m *Manager) clearEligibilityReason(id JobID) {
+	_ = m.Registry.Update(id, func(jj *Job) {
+		jj.EligibilityReason = ""
+		jj.EligibilityCheckedAt = time.Now()
+	})
+}
+
+func providerNeedsLimitGuard(e ExecutorSpec) bool {
+	switch strings.ToLower(strings.TrimSpace(e.Type)) {
+	case "claude", "codex":
+		return true
+	}
+	return false
+}
+
+// providerLimitPct returns the highest 5h-window utilization for a
+// provider. Tests override this to drive the limit-guard gate.
+var providerLimitPct = func(provider string) (int, bool) {
+	var u statusbar.Usage
+	var ok bool
+	switch provider {
+	case "claude":
+		u, ok = statusbar.FetchClaude()
+	case "codex":
+		u, ok = statusbar.FetchCodex()
+	default:
+		return 0, false
+	}
+	if !ok {
+		return 0, false
+	}
+	if !u.FiveHour.Available {
+		return 0, false
+	}
+	return u.FiveHour.PctUsed, true
+}
+
+func shortDisplayJobID(id JobID) string {
+	s := string(id)
+	if len(s) <= 6 {
+		return s
+	}
+	return s[len(s)-6:]
 }
 
 func (m *Manager) SetForemanEnabled(enabled bool) (ForemanState, error) {
@@ -311,9 +442,9 @@ func (m *Manager) SetForemanEnabled(enabled bool) (ForemanState, error) {
 		return ForemanState{}, err
 	}
 	m.emit(Event{TS: time.Now(), Kind: EventForemanState, Payload: state})
-	if enabled {
-		m.maybeStartQueuedJobs()
-	}
+	// Tick either way: turning on may dispatch parked jobs; turning off
+	// updates "waiting for foreman" reasons on remaining queued jobs.
+	m.maybeStartQueuedJobs()
 	return state, nil
 }
 

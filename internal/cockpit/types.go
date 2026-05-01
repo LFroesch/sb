@@ -35,7 +35,6 @@ const (
 	StatusQueued      Status = "queued"
 	StatusRunning     Status = "running" // a turn is in flight
 	StatusIdle        Status = "idle"    // waiting for next user turn
-	StatusPaused      Status = "paused"  // unused in V1; reserved
 	StatusNeedsReview Status = "needs_review"
 	StatusBlocked     Status = "blocked"
 	StatusCompleted   Status = "completed" // user marked done (approve) or shell oneshot exit
@@ -120,23 +119,68 @@ type HookSpec struct {
 	Iteration IterationPolicy `json:"iteration,omitempty"`
 }
 
-// LaunchPreset is the user-editable recipe: persona + executor + hooks +
-// iteration + permissions. Stored one-per-file under presets_dir.
+// PromptTemplate is a named, reusable system prompt body. Stored
+// one-per-file under prompts_dir. A LaunchPreset references one
+// PromptTemplate by ID.
+type PromptTemplate struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Body string `json:"body"`
+}
+
+// HookBundle is a named, reusable hook set: prompt-injection hooks +
+// pre/post shell steps + iteration policy. Stored one-per-file under
+// hooks_dir. A LaunchPreset references one HookBundle by ID.
+type HookBundle struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Prompt    []PromptHook    `json:"prompt,omitempty"`
+	PreShell  []ShellHook     `json:"pre_shell,omitempty"`
+	PostShell []ShellHook     `json:"post_shell,omitempty"`
+	Iteration IterationPolicy `json:"iteration,omitempty"`
+}
+
+// LaunchPreset is the user-editable master recipe. On disk it stores
+// only refs into the prompts / hooks / providers libraries plus the
+// inline permissions enum and launch mode. At load time the refs are
+// resolved into the runtime fields (SystemPrompt, Hooks, Executor) so
+// downstream code can read a fully-populated preset.
+//
+// Saved files contain only ref fields plus identity/permissions/
+// launch_mode — the runtime fields are zeroed before marshal.
 type LaunchPreset struct {
-	ID            string       `json:"id"`
-	Name          string       `json:"name"`
-	Role          string       `json:"role,omitempty"`
-	SystemPrompt  string       `json:"system_prompt,omitempty"`
-	LaunchMode    string       `json:"launch_mode,omitempty"` // single_job | task_queue_sequence
-	Executor      ExecutorSpec `json:"executor"`
-	Hooks         HookSpec     `json:"hooks,omitempty"`
-	Permissions   string       `json:"permissions,omitempty"`    // "read-only"|"scoped-write"|"wide-open"
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	LaunchMode  string `json:"launch_mode,omitempty"` // single_job | task_queue_sequence
+	Permissions string `json:"permissions,omitempty"` // "read-only"|"scoped-write"|"wide-open"
+
+	// Library refs — source of truth on disk.
+	PromptID     string `json:"prompt_id,omitempty"`
+	HookBundleID string `json:"hook_bundle_id,omitempty"`
+	EngineID     string `json:"engine_id,omitempty"`
+
+	// Runtime fields populated by LoadPresets from the libraries. Saved
+	// files have these zeroed; downstream consumers (TUI, manager, hooks
+	// runtime) read them post-load.
+	SystemPrompt string       `json:"system_prompt,omitempty"`
+	Executor     ExecutorSpec `json:"executor,omitempty"`
+	Hooks        HookSpec     `json:"hooks,omitempty"`
 }
 
 type ForemanState struct {
-	Enabled   bool      `json:"enabled"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	Enabled       bool      `json:"enabled"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	MaxConcurrent int       `json:"max_concurrent,omitempty"` // 0 = unlimited; defaults to 3 when zero on read
+	LimitGuardPct int       `json:"limit_guard_pct,omitempty"` // 0 = use default 90
 }
+
+// ForemanMaxConcurrentDefault caps the number of foreman-managed jobs that
+// may run concurrently when the persisted state has not been customized.
+const ForemanMaxConcurrentDefault = 3
+
+// ForemanLimitGuardPctDefault is the percent-used threshold above which
+// foreman defers a claude/codex start to wait for a quota reset.
+const ForemanLimitGuardPctDefault = 90
 
 // TurnRole tags who authored a single turn in the job's conversation.
 type TurnRole string
@@ -193,6 +237,12 @@ type Job struct {
 	QueueTotal         int           `json:"queue_total,omitempty"`
 	WaitForForeman     bool          `json:"wait_for_foreman,omitempty"`
 	ForemanManaged     bool          `json:"foreman_managed,omitempty"`
+
+	// EligibilityReason explains why the scheduler last passed over this
+	// job (repo busy, foreman concurrency cap, provider near limit, etc).
+	// Empty when the job has been dispatched or has not been gated yet.
+	EligibilityReason    string    `json:"eligibility_reason,omitempty"`
+	EligibilityCheckedAt time.Time `json:"eligibility_checked_at,omitempty"`
 
 	// Tmux runner fields. Zero values are backwards-compatible with
 	// pre-v2 persisted jobs: empty Runner → treat as exec.

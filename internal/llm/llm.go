@@ -202,6 +202,8 @@ type RouteItem struct {
 type ProjectDesc struct {
 	Name        string
 	Description string
+	Phase       string
+	Preview     []string
 }
 
 // SpecialTarget mirrors config.Target for routing-prompt purposes. nil means
@@ -217,13 +219,44 @@ type SpecialTarget struct {
 func renderProjectList(projects []ProjectDesc) string {
 	var b strings.Builder
 	for _, p := range projects {
-		if p.Description == "" {
-			fmt.Fprintf(&b, "- %s\n", p.Name)
-		} else {
-			fmt.Fprintf(&b, "- %s — %s\n", p.Name, p.Description)
+		fmt.Fprintf(&b, "- %s", truncatePromptField(p.Name, 80))
+		if p.Description != "" {
+			fmt.Fprintf(&b, " — %s", truncatePromptField(p.Description, 160))
+		}
+		if p.Phase != "" {
+			fmt.Fprintf(&b, " | phase: %s", truncatePromptField(p.Phase, 120))
+		}
+		b.WriteString("\n")
+		for _, item := range truncatePromptPreview(p.Preview, 2, 120) {
+			fmt.Fprintf(&b, "  active: %s\n", item)
 		}
 	}
 	return b.String()
+}
+
+func truncatePromptField(s string, max int) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return s[:max]
+	}
+	return strings.TrimSpace(s[:max-1]) + "…"
+}
+
+func truncatePromptPreview(items []string, maxItems, maxLen int) []string {
+	if maxItems <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) > maxItems {
+		items = items[:maxItems]
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, truncatePromptField(item, maxLen))
+	}
+	return out
 }
 
 // renderSpecialTargets builds the "Special targets" prompt block, including
@@ -251,7 +284,7 @@ func defaultUnsureLine(catchall *SpecialTarget) string {
 }
 
 // CleanupPrompt is the system prompt for WORK.md normalization.
-const CleanupPrompt = `You are a WORK.md file organizer. Your only job is to reorganize existing content into canonical sections. You must not add, remove, rewrite, or invent anything.
+const CleanupPrompt = `You are a WORK.md file organizer. Your job is to lightly tidy the file while preserving its structure and meaning. You must not add, remove, rewrite, or invent substantive content.
 
 ABSOLUTE RULES — violating any of these is total failure:
 - DO NOT add any text that is not in the input. No "None noted", no summaries, nothing invented.
@@ -260,25 +293,13 @@ ABSOLUTE RULES — violating any of these is total failure:
 - Each item appears EXACTLY ONCE. Never repeat an item in multiple sections.
 
 Structure rules:
-1. First line: keep the "# WORK - slug" title exactly as-is.
-2. Canonical sections in this order (only create a section if items belong there):
-   ## Current Phase
-   ## Current Tasks
-   ## Bugs + Blockers
-   ## Updates + Features
-   ## Backlog
-   ## Unsorted
-3. Merge variant headers into canonical ones:
-   Backlog / Feature Ideas / Ideas / Wishlist → ## Backlog
-   Bugs / Blockers / Issues / Known Issues → ## Bugs + Blockers
-   Updates / Features / Enhancements / Planned → ## Updates + Features
-   Inbox / Unsorted / Misc / Notes / Dump / TODO → ## Unsorted
-   Current / Active / In Progress / Sprint → ## Current Tasks
-   Phase / Status / Current Phase → ## Current Phase
-   Truly non-canonical headers (Design Notes, API Spec, etc.) — keep as-is, place after canonical sections.
-4. Blank line after every ## heading.
-5. Convert table rows to plain bullets: "- task text" (drop priority/status columns, keep the task description verbatim).
-6. Output ONLY the cleaned markdown. No commentary, no code fences.`
+1. Keep the first heading exactly as-is, including its file-type prefix such as "# WORK - ..." or "# ROADMAP - ...".
+2. Preserve existing headers and their order unless an item is obviously under the wrong header.
+3. Keep the short description line directly below the H1 if one exists.
+4. You may remove exact duplicates.
+5. You may normalize malformed bullets and convert obvious task tables into plain bullets.
+6. Do NOT invent canonical headers or aggressively merge/rename sections.
+7. Output ONLY the cleaned markdown. No commentary, no code fences.`
 
 // Cleanup sends a WORK.md file to the active provider for normalization and
 // returns the cleaned content. If feedback is non-empty it's appended so the
@@ -712,11 +733,16 @@ func stripProjectTag(text, project string) string {
 func projectNameFromContent(content string) string {
 	for _, line := range strings.SplitN(content, "\n", 5) {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "# WORK - ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "# WORK - "))
-		}
-		if strings.HasPrefix(line, "# WORK") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "# WORK"))
+		if strings.HasPrefix(line, "# ") {
+			title := strings.TrimSpace(strings.TrimPrefix(line, "# "))
+			if _, afterDash, ok := strings.Cut(title, " - "); ok {
+				name := afterDash
+				if beforePipe, _, hasPipe := strings.Cut(name, "|"); hasPipe {
+					name = beforePipe
+				}
+				return strings.TrimSpace(name)
+			}
+			return strings.TrimSpace(title)
 		}
 	}
 	return ""

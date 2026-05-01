@@ -2,12 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
 func (m model) renderAgentLaunch() string {
 	providers := providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 	contentHeight := m.agentContentHeight()
+	lineWidth := maxInt(20, m.width-4)
 
 	presetLabel := "(none)"
 	if m.launchPresetIdx < len(m.cockpitPresets) {
@@ -47,13 +50,23 @@ func (m model) renderAgentLaunch() string {
 				src = append(src, fmt.Sprintf("+%d more", len(m.launchSources)-i))
 				break
 			}
-			src = append(src, truncate(s.Text, 42))
+			src = append(src, strings.TrimSpace(s.Text))
 		}
-		lines = append(lines, dimStyle.Render("  sources: "+strings.Join(src, "  ·  ")), "")
+		lines = append(lines, wrapLines(dimStyle.Render("  sources: "+strings.Join(src, "  ·  ")), lineWidth)...)
+		lines = append(lines, "")
 	}
 	visibleRows := contentHeight - len(lines)
 	if visibleRows < 1 {
 		visibleRows = 1
+	}
+	rowsReserved := 3
+	if m.launchHasRepoStep() && m.launchFocus == 2 && m.launchRepoEditing {
+		rowsReserved += 3
+		m.launchRepoCustom.Width = maxInt(1, m.width-14)
+	}
+	listRows := visibleRows - rowsReserved
+	if listRows < 1 {
+		listRows = 1
 	}
 
 	switch {
@@ -65,13 +78,9 @@ func (m model) renderAgentLaunch() string {
 			if i == m.launchPresetIdx {
 				prefix = accentStyle.Render("▸ ")
 			}
-			role := ""
-			if p.Role != "" {
-				role = dimStyle.Render("  " + p.Role)
-			}
-			options = append(options, prefix+p.Name+role)
+			options = append(options, prefix+p.Name)
 		}
-		lines = append(lines, scrollWindow(options, maxInt(0, m.launchPresetIdx-visibleRows/2), visibleRows)...)
+		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchPresetIdx, listRows), listRows)...)
 	case m.launchFocus == 1:
 		lines = append(lines, panelHeaderStyle.Render("  Choose Engine"), dimStyle.Render("  concrete CLI / model to run"), "")
 		var options []string
@@ -84,25 +93,50 @@ func (m model) renderAgentLaunch() string {
 			}
 			options = append(options, prefix+name)
 		}
-		lines = append(lines, scrollWindow(options, maxInt(0, m.launchProviderIdx-visibleRows/2), visibleRows)...)
+		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchProviderIdx, listRows), listRows)...)
 	case m.launchHasRepoStep() && m.launchFocus == 2:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Repo"), dimStyle.Render("  where the agent should run"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Choose Repo"))
+		if m.launchRepoEditing {
+			lines = append(lines, "")
+		} else {
+			lines = append(lines, dimStyle.Render("  where the agent should run · enter on (custom path…) to type any path"), "")
+		}
 		repos := m.launchRepoChoices()
 		selected := indexOfLaunchRepo(repos, m.launchRepo)
 		var options []string
 		for i, repo := range repos {
 			prefix := "  "
-			label := shortPath(repo)
-			if label == "" {
-				label = "(current working directory)"
+			var label string
+			switch repo {
+			case repoSentinelCustom:
+				label = "(custom path…)"
+				if i == selected {
+					label = accentStyle.Bold(true).Render(label)
+				} else {
+					label = dimStyle.Render(label)
+				}
+			default:
+				label = launchRepoPathLabel(repo)
+				if label == "" {
+					label = "(current working directory)"
+				}
+				if i == selected {
+					label = accentStyle.Bold(true).Render(label)
+				}
 			}
 			if i == selected {
 				prefix = accentStyle.Render("▸ ")
-				label = accentStyle.Bold(true).Render(label)
 			}
 			options = append(options, prefix+label)
 		}
-		lines = append(lines, scrollWindow(options, maxInt(0, selected-visibleRows/2), visibleRows)...)
+		if m.launchRepoEditing {
+			lines = append(lines, dimStyle.Render("  type repo path · enter to set · esc to cancel"))
+			lines = append(lines, "  "+m.launchRepoCustom.View())
+			if listRows > 0 {
+				lines = append(lines, "")
+			}
+		}
+		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), selected, listRows), listRows)...)
 	case m.launchFocus == m.launchNoteFocus():
 		m.launchBrief.SetWidth(m.width - 6)
 		briefH := visibleRows - 2 // section title + subtitle
@@ -126,10 +160,27 @@ func (m model) renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel 
 
 	summary := dimStyle.Render("  role=") + textStyle.Render(presetLabel) +
 		dimStyle.Render("  engine=") + textStyle.Render(providerLabel) +
-		dimStyle.Render("  repo=") + textStyle.Render(shortPath(m.launchRepo)) +
+		dimStyle.Render("  repo=") + textStyle.Render(launchRepoPathLabel(m.launchRepo)) +
 		dimStyle.Render(fmt.Sprintf("  %d sources", len(m.launchSources)))
-	lines = append(lines, summary, "")
+	lines = append(lines, wrapLines(summary, maxInt(20, m.width-4))...)
+	lines = append(lines, "")
 	return lines
+}
+
+func launchRepoPathLabel(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || path == repoSentinelCustom {
+		return path
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if rel == "." {
+				return "~"
+			}
+			return filepath.Join("~", rel)
+		}
+	}
+	return path
 }
 
 func (m model) launchReviewVisibleRows() int {
@@ -161,7 +212,7 @@ func (m model) launchReviewVisibleRows() int {
 	if len(m.launchSources) > 0 {
 		queueLines += 2
 	}
-	visibleRows := m.agentContentHeight() - len(lines) - queueLines - 1
+	visibleRows := m.agentContentHeight() - len(lines) - queueLines
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
@@ -169,5 +220,5 @@ func (m model) launchReviewVisibleRows() int {
 }
 
 func (m *model) clampLaunchReviewOffset() {
-	m.launchReviewOffset = clampScrollOffset(m.launchReviewOffset, len(launchReviewLines(*m)), m.launchReviewVisibleRows())
+	m.launchReviewOffset = clampDecoratedScrollOffset(m.launchReviewOffset, len(launchReviewLines(*m)), m.launchReviewVisibleRows())
 }

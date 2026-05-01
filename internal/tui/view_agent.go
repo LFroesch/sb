@@ -241,8 +241,6 @@ func statusLabel(s cockpit.Status) string {
 		return "waiting for input"
 	case cockpit.StatusQueued:
 		return "queued"
-	case cockpit.StatusPaused:
-		return "paused"
 	case cockpit.StatusNeedsReview:
 		return "needs review"
 	case cockpit.StatusBlocked:
@@ -270,9 +268,6 @@ func providerChoices(presets []cockpit.LaunchPreset, presetIdx int, providers []
 }
 
 func describeExecutor(e cockpit.ExecutorSpec) string {
-	if e.Type == "" {
-		return "shell"
-	}
 	if e.Model != "" {
 		return e.Type + ":" + e.Model
 	}
@@ -298,15 +293,25 @@ func shortPath(p string) string {
 }
 
 func agentManageKindLabel(kind string) string {
-	if kind == "provider" {
+	switch kind {
+	case "provider":
 		return "Runtimes"
+	case "prompt":
+		return "Prompts"
+	case "hookbundle":
+		return "Hook bundles"
 	}
 	return "Templates"
 }
 
 func agentManageKindSubtitle(kind string) string {
-	if kind == "provider" {
+	switch kind {
+	case "provider":
 		return "advanced engine definitions: cli, runner, model, args"
+	case "prompt":
+		return "system prompt bodies referenced by presets"
+	case "hookbundle":
+		return "hook sets (prompt/pre/post + iteration) referenced by presets"
 	}
 	return "advanced run defaults: prompting, hooks, policies, suggested engine"
 }
@@ -333,14 +338,6 @@ func countVisibleShellHooks(hooks []cockpit.ShellHook) int {
 		}
 	}
 	return n
-}
-
-func presetPersonaLabel(p cockpit.LaunchPreset) string {
-	role := strings.TrimSpace(p.Role)
-	if role == "" || role == strings.TrimSpace(p.ID) || role == slugifyManagedID(p.Name) {
-		return ""
-	}
-	return role
 }
 
 func itemSummaryLines(kind string, name string, body []string) []string {
@@ -409,6 +406,9 @@ func launchReviewLines(m model) []string {
 		startMode = "wait for Foreman"
 	}
 	lines = append(lines, renderLaunchKV("start", textStyle.Render(startMode)))
+	if m.launchQueueOnly && !m.cockpitForeman.Enabled {
+		lines = append(lines, dimStyle.Render("              will sit in foreman pool until you press F on the list"))
+	}
 	if preset.ID != "" {
 		lines = append(lines,
 			renderLaunchKV("role", primaryStyle.Bold(true).Render(preset.Name)),
@@ -421,9 +421,6 @@ func launchReviewLines(m model) []string {
 				countVisibleShellHooks(preset.Hooks.PreShell),
 				countVisibleShellHooks(preset.Hooks.PostShell)))),
 		)
-		if persona := presetPersonaLabel(preset); persona != "" {
-			lines = append(lines, renderLaunchKV("persona", textStyle.Render(persona)))
-		}
 	}
 	if (provider.ID != "" || provider.Name != "") && describeExecutor(provider.Executor) != describeExecutor(preset.Executor) {
 		lines = append(lines,
@@ -436,7 +433,7 @@ func launchReviewLines(m model) []string {
 	lines = append(lines, "")
 	lines = append(lines, panelHeaderStyle.Render("  Source Preview"))
 	if len(m.launchSources) == 0 {
-		lines = append(lines, dimStyle.Render("  freeform launch"))
+		lines = append(lines, dimStyle.Render("  no task source"))
 	} else {
 		for i, src := range m.launchSources {
 			lines = append(lines, "  "+dimStyle.Render(fmt.Sprintf("%2d.", i+1))+" "+textStyle.Render(src.Project))
@@ -464,43 +461,91 @@ func renderManageFieldList(m model, width, visible int) []string {
 	if len(specs) == 0 {
 		return []string{dimStyle.Render("  no fields")}
 	}
+	groups := m.agentManageGroupOrder()
+	if len(groups) == 0 {
+		return []string{dimStyle.Render("  no fields")}
+	}
+	groupIdx := m.agentManageGroup
+	if groupIdx < 0 {
+		groupIdx = 0
+	}
+	if groupIdx >= len(groups) {
+		groupIdx = len(groups) - 1
+	}
+	groupName := groups[groupIdx]
+
 	var lines []string
-	currentGroup := ""
-	for i, spec := range specs {
-		if spec.Group != currentGroup {
-			currentGroup = spec.Group
-			if len(lines) > 0 {
-				lines = append(lines, "")
-			}
-			lines = append(lines, panelHeaderStyle.Render("  "+currentGroup))
-		}
+	header := fmt.Sprintf("  step %d/%d: %s", groupIdx+1, len(groups), groupName)
+	hint := dimStyle.Render("   tab ▸ next group · enter to edit/cycle · a to ")
+	if m.agentManageAdvanced {
+		hint += dimStyle.Render("hide advanced")
+	} else {
+		hint += dimStyle.Render("show advanced")
+	}
+	lines = append(lines, panelHeaderStyle.Render(header)+hint)
+	lines = append(lines, "")
+
+	indices := m.agentManageGroupFieldIndices()
+	if len(indices) == 0 {
+		lines = append(lines, dimStyle.Render("  no fields in this group"))
+		return scrollWindow(lines, m.agentManageDetailOffset, visible)
+	}
+	for _, i := range indices {
+		spec := specs[i]
 		prefix := "  "
 		if i == m.agentManageField && m.agentManageFocus == 1 {
 			prefix = accentStyle.Render("▸ ")
 		}
 		value := strings.ReplaceAll(m.agentManageFieldValue(m.agentManageCursor, i), "\n", "  ")
+		valueStyled := textStyle.Render(truncate(value, width-22))
 		if strings.TrimSpace(value) == "" {
-			value = dimStyle.Render("(empty)")
-		} else {
-			value = textStyle.Render(truncate(value, width-20))
+			valueStyled = dimStyle.Render("(empty)")
 		}
-		lines = append(lines, prefix+dimStyle.Render(spec.Label+": ")+value)
+		if opts := m.enumOptionsForFieldKey(spec.Key); len(opts) > 0 {
+			valueStyled = primaryStyle.Render(truncate(value, width-22))
+		}
+		lines = append(lines, prefix+dimStyle.Render(spec.Label+": ")+valueStyled)
+	}
+	if !m.agentManageAdvanced && groupName != "Hooks" && groupName != "Advanced" {
+		lines = append(lines, "", dimStyle.Render("  advanced fields hidden — press a to show"))
 	}
 	return scrollWindow(lines, m.agentManageDetailOffset, visible)
 }
 
 func renderManageSelectedSummary(m model, width int) []string {
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if m.agentManageCursor < 0 || m.agentManageCursor >= len(m.cockpitProviders) {
 			return itemSummaryLines("provider", "No provider", []string{dimStyle.Render("  create one with n")})
 		}
 		p := m.cockpitProviders[m.agentManageCursor]
 		return itemSummaryLines("provider", p.Name, []string{
 			renderManageKV("executor", textStyle.Render(describeExecutor(p.Executor))),
-			renderManageKV("runner", textStyle.Render(p.Executor.Runner)),
-			renderManageKV("command", textStyle.Render(p.Executor.Cmd)),
-			renderManageKV("args", textStyle.Render(fmt.Sprintf("%d arg lines", len(p.Executor.Args)))),
+			renderManageKV("model", textStyle.Render(p.Executor.Model)),
 			renderManageKV("id", textStyle.Render(p.ID)),
+		})
+	case "prompt":
+		if m.agentManageCursor < 0 || m.agentManageCursor >= len(m.cockpitPrompts) {
+			return itemSummaryLines("prompt", "No prompt", []string{dimStyle.Render("  create one with n")})
+		}
+		p := m.cockpitPrompts[m.agentManageCursor]
+		preview := strings.ReplaceAll(p.Body, "\n", " ")
+		return itemSummaryLines("prompt", p.Name, []string{
+			renderManageKV("body", textStyle.Render(truncate(preview, width-12))),
+			renderManageKV("length", textStyle.Render(fmt.Sprintf("%d chars", len(p.Body)))),
+			renderManageKV("id", textStyle.Render(p.ID)),
+		})
+	case "hookbundle":
+		if m.agentManageCursor < 0 || m.agentManageCursor >= len(m.cockpitHookBundles) {
+			return itemSummaryLines("hookbundle", "No hook bundle", []string{dimStyle.Render("  create one with n")})
+		}
+		h := m.cockpitHookBundles[m.agentManageCursor]
+		return itemSummaryLines("hookbundle", h.Name, []string{
+			renderManageKV("hooks", textStyle.Render(fmt.Sprintf("prompt %d · pre %d · post %d",
+				len(h.Prompt),
+				countVisibleShellHooks(h.PreShell),
+				countVisibleShellHooks(h.PostShell)))),
+			renderManageKV("id", textStyle.Render(h.ID)),
 		})
 	}
 	if m.agentManageCursor < 0 || m.agentManageCursor >= len(m.cockpitPresets) {
@@ -509,16 +554,15 @@ func renderManageSelectedSummary(m model, width int) []string {
 	p := m.cockpitPresets[m.agentManageCursor]
 	lines := []string{
 		renderManageKV("launch", textStyle.Render(describeLaunchMode(p.LaunchMode))),
+		renderManageKV("prompt", textStyle.Render(p.PromptID)),
+		renderManageKV("hooks ref", textStyle.Render(p.HookBundleID)),
+		renderManageKV("engine ref", textStyle.Render(p.EngineID)),
 		renderManageKV("suggested", textStyle.Render(describeExecutor(p.Executor))),
-		renderManageKV("iteration", textStyle.Render(p.Hooks.Iteration.Mode)),
 		renderManageKV("policy", textStyle.Render(p.Permissions)),
 		renderManageKV("hooks", textStyle.Render(fmt.Sprintf("prompt %d · pre %d · post %d",
 			len(p.Hooks.Prompt),
 			countVisibleShellHooks(p.Hooks.PreShell),
 			countVisibleShellHooks(p.Hooks.PostShell)))),
-	}
-	if persona := presetPersonaLabel(p); persona != "" {
-		lines = append(lines, renderManageKV("persona", textStyle.Render(persona)))
 	}
 	lines = append(lines, renderManageKV("id", textStyle.Render(p.ID)))
 	return itemSummaryLines("preset", p.Name, lines)
@@ -560,6 +604,9 @@ func (m model) agentPeekHeaderLines(j cockpit.Job, bodyWidth int) []string {
 		}
 		appendKV("foreman", textStyle.Render(mode))
 	}
+	if j.EligibilityReason != "" && j.EligibilityReason != "waiting for foreman" {
+		appendKV("deferred", warnStyle.Render(j.EligibilityReason))
+	}
 	appendKV("role", textStyle.Render(j.PresetID))
 	appendKV("engine", textStyle.Render(describeExecutor(j.Executor)))
 	if j.Runner == cockpit.RunnerTmux && stoppedLikeStatusLabel(j) == "closed" {
@@ -589,13 +636,9 @@ func (m model) agentPeekHeaderLines(j cockpit.Job, bodyWidth int) []string {
 			appendKV("brief", textStyle.Render(truncate(firstLine, bodyWidth-12)))
 		}
 	}
-	if reviewLines := m.renderReviewLines(j, bodyWidth); len(reviewLines) > 0 {
+	if reviewLines := m.renderPeekReviewSummary(j, bodyWidth); len(reviewLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, reviewLines...)
-	}
-	if actionLines := renderAgentActionHints(j, bodyWidth); len(actionLines) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, actionLines...)
 	}
 
 	lines = append(lines, "")
@@ -627,6 +670,63 @@ func (m model) renderAgentPeek(j cockpit.Job, width, height, offset int) string 
 	return strings.Join(capLines(lines, height), "\n")
 }
 
+func (m model) renderPeekReviewSummary(j cockpit.Job, width int) []string {
+	artifact, _ := cockpit.LoadReviewArtifact(j)
+	devlog := devlogPathForJob(j, m.projects)
+	previews, err := cockpit.PreviewSyncBack(j, devlog)
+
+	var lines []string
+	appendLine := func(text string, style lipgloss.Style) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		lines = append(lines, "  "+style.Render(truncate(text, maxInt(12, width-4))))
+	}
+
+	if len(j.Sources) > 0 && j.SyncBackState != cockpit.SyncBackApplied && err == nil {
+		if len(lines) == 0 {
+			lines = append(lines, "  "+panelHeaderStyle.Render("review"))
+		}
+		appendLine(fmt.Sprintf("sync-back: remove %d task lines · update %d file(s)", len(j.Sources), len(previews)), dimStyle)
+	}
+	if len(artifact.ChangedFiles) > 0 {
+		if len(lines) == 0 {
+			lines = append(lines, "  "+panelHeaderStyle.Render("review"))
+		}
+		appendLine(fmt.Sprintf("changed: %d file(s) · %s", len(artifact.ChangedFiles), artifact.ChangedFiles[0]), primaryStyle)
+	}
+	if len(artifact.PreexistingDirty) > 0 {
+		if len(lines) == 0 {
+			lines = append(lines, "  "+panelHeaderStyle.Render("review"))
+		}
+		appendLine(fmt.Sprintf("dirty: %d file(s) already modified", len(artifact.PreexistingDirty)), warnStyle)
+	}
+	if hookPreviews := postHookPreviewsForReview(j); len(hookPreviews) > 0 {
+		var failCount int
+		for _, preview := range hookPreviews {
+			if preview.Status == cockpit.HookPreviewWouldFail {
+				failCount++
+			}
+		}
+		if len(lines) == 0 {
+			lines = append(lines, "  "+panelHeaderStyle.Render("review"))
+		}
+		switch {
+		case failCount > 0:
+			appendLine(fmt.Sprintf("hooks: %d preview failure(s)", failCount), warnStyle)
+		default:
+			appendLine(fmt.Sprintf("hooks: %d preview ok", len(hookPreviews)), dimStyle)
+		}
+	}
+	if next := m.nextQueuedTaskSummary(j); next != "" {
+		if len(lines) == 0 {
+			lines = append(lines, "  "+panelHeaderStyle.Render("queue"))
+		}
+		appendLine("next: "+next, textStyle)
+	}
+	return lines
+}
+
 func (m model) agentDetailVisibleBody(j cockpit.Job) int {
 	prefixLines := 2
 	_, _, rightWidth, innerHeight := m.agentListLayout(prefixLines)
@@ -655,7 +755,7 @@ func (m *model) clampAgentDetailOffset() {
 		bodyWidth = 24
 	}
 	bodyLines := jobPeekBody(jobs[m.agentCursor], bodyWidth)
-	m.agentDetailOffset = clampScrollOffset(m.agentDetailOffset, len(bodyLines), m.agentDetailVisibleBody(jobs[m.agentCursor]))
+	m.agentDetailOffset = clampDecoratedScrollOffset(m.agentDetailOffset, len(bodyLines), m.agentDetailVisibleBody(jobs[m.agentCursor]))
 }
 
 func jobPeekBody(j cockpit.Job, width int) []string {
@@ -910,10 +1010,6 @@ func summarizeHookActivity(artifact cockpit.ReviewArtifact, width, maxLines int)
 	return out
 }
 
-func renderAgentActionHints(_ cockpit.Job, _ int) []string {
-	return nil
-}
-
 func (m model) nextQueuedTaskSummary(current cockpit.Job) string {
 	if current.CampaignID == "" || current.QueueTotal <= 1 {
 		return ""
@@ -938,7 +1034,10 @@ func jobOperatorStatus(j cockpit.Job) (string, lipgloss.Style) {
 		return "blocked", warnStyle
 	case cockpit.StatusFailed:
 		return "failed", warnStyle
-	case cockpit.StatusQueued, cockpit.StatusPaused:
+	case cockpit.StatusQueued:
+		if j.EligibilityReason != "" && j.EligibilityReason != "waiting for foreman" {
+			return "deferred", warnStyle
+		}
 		if j.WaitForForeman {
 			return "waiting for foreman", accentStyle
 		}
@@ -967,6 +1066,7 @@ func jobOperatorStatus(j cockpit.Job) (string, lipgloss.Style) {
 }
 
 func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
+	deferred := j.EligibilityReason != "" && j.EligibilityReason != "waiting for foreman"
 	if j.QueueTotal <= 1 {
 		switch j.Status {
 		case cockpit.StatusNeedsReview:
@@ -984,6 +1084,9 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 		case cockpit.StatusFailed, cockpit.StatusBlocked:
 			return "hold", warnStyle
 		default:
+			if deferred {
+				return "hold", warnStyle
+			}
 			if j.WaitForForeman {
 				return "foreman", accentStyle
 			}
@@ -994,6 +1097,9 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 	label := fmt.Sprintf("%d/%d", j.QueueIndex+1, j.QueueTotal)
 	switch j.Status {
 	case cockpit.StatusQueued:
+		if deferred {
+			return label + " hold", warnStyle
+		}
 		if j.WaitForForeman {
 			return label + " foreman", accentStyle
 		}
@@ -1212,25 +1318,7 @@ func lastJobPreview(j cockpit.Job) string {
 }
 
 func wrapText(s string, width int) string {
-	if width < 8 {
-		return truncate(s, width)
-	}
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return ""
-	}
-	var out []string
-	line := words[0]
-	for _, word := range words[1:] {
-		if lipgloss.Width(line)+1+lipgloss.Width(word) > width {
-			out = append(out, line)
-			line = word
-			continue
-		}
-		line += " " + word
-	}
-	out = append(out, line)
-	return strings.Join(out, "\n")
+	return wrapLine(strings.TrimSpace(s), width)
 }
 
 func renderChatConversation(turns []cockpit.Turn, liveAssistant string, width int, running bool) string {
@@ -1293,6 +1381,38 @@ func windowRange(total, cursor, size int) (int, int) {
 	return start, end
 }
 
+func scrollOffsetForCursor(total, cursor, visible int) int {
+	if total <= 0 || visible <= 0 {
+		return 0
+	}
+	size := visible
+	if total > visible {
+		size = visible - 2 // top/bottom indicators can each consume one row
+		if size < 1 {
+			size = 1
+		}
+	}
+	start, _ := windowRange(total, cursor, size)
+	return start
+}
+
+func clampDecoratedScrollOffset(offset, total, visible int) int {
+	if offset < 0 {
+		return 0
+	}
+	if visible <= 0 || total <= visible {
+		return 0
+	}
+	maxOffset := total - visible + 1
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		return maxOffset
+	}
+	return offset
+}
+
 func clampScrollOffset(offset, total, visible int) int {
 	if offset < 0 {
 		return 0
@@ -1311,7 +1431,7 @@ func scrollWindowFromBottom(lines []string, offset, visible int) []string {
 	if visible <= 0 || len(lines) <= visible {
 		return lines
 	}
-	offset = clampScrollOffset(offset, len(lines), visible)
+	offset = clampDecoratedScrollOffset(offset, len(lines), visible)
 	end := len(lines) - offset
 	if end > len(lines) {
 		end = len(lines)
@@ -1345,7 +1465,7 @@ func scrollWindow(lines []string, offset, visible int) []string {
 	if visible <= 0 || len(lines) <= visible {
 		return lines
 	}
-	offset = clampScrollOffset(offset, len(lines), visible)
+	offset = clampDecoratedScrollOffset(offset, len(lines), visible)
 	out := make([]string, 0, visible)
 	if offset > 0 {
 		out = append(out, dimStyle.Render(fmt.Sprintf("  ▲ %d more", offset)))
@@ -1378,7 +1498,7 @@ func jobOrderRank(j cockpit.Job) int {
 		return 1
 	case "needs review":
 		return 2
-	case "queued":
+	case "queued", "waiting for foreman", "deferred":
 		return 3
 	case "blocked", "failed", "stopped", "closed":
 		return 4
@@ -1442,10 +1562,14 @@ func renderAgentJobsHeader(jobs []cockpit.Job, active string, foreman cockpit.Fo
 		foremanLabel = "ON"
 		foremanStyle = primaryStyle
 	}
+	pool := foremanPoolCounts(jobs, foreman)
 	filterLine := "  " + dimStyle.Render("filter ") +
 		accentStyle.Bold(true).Render(strings.ToUpper(active[:1])+active[1:]) +
 		dimStyle.Render("  ·  foreman ") + foremanStyle.Bold(true).Render(foremanLabel)
-	lines := []string{truncate(filterLine, width)}
+	if pool.hasAny() {
+		filterLine += dimStyle.Render("  ·  pool ") + pool.render()
+	}
+	lines := wrapLines(filterLine, width)
 
 	countLine := "  " + dimStyle.Render("counts ")
 	countOrder := []string{"all", "live", "running", "attention", "foreman", "done"}
@@ -1468,7 +1592,7 @@ func renderAgentJobsHeader(jobs []cockpit.Job, active string, foreman cockpit.Fo
 		}
 		countParts = append(countParts, labelStyle.Render(label)+" "+countStyle.Render(fmt.Sprintf("%d", n)))
 	}
-	lines = append(lines, truncate(countLine+strings.Join(countParts, dimStyle.Render(" · ")), width))
+	lines = append(lines, wrapLines(countLine+strings.Join(countParts, dimStyle.Render(" · ")), width)...)
 
 	if len(usage) == 0 {
 		return append(lines, renderProviderLimitsLines(width)...)
@@ -1491,10 +1615,67 @@ func renderAgentJobsHeader(jobs []cockpit.Job, active string, foreman cockpit.Fo
 	for _, b := range buckets {
 		parts = append(parts, textStyle.Render(b.label)+dimStyle.Render(fmt.Sprintf("×%d", b.n)))
 	}
-	lines = append(lines, truncate("  "+dimStyle.Render("sessions ")+strings.Join(parts, dimStyle.Render(" · ")), width))
+	lines = append(lines, wrapLines("  "+dimStyle.Render("sessions ")+strings.Join(parts, dimStyle.Render(" · ")), width)...)
 
 	lines = append(lines, renderProviderLimitsLines(width)...)
 	return lines
+}
+
+type foremanPool struct {
+	parked       int
+	eligible     int
+	deferred     int
+	active       int
+	maxActive    int
+	foremanState cockpit.ForemanState
+}
+
+func (p foremanPool) hasAny() bool {
+	return p.parked > 0 || p.deferred > 0 || p.active > 0
+}
+
+func (p foremanPool) render() string {
+	parts := []string{
+		textStyle.Render(fmt.Sprintf("%d parked", p.parked)),
+		textStyle.Render(fmt.Sprintf("%d eligible", p.eligible)),
+	}
+	deferredStyle := textStyle
+	if p.deferred > 0 {
+		deferredStyle = warnStyle
+	}
+	parts = append(parts, deferredStyle.Render(fmt.Sprintf("%d deferred", p.deferred)))
+	activeStyle := textStyle
+	if p.maxActive > 0 && p.active >= p.maxActive {
+		activeStyle = warnStyle
+	}
+	parts = append(parts, activeStyle.Render(fmt.Sprintf("%d/%d active", p.active, p.maxActive)))
+	return strings.Join(parts, dimStyle.Render(" · "))
+}
+
+func foremanPoolCounts(jobs []cockpit.Job, state cockpit.ForemanState) foremanPool {
+	max := state.MaxConcurrent
+	if max <= 0 {
+		max = cockpit.ForemanMaxConcurrentDefault
+	}
+	pool := foremanPool{foremanState: state, maxActive: max}
+	for _, j := range jobs {
+		if j.WaitForForeman && j.Status == cockpit.StatusQueued {
+			pool.parked++
+			if state.Enabled {
+				pool.eligible++
+			}
+		}
+		if j.EligibilityReason != "" && j.EligibilityReason != "waiting for foreman" && j.Status == cockpit.StatusQueued {
+			pool.deferred++
+		}
+		if j.ForemanManaged {
+			switch j.Status {
+			case cockpit.StatusRunning, cockpit.StatusIdle:
+				pool.active++
+			}
+		}
+	}
+	return pool
 }
 
 // renderProviderLimitsLines emits one row per provider (claude, codex)
@@ -1549,7 +1730,7 @@ func renderProviderLimitsRow(u statusbar.Usage, width int) string {
 		return ""
 	}
 	source := activeTabStyle.Width(labelW).Render(u.Source)
-	return truncate("  "+source+" "+strings.Join(segs, dimStyle.Render("  ·  ")), width)
+	return wrapLine("  "+source+" "+strings.Join(segs, dimStyle.Render("  ·  ")), width)
 }
 
 func limitPctStyle(pct int) lipgloss.Style {

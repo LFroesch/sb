@@ -150,7 +150,7 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 	_, _ = runTmux(
 		"bind-key", "-T", "root", "C-c",
 		"if-shell", "-F", dashboardWindowCondition(),
-		fmt.Sprintf(`if-shell -F "#{>:#{session_attached},1}" "detach-client" "send-keys C-c"`),
+		`if-shell -F "#{>:#{session_attached},1}" "detach-client" "send-keys C-c"`,
 		"select-window -t "+cockpitDashboardTarget,
 	)
 

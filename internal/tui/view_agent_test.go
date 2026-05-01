@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/LFroesch/sb/internal/cockpit"
 	"github.com/LFroesch/sb/internal/config"
+	"github.com/LFroesch/sb/internal/llm"
+	"github.com/LFroesch/sb/internal/workmd"
 	xansi "github.com/charmbracelet/x/ansi"
 )
 
@@ -83,6 +86,14 @@ func renderedLineCount(s string) int {
 		return 0
 	}
 	return len(strings.Split(strings.TrimRight(xansi.Strip(s), "\n"), "\n"))
+}
+
+func assertViewFitsHeight(t *testing.T, m model) {
+	t.Helper()
+	out := m.View()
+	if got := renderedLineCount(out); got > m.height {
+		t.Fatalf("view rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
+	}
 }
 
 func TestFormatTurnDurationDropsSecondsAfterMinute(t *testing.T) {
@@ -182,6 +193,39 @@ func TestOrderAgentJobsPrioritizesWorkingThenWaiting(t *testing.T) {
 	}
 }
 
+func TestStandardAgentFiltersKeepForemanResultsVisible(t *testing.T) {
+	now := time.Now()
+	client := stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{
+		"review": {
+			ID:             "review",
+			Status:         cockpit.StatusNeedsReview,
+			ForemanManaged: true,
+			CreatedAt:      now.Add(-2 * time.Minute),
+		},
+		"done": {
+			ID:             "done",
+			Status:         cockpit.StatusCompleted,
+			ForemanManaged: true,
+			CreatedAt:      now.Add(-1 * time.Minute),
+		},
+	}}
+	m := newModel(nil)
+	m.cockpitClient = client
+	m.cockpitJobs = client.ListJobs()
+
+	m.agentFilter = "attention"
+	attention := m.filteredAgentJobs()
+	if len(attention) != 1 || attention[0].ID != "review" {
+		t.Fatalf("attention filter = %+v, want needs-review foreman job", attention)
+	}
+
+	m.agentFilter = "done"
+	done := m.filteredAgentJobs()
+	if len(done) != 1 || done[0].ID != "done" {
+		t.Fatalf("done filter = %+v, want completed foreman job", done)
+	}
+}
+
 func TestRenderTmuxLogConversationSanitizesRawPaneBytes(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "tmux.log")
@@ -252,14 +296,11 @@ func TestRenderAgentPeekShowsSyncBackReviewPreview(t *testing.T) {
 		},
 		Repo: dir,
 	}, 90, 24, 0)
-	if !strings.Contains(out, "accept will remove 1 task lines") {
+	if !strings.Contains(out, "sync-back: remove 1 task lines") {
 		t.Fatalf("renderAgentPeek missing review summary: %q", out)
 	}
-	if !strings.Contains(out, "- delete me") {
-		t.Fatalf("renderAgentPeek missing task removal preview: %q", out)
-	}
-	if !strings.Contains(out, "DEVLOG.md") {
-		t.Fatalf("renderAgentPeek missing devlog preview target: %q", out)
+	if !strings.Contains(out, "update 2 file(s)") {
+		t.Fatalf("renderAgentPeek missing sync-back target count: %q", out)
 	}
 }
 
@@ -281,6 +322,52 @@ func TestJobOperatorStatusShowsWaitingForForeman(t *testing.T) {
 	})
 	if got != "waiting for foreman" {
 		t.Fatalf("jobOperatorStatus(waiting foreman) = %q, want waiting for foreman", got)
+	}
+}
+
+func TestJobOperatorStatusShowsDeferredWhenEligibilityReasonSet(t *testing.T) {
+	got, _ := jobOperatorStatus(cockpit.Job{
+		Status:            cockpit.StatusQueued,
+		WaitForForeman:    true,
+		ForemanManaged:    true,
+		EligibilityReason: "claude near 5h limit (95%)",
+	})
+	if got != "deferred" {
+		t.Fatalf("jobOperatorStatus(deferred) = %q, want deferred", got)
+	}
+}
+
+func TestRenderAgentJobsHeaderShowsForemanPool(t *testing.T) {
+	jobs := []cockpit.Job{
+		{Status: cockpit.StatusQueued, WaitForForeman: true, ForemanManaged: true},
+		{Status: cockpit.StatusQueued, WaitForForeman: true, ForemanManaged: true},
+		{Status: cockpit.StatusRunning, ForemanManaged: true},
+		{Status: cockpit.StatusQueued, WaitForForeman: true, ForemanManaged: true, EligibilityReason: "foreman concurrency cap (3/3)"},
+	}
+	out := strings.Join(renderAgentJobsHeader(jobs, "all", cockpit.ForemanState{Enabled: true}, 200), "\n")
+	for _, want := range []string{"3 parked", "3 eligible", "1 deferred", "1/3 active"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("renderAgentJobsHeader missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderAgentPeekShowsDeferredReason(t *testing.T) {
+	m := newModel(nil)
+	out := m.renderAgentPeek(cockpit.Job{
+		ID:                "job-deferred",
+		PresetID:          "claude",
+		Status:            cockpit.StatusQueued,
+		WaitForForeman:    true,
+		ForemanManaged:    true,
+		EligibilityReason: "claude near 5h limit (95%)",
+		CreatedAt:         time.Now().Add(-2 * time.Minute),
+	}, 90, 24, 0)
+	if !strings.Contains(out, "deferred") {
+		t.Fatalf("renderAgentPeek missing deferred field: %q", out)
+	}
+	if !strings.Contains(out, "claude near 5h limit (95%)") {
+		t.Fatalf("renderAgentPeek missing reason text: %q", out)
 	}
 }
 
@@ -316,9 +403,6 @@ func TestRenderAgentPeekShowsQueueControlsAndNextUp(t *testing.T) {
 	m := newModel(nil)
 	m.cockpitJobs = []cockpit.Job{next, current}
 	out := m.renderAgentPeek(current, 90, 28, 0)
-	if !strings.Contains(out, "queue controls") {
-		t.Fatalf("renderAgentPeek missing queue controls: %q", out)
-	}
 	if !strings.Contains(out, "2/2 second item") {
 		t.Fatalf("renderAgentPeek missing next queued item: %q", out)
 	}
@@ -333,7 +417,6 @@ func TestRenderAgentManageUsesLibraryLanguage(t *testing.T) {
 	m.cockpitPresets = []cockpit.LaunchPreset{{
 		ID:   "senior-dev",
 		Name: "Senior dev",
-		Role: "senior-dev",
 		Executor: cockpit.ExecutorSpec{
 			Type: "codex",
 		},
@@ -365,7 +448,6 @@ func TestRenderAgentLaunchShowsReviewComposer(t *testing.T) {
 	m.cockpitPresets = []cockpit.LaunchPreset{{
 		ID:          "senior-dev",
 		Name:        "Senior dev",
-		Role:        "senior-dev",
 		Executor:    cockpit.ExecutorSpec{Type: "codex"},
 		Hooks:       cockpit.HookSpec{Iteration: cockpit.IterationPolicy{Mode: cockpit.IterationOneShot}},
 		Permissions: "scoped-write",
@@ -407,6 +489,74 @@ func TestRenderAgentLaunchShowsRepoTabForFreeform(t *testing.T) {
 	out := m.renderAgentLaunch()
 	if !strings.Contains(out, "Repo") {
 		t.Fatalf("renderAgentLaunch missing Repo tab for freeform run: %q", out)
+	}
+}
+
+func TestRenderAgentLaunchShowsLongerRepoPaths(t *testing.T) {
+	m := newModel(nil)
+	m.width = 120
+	m.height = 40
+	m.mode = modeAgentLaunch
+	m.launchRepo = "/tmp/demo/projects/alpha/with/a/very/long/path/name"
+	m.launchFocus = 2
+	m.projects = []workmd.Project{
+		{Dir: "/tmp/demo/projects/alpha/with/a/very/long/path/name"},
+		{Dir: "/tmp/demo/projects/beta"},
+	}
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if !strings.Contains(out, "/tmp/demo/projects/alpha/with/a/very/long/path/name") {
+		t.Fatalf("renderAgentLaunch still clipped repo path too aggressively: %q", out)
+	}
+}
+
+func TestRenderAgentLaunchKeepsCustomRepoEditorVisibleOnShorterTerminals(t *testing.T) {
+	m := newModel(nil)
+	m.width = 34
+	m.height = 18
+	m.mode = modeAgentLaunch
+	m.launchFocus = 2
+	m.launchRepo = repoSentinelCustom
+	m.launchRepoEditing = true
+	m.launchRepoCustom.SetValue("/tmp/demo/custom/repo")
+	m.projects = []workmd.Project{
+		{Dir: "/tmp/demo/projects/alpha"},
+		{Dir: "/tmp/demo/projects/beta"},
+		{Dir: "/tmp/demo/projects/gamma"},
+		{Dir: "/tmp/demo/projects/delta"},
+	}
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if !strings.Contains(out, "type repo path") {
+		t.Fatalf("renderAgentLaunch hid the custom repo hint on a shorter terminal: %q", out)
+	}
+	if !strings.Contains(out, "/tmp/demo/custom/repo") {
+		t.Fatalf("renderAgentLaunch hid the custom repo input value on a shorter terminal: %q", out)
+	}
+	if got := renderedLineCount(out); got > m.height {
+		t.Fatalf("renderAgentLaunch overflowed terminal height: got %d lines in %d-line terminal:\n%s", got, m.height, out)
+	}
+}
+
+func TestRenderAgentLaunchUsesAvailableWidthForSourceSummary(t *testing.T) {
+	m := newModel(nil)
+	m.width = 160
+	m.height = 30
+	m.mode = modeAgentLaunch
+	m.launchRepo = "/tmp/demo"
+	m.launchSources = []cockpit.SourceTask{{
+		Text: "this source summary should use the available terminal width instead of cutting off after forty two columns",
+	}}
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := m.renderAgentLaunch()
+	if !strings.Contains(out, "instead of cutting off after forty two columns") {
+		t.Fatalf("renderAgentLaunch still truncated source summary too early: %q", out)
 	}
 }
 
@@ -529,6 +679,59 @@ func TestAgentManageViewFitsShortTerminal(t *testing.T) {
 	}
 }
 
+func TestAgentManageEditingViewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentManage
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.agentManageKind = "preset"
+	m.cockpitPresets = []cockpit.LaunchPreset{{
+		ID:   "senior-dev",
+		Name: "Senior dev",
+	}}
+	m.agentManageEditing = true
+	m.agentManageField = 3
+	m.agentManageEditor.SetWidth(40)
+	m.agentManageEditor.SetHeight(8)
+	m.agentManageEditor.SetValue(strings.Repeat("prompt line\n", 20))
+	assertViewFitsHeight(t, m)
+}
+
+func TestAgentPickerKeepsCursorVisibleOnShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentPicker
+	m.width = 80
+	m.height = 12
+	for i := 0; i < 20; i++ {
+		m.projects = append(m.projects, workmd.Project{Name: "project-" + string(rune('a'+i)), Path: "/tmp/demo"})
+	}
+	m.agentCursor = 15
+
+	out := m.renderAgentPicker()
+	if !strings.Contains(out, "▸ project-") {
+		t.Fatalf("renderAgentPicker did not render a visible cursor row: %q", out)
+	}
+}
+
+func TestAgentLaunchKeepsSelectedRoleVisibleOnShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentLaunch
+	m.width = 80
+	m.height = 12
+	m.launchFocus = 0
+	for i := 0; i < 20; i++ {
+		m.cockpitPresets = append(m.cockpitPresets, cockpit.LaunchPreset{ID: "id", Name: fmt.Sprintf("Role %d", i)})
+	}
+	m.launchPresetIdx = 15
+
+	out := m.renderAgentLaunch()
+	if !strings.Contains(out, "Role 15") {
+		t.Fatalf("renderAgentLaunch did not keep selected role visible: %q", out)
+	}
+}
+
 func TestAgentListViewFitsShortTerminal(t *testing.T) {
 	m := newModel(nil)
 	m.page = pageAgent
@@ -580,4 +783,173 @@ func TestAgentAttachedViewFitsShortTerminal(t *testing.T) {
 	if got := renderedLineCount(out); got > m.height {
 		t.Fatalf("agent attached rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
 	}
+}
+
+func TestDashboardViewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDashboard
+	m.mode = modeNormal
+	m.width = 80
+	m.height = 12
+	m.loading = false
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{
+		Name:         "demo",
+		Path:         "/tmp/demo/WORK.md",
+		Content:      "# WORK - demo\n\n- one\n- two\n- three\n- four\n",
+		CurrentCount: 4,
+	}}
+	m.viewport.SetContent("preview")
+	assertViewFitsHeight(t, m)
+}
+
+func TestDashboardPlanResultFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDashboard
+	m.mode = modePlanResult
+	m.width = 80
+	m.height = 12
+	m.loading = false
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{Name: "demo", Path: "/tmp/demo/WORK.md", Content: "# WORK - demo"}}
+	m.viewport.SetContent(strings.Repeat("plan line\n", 30))
+	assertViewFitsHeight(t, m)
+}
+
+func TestProjectViewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageProject
+	m.mode = modeNormal
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{Name: "demo", Path: "/tmp/demo/WORK.md", Content: "# WORK - demo\n\n- one\n- two"}}
+	m.selected = 0
+	m.viewport.SetContent(strings.Repeat("project line\n", 20))
+	assertViewFitsHeight(t, m)
+}
+
+func TestProjectEditViewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageProject
+	m.mode = modeEdit
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.editArea.SetWidth(m.width - 4)
+	m.editArea.SetHeight(m.contentViewportHeight(2))
+	m.editArea.SetValue(strings.Repeat("edit line\n", 20))
+	assertViewFitsHeight(t, m)
+}
+
+func TestCleanupReviewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageCleanup
+	m.mode = modeNormal
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{Name: "demo"}}
+	m.selected = 0
+	m.viewport.SetContent(strings.Repeat("diff line\n", 30))
+	assertViewFitsHeight(t, m)
+}
+
+func TestCleanupFeedbackFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageCleanup
+	m.mode = modeCleanupFeedback
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{Name: "demo"}}
+	m.selected = 0
+	m.chainFeedback.SetWidth(m.width - 4)
+	m.chainFeedback.SetHeight(3)
+	m.chainFeedback.SetValue("fix this")
+	m.viewport.SetContent(strings.Repeat("diff line\n", 30))
+	assertViewFitsHeight(t, m)
+}
+
+func TestChainCleanupReviewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageCleanup
+	m.mode = modeChainCleanupReview
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{Name: "demo"}}
+	m.chainQueue = []int{0}
+	m.viewport.SetContent(strings.Repeat("diff line\n", 30))
+	assertViewFitsHeight(t, m)
+}
+
+func TestChainCleanupFeedbackFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageCleanup
+	m.mode = modeChainCleanupFeedback
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.projects = []workmd.Project{{Name: "demo"}}
+	m.chainQueue = []int{0}
+	m.chainFeedback.SetWidth(m.width - 4)
+	m.chainFeedback.SetHeight(3)
+	m.chainFeedback.SetValue("fix this")
+	m.viewport.SetContent(strings.Repeat("diff line\n", 30))
+	assertViewFitsHeight(t, m)
+}
+
+func TestDumpInputFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDump
+	m.mode = modeDumpInput
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.dumpArea.SetWidth(m.width - 6)
+	m.dumpArea.SetHeight(m.contentViewportHeight(2))
+	m.dumpArea.SetValue(strings.Repeat("dump line\n", 20))
+	assertViewFitsHeight(t, m)
+}
+
+func TestDumpClarifyFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDump
+	m.mode = modeDumpClarify
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.dumpItems = []llm.RouteItem{{Text: "clarify this"}}
+	m.dumpClarifyArea.SetWidth(m.width - 6)
+	m.dumpClarifyArea.SetHeight(3)
+	m.dumpClarifyArea.SetValue("demo")
+	assertViewFitsHeight(t, m)
+}
+
+func TestDumpSummaryFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDump
+	m.mode = modeDumpSummary
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.dumpAccepted = 3
+	m.dumpSkipped = 1
+	m.dumpItems = []llm.RouteItem{
+		{Text: "one", Project: "demo", Section: "Current"},
+		{Text: "two", Project: "demo", Section: "Current"},
+		{Text: "three", Project: "demo", Section: "Current"},
+	}
+	m.dumpSkippedList = []llm.RouteItem{{Text: "skip", Project: "demo", Section: "Backlog"}}
+	assertViewFitsHeight(t, m)
+}
+
+func TestHelpViewFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeHelp
+	m.width = 80
+	m.height = 12
+	m.cfg = &config.Config{}
+	assertViewFitsHeight(t, m)
 }

@@ -1,6 +1,23 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestDirReturnsSBConfigDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir(): %v", err)
+	}
+	want := filepath.Join(home, ".config", "sb")
+	if dir != want {
+		t.Fatalf("dir = %q, want %q", dir, want)
+	}
+}
 
 func TestActiveProviderLegacyOllamaCompat(t *testing.T) {
 	t.Setenv("SB_PROVIDER", "")

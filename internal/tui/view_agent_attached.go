@@ -108,7 +108,7 @@ func (m model) renderAgentAttached() string {
 	statusText, statusStyle := jobOperatorStatus(j)
 	header := titleStyle.Render(titleLabel) + j.PresetID + "  " + statusStyle.Render(statusText)
 	header += dimStyle.Render("  " + describeExecutor(j.Executor))
-	lines = append(lines, truncate(header, lineWidth))
+	lines = append(lines, wrapLines(header, lineWidth)...)
 
 	meta := []string{dimStyle.Render("  " + string(j.ID)), dimStyle.Render("· " + describeRunner(j.Runner))}
 	if age := time.Since(j.CreatedAt).Round(time.Second); age > 0 {
@@ -123,14 +123,14 @@ func (m model) renderAgentAttached() string {
 	if isTmux {
 		meta = append(meta, dimStyle.Render("· "+tmuxWindowState(j)))
 	}
-	lines = append(lines, truncate(strings.Join(meta, " "), lineWidth))
+	lines = append(lines, wrapLines(strings.Join(meta, " "), lineWidth)...)
 
 	if len(j.Sources) > 0 {
 		preview := fmt.Sprintf("  sources: %s:%d", shortPath(j.Sources[0].File), j.Sources[0].Line)
 		if len(j.Sources) > 1 {
 			preview += fmt.Sprintf(" (+%d more)", len(j.Sources)-1)
 		}
-		lines = append(lines, truncate(dimStyle.Render(preview), lineWidth))
+		lines = append(lines, wrapLines(dimStyle.Render(preview), lineWidth)...)
 	}
 
 	turnCount := countUserVisibleTurns(j)
@@ -144,9 +144,9 @@ func (m model) renderAgentAttached() string {
 		lines = append(lines, "")
 	}
 	if m.attachedFocus == 0 {
-		lines = append(lines, truncate(accentStyle.Render("  ▸ "+sectionLabel)+dimStyle.Render("  "+sectionMeta), lineWidth))
+		lines = append(lines, wrapLines(accentStyle.Render("  ▸ "+sectionLabel)+dimStyle.Render("  "+sectionMeta), lineWidth)...)
 	} else {
-		lines = append(lines, truncate(dimStyle.Render(fmt.Sprintf("  %s · %d turns", sectionLabel, turnCount))+"  "+accentStyle.Render("▸ input"), lineWidth))
+		lines = append(lines, wrapLines(dimStyle.Render(fmt.Sprintf("  %s · %d turns", sectionLabel, turnCount))+"  "+accentStyle.Render("▸ input"), lineWidth)...)
 	}
 
 	innerHeight := panelHeight

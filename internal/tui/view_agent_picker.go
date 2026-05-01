@@ -16,33 +16,25 @@ func (m model) renderAgentPicker() string {
 		if visibleRows < 1 {
 			visibleRows = 1
 		}
-		total := len(m.projects)
-		startIdx := 0
-		if m.agentCursor >= visibleRows {
-			startIdx = m.agentCursor - visibleRows + 1
+		var options []string
+		// Row 0: freeform sentinel — start a run without picking task lines.
+		sentinelPrefix := "    "
+		sentinelLabel := primaryStyle.Render("★ New run without task source")
+		if m.agentCursor == 0 {
+			sentinelPrefix = accentStyle.Render("  ▸ ")
+			sentinelLabel = primaryStyle.Bold(true).Render("★ New run without task source")
 		}
-		endIdx := startIdx + visibleRows
-		if endIdx > total {
-			endIdx = total
-		}
-		if startIdx > 0 {
-			lines = append(lines, dimStyle.Render(fmt.Sprintf("  ▲ %d more", startIdx)))
-		} else {
-			lines = append(lines, "")
-		}
-		for i := startIdx; i < endIdx; i++ {
+		options = append(options, sentinelPrefix+sentinelLabel+dimStyle.Render("  type a brief, no task lines attached"))
+		for i := range m.projects {
 			p := m.projects[i]
 			prefix := "    "
-			if i == m.agentCursor {
+			if i+1 == m.agentCursor {
 				prefix = accentStyle.Render("  ▸ ")
 			}
-			lines = append(lines, prefix+textStyle.Render(p.Name)+dimStyle.Render("  "+shortPath(p.Path)))
+			options = append(options, prefix+textStyle.Render(p.Name)+dimStyle.Render("  "+shortPath(p.Path)))
 		}
-		if endIdx < total {
-			lines = append(lines, dimStyle.Render(fmt.Sprintf("  ▼ %d more", total-endIdx)))
-		} else {
-			lines = append(lines, "")
-		}
+		offset := scrollOffsetForCursor(len(options), m.agentCursor, visibleRows)
+		lines = append(lines, scrollWindow(options, offset, visibleRows)...)
 		return strings.Join(capLines(lines, contentHeight), "\n")
 	}
 
@@ -55,21 +47,8 @@ func (m model) renderAgentPicker() string {
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
-	total := len(m.pickerItems)
-	startIdx := 0
-	if m.agentCursor >= visibleRows {
-		startIdx = m.agentCursor - visibleRows + 1
-	}
-	endIdx := startIdx + visibleRows
-	if endIdx > total {
-		endIdx = total
-	}
-	if startIdx > 0 {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  ▲ %d more", startIdx)))
-	} else {
-		lines = append(lines, "")
-	}
-	for i := startIdx; i < endIdx; i++ {
+	var options []string
+	for i := range m.pickerItems {
 		it := m.pickerItems[i]
 		checkbox := "[ ]"
 		if m.pickerSelected[i] {
@@ -80,13 +59,10 @@ func (m model) renderAgentPicker() string {
 			prefix = accentStyle.Render("  ▸ ")
 		}
 		indent := strings.Repeat(" ", it.Indent)
-		lines = append(lines, prefix+checkbox+" "+dimStyle.Render(indent)+textStyle.Render(it.Text))
+		options = append(options, prefix+checkbox+" "+dimStyle.Render(indent)+textStyle.Render(it.Text))
 	}
-	if endIdx < total {
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  ▼ %d more", total-endIdx)))
-	} else {
-		lines = append(lines, "")
-	}
+	offset := scrollOffsetForCursor(len(options), m.agentCursor, visibleRows)
+	lines = append(lines, scrollWindow(options, offset, visibleRows)...)
 	selected := countSelected(m.pickerSelected)
 	lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d selected", selected)))
 	return strings.Join(capLines(lines, contentHeight), "\n")

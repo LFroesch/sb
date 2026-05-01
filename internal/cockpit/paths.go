@@ -19,6 +19,8 @@ type Paths struct {
 	LogFile      string // ~/.local/share/sb/logs/foreman.log
 	PresetsDir   string // ~/.config/sb/presets
 	ProvidersDir string // ~/.config/sb/providers
+	PromptsDir   string // ~/.config/sb/prompts
+	HooksDir     string // ~/.config/sb/hooks
 }
 
 // DefaultPaths returns the standard layout. Directories are *not* created
@@ -41,12 +43,14 @@ func DefaultPaths() Paths {
 		LogFile:      filepath.Join(sbData, "logs", "foreman.log"),
 		PresetsDir:   filepath.Join(sbConfig, "presets"),
 		ProvidersDir: filepath.Join(sbConfig, "providers"),
+		PromptsDir:   filepath.Join(sbConfig, "prompts"),
+		HooksDir:     filepath.Join(sbConfig, "hooks"),
 	}
 }
 
 // EnsureDirs makes sure every referenced directory exists.
 func (p Paths) EnsureDirs() error {
-	for _, d := range []string{p.StateDir, p.JobsDir, p.CampaignDir, p.PresetsDir, p.ProvidersDir, filepath.Dir(p.LogFile)} {
+	for _, d := range []string{p.StateDir, p.JobsDir, p.CampaignDir, p.PresetsDir, p.ProvidersDir, p.PromptsDir, p.HooksDir, filepath.Dir(p.LogFile)} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}

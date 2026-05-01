@@ -105,11 +105,11 @@ func agentJobMatchesFilter(j cockpit.Job, filter string) bool {
 	status, _ := jobOperatorStatus(j)
 	switch filter {
 	case "live":
-		return status == "working" || status == "waiting for input" || status == "queued" || status == "waiting for foreman"
+		return status == "working" || status == "waiting for input" || status == "queued" || status == "waiting for foreman" || status == "deferred"
 	case "running":
 		return status == "working"
 	case "attention":
-		return status == "needs review" || status == "blocked" || status == "failed" || status == "stopped" || status == "closed"
+		return status == "needs review" || status == "blocked" || status == "failed" || status == "stopped" || status == "closed" || status == "deferred"
 	case "foreman":
 		return j.ForemanManaged
 	case "done":
@@ -227,7 +227,8 @@ func (m model) handleAgentMouseWheel(delta int) tea.Model {
 		m.clampAgentManageOffsets()
 	case modeAgentPicker:
 		if m.pickerFile == "" {
-			if delta > 0 && m.agentCursor < len(m.projects)-1 {
+			// Step 1 has the freeform sentinel + N projects.
+			if delta > 0 && m.agentCursor < len(m.projects) {
 				m.agentCursor++
 			}
 			if delta < 0 && m.agentCursor > 0 {
@@ -347,32 +348,6 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.agentDetailOffset += 5
 		m.clampAgentDetailOffset()
 		return m, nil
-	case "p":
-		path, err := m.createPresetTemplate()
-		if err != nil {
-			m.statusMsg = "new preset: " + err.Error()
-			m.statusExpiry = time.Now().Add(3 * time.Second)
-			return m, nil
-		}
-		m.statusMsg = "opened new preset template"
-		m.statusExpiry = time.Now().Add(3 * time.Second)
-		m.reloadCockpitCatalogs()
-		return m, openInEditor(path)
-	case "P":
-		return m, openInEditor(m.cockpitPaths.PresetsDir)
-	case "v":
-		path, err := m.createProviderTemplate()
-		if err != nil {
-			m.statusMsg = "new provider: " + err.Error()
-			m.statusExpiry = time.Now().Add(3 * time.Second)
-			return m, nil
-		}
-		m.statusMsg = "opened new provider template"
-		m.statusExpiry = time.Now().Add(3 * time.Second)
-		m.reloadCockpitCatalogs()
-		return m, openInEditor(path)
-	case "V":
-		return m, openInEditor(m.cockpitPaths.ProvidersDir)
 	case "x":
 		if m.cockpitDetachQuit {
 			return m, m.quitCmd()
@@ -393,16 +368,6 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resetAgentLaunch()
 		m.mode = modeAgentPicker
 		return m, nil
-	case "N":
-		// N = freeform chat: skip the task picker and jump straight to
-		// launch with no Sources. The brief textarea carries the prompt.
-		m.resetAgentPicker()
-		m.resetAgentLaunch()
-		m.launchRepo = m.defaultLaunchRepo()
-		m.launchBrief.Focus()
-		m.launchFocus = 3
-		m.mode = modeAgentLaunch
-		return m, m.launchBrief.Cursor.BlinkCmd()
 	case "j", "down":
 		if m.agentCursor < len(jobs)-1 {
 			m.agentCursor++
@@ -541,11 +506,17 @@ func (m *model) openCurrentProjectPicker() bool {
 }
 
 func (m *model) reloadCockpitCatalogs() {
-	if presets, err := cockpit.LoadPresets(m.cockpitPaths.PresetsDir); err == nil {
-		m.cockpitPresets = presets
+	if prompts, err := cockpit.LoadPrompts(m.cockpitPaths.PromptsDir); err == nil {
+		m.cockpitPrompts = prompts
+	}
+	if bundles, err := cockpit.LoadHookBundles(m.cockpitPaths.HooksDir); err == nil {
+		m.cockpitHookBundles = bundles
 	}
 	if providers, err := cockpit.LoadProviders(m.cockpitPaths.ProvidersDir); err == nil {
 		m.cockpitProviders = providers
+	}
+	if presets, err := cockpit.LoadPresets(m.cockpitPaths.PresetsDir, m.cockpitPrompts, m.cockpitHookBundles, m.cockpitProviders); err == nil {
+		m.cockpitPresets = presets
 	}
 }
 

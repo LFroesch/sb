@@ -3,7 +3,6 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,25 +11,36 @@ import (
 	"github.com/LFroesch/sb/internal/cockpit"
 )
 
+var agentManageKinds = []string{"preset", "prompt", "hookbundle", "provider"}
+
+func cycleAgentManageKind(current string, delta int) string {
+	idx := 0
+	for i, k := range agentManageKinds {
+		if k == current {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(agentManageKinds)) % len(agentManageKinds)
+	return agentManageKinds[idx]
+}
+
+func marshalIndentOrEmpty(v any) string {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil || string(b) == "null" {
+		return ""
+	}
+	return string(b)
+}
+
 func presetManageFields() []agentManageFieldSpec {
 	return []agentManageFieldSpec{
 		{Key: "name", Label: "Name", Group: "Identity"},
 		{Key: "launch_mode", Label: "Launch mode", Group: "Identity"},
 		{Key: "permissions", Label: "Permissions", Group: "Identity"},
-		{Key: "system_prompt", Label: "System prompt", Group: "Prompting", Multiline: true, Height: 8},
-		{Key: "executor.type", Label: "Suggested engine type", Group: "Suggested Engine"},
-		{Key: "executor.runner", Label: "Suggested runner", Group: "Suggested Engine"},
-		{Key: "executor.model", Label: "Suggested model", Group: "Suggested Engine"},
-		{Key: "executor.cmd", Label: "Suggested command", Group: "Suggested Engine"},
-		{Key: "executor.args", Label: "Suggested args (one per line)", Group: "Suggested Engine", Multiline: true, Height: 5},
-		{Key: "hooks.prompt", Label: "Prompt hooks (JSON)", Group: "Hooks", Multiline: true, Height: 8},
-		{Key: "hooks.pre_shell", Label: "Pre hooks (JSON)", Group: "Hooks", Multiline: true, Height: 8},
-		{Key: "hooks.post_shell", Label: "Post hooks (JSON)", Group: "Hooks", Multiline: true, Height: 8},
-		{Key: "hooks.iteration.mode", Label: "Iteration mode", Group: "Iteration"},
-		{Key: "hooks.iteration.n", Label: "Iteration N (loop_n)", Group: "Iteration"},
-		{Key: "hooks.iteration.signal", Label: "Iteration signal", Group: "Iteration"},
-		{Key: "hooks.iteration.on_file", Label: "Iteration on_file", Group: "Iteration"},
-		{Key: "role", Label: "Persona / role (optional)", Group: "Advanced"},
+		{Key: "prompt_id", Label: "Prompt", Group: "Composition"},
+		{Key: "hook_bundle_id", Label: "Hook bundle", Group: "Composition"},
+		{Key: "engine_id", Label: "Engine", Group: "Composition"},
 		{Key: "id", Label: "File ID (auto if empty)", Group: "Advanced"},
 	}
 }
@@ -39,41 +49,27 @@ func providerManageFields() []agentManageFieldSpec {
 	return []agentManageFieldSpec{
 		{Key: "name", Label: "Name", Group: "Identity"},
 		{Key: "executor.type", Label: "Engine type", Group: "Engine"},
-		{Key: "executor.runner", Label: "Runner", Group: "Engine"},
 		{Key: "executor.model", Label: "Model", Group: "Engine"},
-		{Key: "executor.cmd", Label: "Command", Group: "Engine"},
-		{Key: "executor.args", Label: "Args (one per line)", Group: "Engine", Multiline: true, Height: 5},
 		{Key: "id", Label: "File ID (auto if empty)", Group: "Advanced"},
 	}
 }
 
-func formatJSONValue(v any) string {
-	if v == nil {
-		return ""
+func promptManageFields() []agentManageFieldSpec {
+	return []agentManageFieldSpec{
+		{Key: "name", Label: "Name", Group: "Identity"},
+		{Key: "body", Label: "Body (system prompt)", Group: "Body", Multiline: true, Height: 14},
+		{Key: "id", Label: "File ID (auto if empty)", Group: "Advanced"},
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }
 
-func splitLinesValue(s string) []string {
-	var out []string
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			out = append(out, line)
-		}
+func hookBundleManageFields() []agentManageFieldSpec {
+	return []agentManageFieldSpec{
+		{Key: "name", Label: "Name", Group: "Identity"},
+		{Key: "prompt", Label: "Prompt hooks (JSON array)", Group: "Hooks", Multiline: true, Height: 8},
+		{Key: "pre_shell", Label: "Pre-shell hooks (JSON array)", Group: "Hooks", Multiline: true, Height: 8},
+		{Key: "post_shell", Label: "Post-shell hooks (JSON array)", Group: "Hooks", Multiline: true, Height: 8},
+		{Key: "id", Label: "File ID (auto if empty)", Group: "Advanced"},
 	}
-	return out
-}
-
-func boolString(v bool) string {
-	if v {
-		return "true"
-	}
-	return "false"
 }
 
 func slugifyManagedID(s string) string {
@@ -114,38 +110,273 @@ func canonicalizeProviderProfile(p cockpit.ProviderProfile) cockpit.ProviderProf
 func canonicalizeLaunchPreset(p cockpit.LaunchPreset) cockpit.LaunchPreset {
 	p.Name = strings.TrimSpace(p.Name)
 	p.ID = strings.TrimSpace(p.ID)
-	p.Role = strings.TrimSpace(p.Role)
 	if p.ID == "" {
 		p.ID = slugifyManagedID(p.Name)
 	}
 	return p
 }
 
+func canonicalizePromptTemplate(p cockpit.PromptTemplate) cockpit.PromptTemplate {
+	p.Name = strings.TrimSpace(p.Name)
+	p.ID = strings.TrimSpace(p.ID)
+	if p.ID == "" {
+		p.ID = slugifyManagedID(p.Name)
+	}
+	return p
+}
+
+func canonicalizeHookBundle(h cockpit.HookBundle) cockpit.HookBundle {
+	h.Name = strings.TrimSpace(h.Name)
+	h.ID = strings.TrimSpace(h.ID)
+	if h.ID == "" {
+		h.ID = slugifyManagedID(h.Name)
+	}
+	if h.Iteration.Mode == "" {
+		h.Iteration.Mode = cockpit.IterationOneShot
+	}
+	return h
+}
+
 func (m model) agentManageFieldSpecs() []agentManageFieldSpec {
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		return providerManageFields()
+	case "prompt":
+		return promptManageFields()
+	case "hookbundle":
+		return hookBundleManageFields()
 	}
 	return presetManageFields()
 }
 
+// agentManageGroupOrder is the wizard step order. Advanced is hidden
+// until the user toggles `a` so brand-new items aren't dumped into
+// rarely-used overrides.
+func (m model) agentManageGroupOrder() []string {
+	var groups []string
+	switch m.agentManageKind {
+	case "provider":
+		groups = []string{"Identity", "Engine"}
+	case "prompt":
+		groups = []string{"Identity", "Body"}
+	case "hookbundle":
+		groups = []string{"Identity", "Hooks"}
+	default:
+		groups = []string{"Identity", "Composition"}
+	}
+	if m.agentManageAdvanced {
+		groups = append(groups, "Advanced")
+	}
+	return groups
+}
+
+func (m model) agentManageCurrentGroup() string {
+	groups := m.agentManageGroupOrder()
+	if len(groups) == 0 {
+		return ""
+	}
+	idx := m.agentManageGroup
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(groups) {
+		idx = len(groups) - 1
+	}
+	return groups[idx]
+}
+
+// agentManageGroupFieldIndices returns spec indices that belong to the
+// current group.
+func (m model) agentManageGroupFieldIndices() []int {
+	group := m.agentManageCurrentGroup()
+	specs := m.agentManageFieldSpecs()
+	var out []int
+	for i, s := range specs {
+		if s.Group == group {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// agentManageEnsureGroupField makes sure agentManageField points to a
+// spec that's actually visible in the current group. Useful after group
+// switches or iteration-mode changes.
+func (m *model) agentManageEnsureGroupField() {
+	indices := m.agentManageGroupFieldIndices()
+	if len(indices) == 0 {
+		return
+	}
+	for _, idx := range indices {
+		if idx == m.agentManageField {
+			return
+		}
+	}
+	m.agentManageField = indices[0]
+}
+
+func (m *model) agentManageCycleGroup(delta int) {
+	groups := m.agentManageGroupOrder()
+	if len(groups) == 0 {
+		return
+	}
+	m.agentManageGroup = (m.agentManageGroup + delta + len(groups)) % len(groups)
+	m.agentManageEnsureGroupField()
+	m.agentManageDetailOffset = 0
+}
+
+// enumOptionsForFieldKey is the cycle list for fields that prefer a
+// fixed set of values. Empty result means "no enum, fall through to
+// free-text editor". Library-ref fields (prompt_id, hook_bundle_id,
+// engine_id) get their cycle list from the loaded libraries via the
+// model-aware variant below.
+func enumOptionsForFieldKey(key string) []string {
+	switch key {
+	case "permissions":
+		return []string{"read-only", "scoped-write", "wide-open"}
+	case "launch_mode":
+		return []string{cockpit.LaunchModeSingleJob, cockpit.LaunchModeTaskQueueSequence}
+	}
+	return nil
+}
+
+// enumOptionsForFieldKey on the model layers in dynamic options for
+// library-ref fields, falling back to the static set for everything else.
+func (m model) enumOptionsForFieldKey(key string) []string {
+	switch key {
+	case "prompt_id":
+		var ids []string
+		for _, p := range m.cockpitPrompts {
+			ids = append(ids, p.ID)
+		}
+		return ids
+	case "hook_bundle_id":
+		var ids []string
+		for _, h := range m.cockpitHookBundles {
+			ids = append(ids, h.ID)
+		}
+		return ids
+	case "engine_id":
+		var ids []string
+		for _, p := range m.cockpitProviders {
+			ids = append(ids, p.ID)
+		}
+		return ids
+	}
+	return enumOptionsForFieldKey(key)
+}
+
+func cycleEnumValue(options []string, current string, delta int) string {
+	if len(options) == 0 {
+		return current
+	}
+	idx := -1
+	for i, opt := range options {
+		if opt == current {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		idx = 0
+	} else {
+		idx = (idx + delta + len(options)) % len(options)
+	}
+	return options[idx]
+}
+
 func (m model) agentManageItemCount() int {
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		return len(m.cockpitProviders)
+	case "prompt":
+		return len(m.cockpitPrompts)
+	case "hookbundle":
+		return len(m.cockpitHookBundles)
 	}
 	return len(m.cockpitPresets)
 }
 
 func (m model) agentManageItemLabel(idx int) string {
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if idx < 0 || idx >= len(m.cockpitProviders) {
 			return ""
 		}
 		return m.cockpitProviders[idx].Name
+	case "prompt":
+		if idx < 0 || idx >= len(m.cockpitPrompts) {
+			return ""
+		}
+		return m.cockpitPrompts[idx].Name
+	case "hookbundle":
+		if idx < 0 || idx >= len(m.cockpitHookBundles) {
+			return ""
+		}
+		return m.cockpitHookBundles[idx].Name
 	}
 	if idx < 0 || idx >= len(m.cockpitPresets) {
 		return ""
 	}
 	return m.cockpitPresets[idx].Name
+}
+
+func (m model) agentManageItemID(idx int) string {
+	switch m.agentManageKind {
+	case "provider":
+		if idx < 0 || idx >= len(m.cockpitProviders) {
+			return ""
+		}
+		return m.cockpitProviders[idx].ID
+	case "prompt":
+		if idx < 0 || idx >= len(m.cockpitPrompts) {
+			return ""
+		}
+		return m.cockpitPrompts[idx].ID
+	case "hookbundle":
+		if idx < 0 || idx >= len(m.cockpitHookBundles) {
+			return ""
+		}
+		return m.cockpitHookBundles[idx].ID
+	default:
+		if idx < 0 || idx >= len(m.cockpitPresets) {
+			return ""
+		}
+		return m.cockpitPresets[idx].ID
+	}
+}
+
+func (m model) agentManageFindItemByID(id string) int {
+	if strings.TrimSpace(id) == "" {
+		return -1
+	}
+	switch m.agentManageKind {
+	case "provider":
+		for i, p := range m.cockpitProviders {
+			if p.ID == id {
+				return i
+			}
+		}
+	case "prompt":
+		for i, p := range m.cockpitPrompts {
+			if p.ID == id {
+				return i
+			}
+		}
+	case "hookbundle":
+		for i, h := range m.cockpitHookBundles {
+			if h.ID == id {
+				return i
+			}
+		}
+	default:
+		for i, p := range m.cockpitPresets {
+			if p.ID == id {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func (m model) agentManageFieldValue(idx, field int) string {
@@ -154,7 +385,8 @@ func (m model) agentManageFieldValue(idx, field int) string {
 		return ""
 	}
 	key := specs[field].Key
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if idx >= len(m.cockpitProviders) {
 			return ""
 		}
@@ -166,14 +398,40 @@ func (m model) agentManageFieldValue(idx, field int) string {
 			return p.Name
 		case "executor.type":
 			return p.Executor.Type
-		case "executor.runner":
-			return p.Executor.Runner
 		case "executor.model":
 			return p.Executor.Model
-		case "executor.cmd":
-			return p.Executor.Cmd
-		case "executor.args":
-			return strings.Join(p.Executor.Args, "\n")
+		}
+		return ""
+	case "prompt":
+		if idx >= len(m.cockpitPrompts) {
+			return ""
+		}
+		p := m.cockpitPrompts[idx]
+		switch key {
+		case "id":
+			return p.ID
+		case "name":
+			return p.Name
+		case "body":
+			return p.Body
+		}
+		return ""
+	case "hookbundle":
+		if idx >= len(m.cockpitHookBundles) {
+			return ""
+		}
+		h := m.cockpitHookBundles[idx]
+		switch key {
+		case "id":
+			return h.ID
+		case "name":
+			return h.Name
+		case "prompt":
+			return marshalIndentOrEmpty(h.Prompt)
+		case "pre_shell":
+			return marshalIndentOrEmpty(h.PreShell)
+		case "post_shell":
+			return marshalIndentOrEmpty(h.PostShell)
 		}
 		return ""
 	}
@@ -186,44 +444,19 @@ func (m model) agentManageFieldValue(idx, field int) string {
 		return p.ID
 	case "name":
 		return p.Name
-	case "role":
-		return p.Role
 	case "launch_mode":
 		if p.LaunchMode == "" {
 			return cockpit.LaunchModeSingleJob
 		}
 		return p.LaunchMode
-	case "system_prompt":
-		return p.SystemPrompt
-	case "executor.type":
-		return p.Executor.Type
-	case "executor.runner":
-		return p.Executor.Runner
-	case "executor.model":
-		return p.Executor.Model
-	case "executor.cmd":
-		return p.Executor.Cmd
-	case "executor.args":
-		return strings.Join(p.Executor.Args, "\n")
 	case "permissions":
 		return p.Permissions
-	case "hooks.prompt":
-		return formatJSONValue(p.Hooks.Prompt)
-	case "hooks.pre_shell":
-		return formatJSONValue(p.Hooks.PreShell)
-	case "hooks.post_shell":
-		return formatJSONValue(p.Hooks.PostShell)
-	case "hooks.iteration.mode":
-		return p.Hooks.Iteration.Mode
-	case "hooks.iteration.n":
-		if p.Hooks.Iteration.N == 0 {
-			return ""
-		}
-		return strconv.Itoa(p.Hooks.Iteration.N)
-	case "hooks.iteration.signal":
-		return p.Hooks.Iteration.Signal
-	case "hooks.iteration.on_file":
-		return p.Hooks.Iteration.OnFile
+	case "prompt_id":
+		return p.PromptID
+	case "hook_bundle_id":
+		return p.HookBundleID
+	case "engine_id":
+		return p.EngineID
 	}
 	return ""
 }
@@ -235,11 +468,13 @@ func (m *model) setAgentManageFieldValue(idx, field int, raw string) error {
 	}
 	key := specs[field].Key
 	value := strings.TrimSpace(raw)
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if idx >= len(m.cockpitProviders) {
 			return fmt.Errorf("invalid provider")
 		}
 		p := m.cockpitProviders[idx]
+		oldID := p.ID
 		switch key {
 		case "id":
 			p.ID = value
@@ -247,33 +482,100 @@ func (m *model) setAgentManageFieldValue(idx, field int, raw string) error {
 			p.Name = value
 		case "executor.type":
 			p.Executor.Type = value
-		case "executor.runner":
-			p.Executor.Runner = value
 		case "executor.model":
 			p.Executor.Model = value
-		case "executor.cmd":
-			p.Executor.Cmd = value
-		case "executor.args":
-			p.Executor.Args = splitLinesValue(raw)
 		}
 		p = canonicalizeProviderProfile(p)
 		if err := validateProviderProfile(p); err != nil {
 			return err
 		}
 		m.cockpitProviders[idx] = p
-		return cockpit.SaveProvider(m.cockpitPaths.ProvidersDir, p)
+		if err := cockpit.SaveProvider(m.cockpitPaths.ProvidersDir, p); err != nil {
+			return err
+		}
+		if oldID != "" && oldID != p.ID {
+			return cockpit.DeleteProvider(m.cockpitPaths.ProvidersDir, oldID)
+		}
+		return nil
+	case "prompt":
+		if idx >= len(m.cockpitPrompts) {
+			return fmt.Errorf("invalid prompt")
+		}
+		p := m.cockpitPrompts[idx]
+		oldID := p.ID
+		switch key {
+		case "id":
+			p.ID = value
+		case "name":
+			p.Name = value
+		case "body":
+			p.Body = raw
+		}
+		p = canonicalizePromptTemplate(p)
+		if err := validatePromptTemplate(p); err != nil {
+			return err
+		}
+		m.cockpitPrompts[idx] = p
+		if err := cockpit.SavePrompt(m.cockpitPaths.PromptsDir, p); err != nil {
+			return err
+		}
+		if oldID != "" && oldID != p.ID {
+			return cockpit.DeletePrompt(m.cockpitPaths.PromptsDir, oldID)
+		}
+		return nil
+	case "hookbundle":
+		if idx >= len(m.cockpitHookBundles) {
+			return fmt.Errorf("invalid hook bundle")
+		}
+		h := m.cockpitHookBundles[idx]
+		oldID := h.ID
+		switch key {
+		case "id":
+			h.ID = value
+		case "name":
+			h.Name = value
+		case "prompt":
+			parsed, err := parsePromptHooksJSON(raw)
+			if err != nil {
+				return err
+			}
+			h.Prompt = parsed
+		case "pre_shell":
+			parsed, err := parseShellHooksJSON(raw)
+			if err != nil {
+				return err
+			}
+			h.PreShell = parsed
+		case "post_shell":
+			parsed, err := parseShellHooksJSON(raw)
+			if err != nil {
+				return err
+			}
+			h.PostShell = parsed
+		}
+		h = canonicalizeHookBundle(h)
+		if err := validateHookBundle(h); err != nil {
+			return err
+		}
+		m.cockpitHookBundles[idx] = h
+		if err := cockpit.SaveHookBundle(m.cockpitPaths.HooksDir, h); err != nil {
+			return err
+		}
+		if oldID != "" && oldID != h.ID {
+			return cockpit.DeleteHookBundle(m.cockpitPaths.HooksDir, oldID)
+		}
+		return nil
 	}
 	if idx >= len(m.cockpitPresets) {
 		return fmt.Errorf("invalid preset")
 	}
 	p := m.cockpitPresets[idx]
+	oldID := p.ID
 	switch key {
 	case "id":
 		p.ID = value
 	case "name":
 		p.Name = value
-	case "role":
-		p.Role = value
 	case "launch_mode":
 		switch value {
 		case "", cockpit.LaunchModeSingleJob, cockpit.LaunchModeTaskQueueSequence:
@@ -285,72 +587,14 @@ func (m *model) setAgentManageFieldValue(idx, field int, raw string) error {
 		default:
 			return fmt.Errorf("launch mode must be single_job|task_queue_sequence")
 		}
-	case "system_prompt":
-		p.SystemPrompt = strings.TrimSpace(raw)
-	case "executor.type":
-		p.Executor.Type = value
-	case "executor.runner":
-		p.Executor.Runner = value
-	case "executor.model":
-		p.Executor.Model = value
-	case "executor.cmd":
-		p.Executor.Cmd = value
-	case "executor.args":
-		p.Executor.Args = splitLinesValue(raw)
 	case "permissions":
 		p.Permissions = value
-	case "hooks.prompt":
-		var hooks []cockpit.PromptHook
-		if value != "" {
-			if err := json.Unmarshal([]byte(raw), &hooks); err != nil {
-				return fmt.Errorf("prompt hooks JSON: %w", err)
-			}
-		}
-		p.Hooks.Prompt = hooks
-	case "hooks.pre_shell":
-		var hooks []cockpit.ShellHook
-		if value != "" {
-			if err := json.Unmarshal([]byte(raw), &hooks); err != nil {
-				return fmt.Errorf("pre hooks JSON: %w", err)
-			}
-		}
-		p.Hooks.PreShell = hooks
-	case "hooks.post_shell":
-		var hooks []cockpit.ShellHook
-		if value != "" {
-			if err := json.Unmarshal([]byte(raw), &hooks); err != nil {
-				return fmt.Errorf("post hooks JSON: %w", err)
-			}
-		}
-		p.Hooks.PostShell = hooks
-	case "hooks.iteration.mode":
-		switch value {
-		case "", cockpit.IterationOneShot, "loop_n", "until_signal":
-			if value == "" {
-				p.Hooks.Iteration.Mode = cockpit.IterationOneShot
-			} else {
-				p.Hooks.Iteration.Mode = value
-			}
-		default:
-			return fmt.Errorf("iteration mode must be one_shot|loop_n|until_signal")
-		}
-	case "hooks.iteration.n":
-		if value == "" {
-			p.Hooks.Iteration.N = 0
-		} else {
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 0 {
-				return fmt.Errorf("iteration N must be a non-negative integer")
-			}
-			p.Hooks.Iteration.N = n
-		}
-	case "hooks.iteration.signal":
-		p.Hooks.Iteration.Signal = value
-	case "hooks.iteration.on_file":
-		p.Hooks.Iteration.OnFile = value
-	}
-	if p.Hooks.Iteration.Mode == "" {
-		p.Hooks.Iteration.Mode = cockpit.IterationOneShot
+	case "prompt_id":
+		p.PromptID = value
+	case "hook_bundle_id":
+		p.HookBundleID = value
+	case "engine_id":
+		p.EngineID = value
 	}
 	if p.LaunchMode == "" {
 		p.LaunchMode = cockpit.LaunchModeSingleJob
@@ -359,8 +603,64 @@ func (m *model) setAgentManageFieldValue(idx, field int, raw string) error {
 	if err := validateLaunchPreset(p); err != nil {
 		return err
 	}
+	if err := cockpit.SavePreset(m.cockpitPaths.PresetsDir, p); err != nil {
+		return err
+	}
+	if oldID != "" && oldID != p.ID {
+		if err := cockpit.DeletePreset(m.cockpitPaths.PresetsDir, oldID); err != nil {
+			return err
+		}
+	}
+	resolved, err := cockpit.ResolvePreset(p, m.cockpitPrompts, m.cockpitHookBundles, m.cockpitProviders)
+	if err == nil {
+		p = resolved
+	}
 	m.cockpitPresets[idx] = p
-	return cockpit.SavePreset(m.cockpitPaths.PresetsDir, p)
+	return nil
+}
+
+func parsePromptHooksJSON(raw string) ([]cockpit.PromptHook, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	var out []cockpit.PromptHook
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil, fmt.Errorf("prompt hooks JSON: %w", err)
+	}
+	return out, nil
+}
+
+func parseShellHooksJSON(raw string) ([]cockpit.ShellHook, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	var out []cockpit.ShellHook
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil, fmt.Errorf("shell hooks JSON: %w", err)
+	}
+	return out, nil
+}
+
+func validatePromptTemplate(p cockpit.PromptTemplate) error {
+	if strings.TrimSpace(p.ID) == "" {
+		return fmt.Errorf("prompt ID is required")
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return fmt.Errorf("prompt name is required")
+	}
+	return nil
+}
+
+func validateHookBundle(h cockpit.HookBundle) error {
+	if strings.TrimSpace(h.ID) == "" {
+		return fmt.Errorf("hook bundle ID is required")
+	}
+	if strings.TrimSpace(h.Name) == "" {
+		return fmt.Errorf("hook bundle name is required")
+	}
+	return nil
 }
 
 func validateProviderProfile(p cockpit.ProviderProfile) error {
@@ -383,9 +683,6 @@ func validateLaunchPreset(p cockpit.LaunchPreset) error {
 	if strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("preset name is required")
 	}
-	if strings.TrimSpace(p.Executor.Type) == "" {
-		return fmt.Errorf("executor type is required")
-	}
 	switch p.LaunchMode {
 	case "", cockpit.LaunchModeSingleJob, cockpit.LaunchModeTaskQueueSequence:
 	default:
@@ -403,10 +700,14 @@ func (m *model) beginAgentManageEdit() tea.Cmd {
 	m.agentManageEditing = true
 	m.agentManageEditor.Reset()
 	m.agentManageEditor.SetValue(m.agentManageFieldValue(m.agentManageCursor, m.agentManageField))
-	m.agentManageEditor.SetWidth(maxInt(32, m.width/2))
+	width, maxHeight := m.agentManageEditorDims()
+	m.agentManageEditor.SetWidth(width)
 	height := spec.Height
 	if height < 3 {
 		height = 3
+	}
+	if height > maxHeight {
+		height = maxHeight
 	}
 	m.agentManageEditor.SetHeight(height)
 	m.agentManageEditor.Focus()
@@ -419,13 +720,13 @@ func (m *model) clampAgentManageOffsets() {
 		m.agentManageListOffset = 0
 	} else {
 		_, innerHeight := m.agentManagePanelHeights()
-		m.agentManageListOffset = clampScrollOffset(m.agentManageListOffset, count, innerHeight)
+		m.agentManageListOffset = clampDecoratedScrollOffset(m.agentManageListOffset, count, innerHeight)
 	}
 	specs := m.agentManageFieldSpecs()
 	if len(specs) <= 0 {
 		m.agentManageDetailOffset = 0
 	} else {
-		m.agentManageDetailOffset = clampScrollOffset(m.agentManageDetailOffset, len(specs), m.agentManageDetailVisibleRows())
+		m.agentManageDetailOffset = clampDecoratedScrollOffset(m.agentManageDetailOffset, len(specs), m.agentManageDetailVisibleRows())
 	}
 	if m.agentManageListOffset < 0 {
 		m.agentManageListOffset = 0
@@ -436,22 +737,48 @@ func (m *model) clampAgentManageOffsets() {
 }
 
 func (m *model) endAgentManageEdit(save bool) {
+	advance := false
 	if save {
+		prevCursor := m.agentManageCursor
 		if err := m.setAgentManageFieldValue(m.agentManageCursor, m.agentManageField, m.agentManageEditor.Value()); err != nil {
 			m.statusMsg = "save field: " + err.Error()
 			m.statusExpiry = time.Now().Add(4 * time.Second)
 		} else {
+			savedID := m.agentManageItemID(m.agentManageCursor)
 			m.statusMsg = "saved " + m.agentManageItemLabel(m.agentManageCursor)
 			m.statusExpiry = time.Now().Add(2 * time.Second)
-			m.reloadCockpitCatalogs()
+			m.refreshManagedSelectionAfterSave(savedID, prevCursor)
+			advance = m.agentManageWizard
 		}
 	}
 	m.agentManageEditing = false
 	m.agentManageEditor.Blur()
+	if advance {
+		groups := m.agentManageGroupOrder()
+		if m.agentManageGroup+1 < len(groups) {
+			m.agentManageCycleGroup(1)
+		} else {
+			m.agentManageWizard = false
+			m.statusMsg = "wizard complete — press esc to return to list"
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+		}
+	}
+}
+
+func (m *model) refreshManagedSelectionAfterSave(savedID string, fallbackCursor int) {
+	m.reloadCockpitCatalogs()
+	if idx := m.agentManageFindItemByID(savedID); idx >= 0 {
+		m.agentManageCursor = idx
+	} else {
+		m.agentManageCursor = clampAgentCursor(fallbackCursor, m.agentManageItemCount())
+	}
+	m.agentManageEnsureGroupField()
+	m.clampAgentManageOffsets()
 }
 
 func (m *model) createManagedAgentItem() error {
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		p := cockpit.ProviderProfile{
 			Name: "New engine",
 			Executor: cockpit.ExecutorSpec{
@@ -464,6 +791,43 @@ func (m *model) createManagedAgentItem() error {
 		}
 		m.reloadCockpitCatalogs()
 		m.agentManageCursor = len(m.cockpitProviders) - 1
+		m.agentManageField = 0
+		m.agentManageListOffset = m.agentManageCursor
+		m.agentManageDetailOffset = 0
+		return nil
+	case "prompt":
+		p := cockpit.PromptTemplate{Name: "New prompt"}
+		p = canonicalizePromptTemplate(p)
+		if err := cockpit.SavePrompt(m.cockpitPaths.PromptsDir, p); err != nil {
+			return err
+		}
+		m.reloadCockpitCatalogs()
+		for i, pt := range m.cockpitPrompts {
+			if pt.ID == p.ID {
+				m.agentManageCursor = i
+				break
+			}
+		}
+		m.agentManageField = 0
+		m.agentManageListOffset = m.agentManageCursor
+		m.agentManageDetailOffset = 0
+		return nil
+	case "hookbundle":
+		h := cockpit.HookBundle{
+			Name:      "New hook bundle",
+			Iteration: cockpit.IterationPolicy{Mode: cockpit.IterationOneShot},
+		}
+		h = canonicalizeHookBundle(h)
+		if err := cockpit.SaveHookBundle(m.cockpitPaths.HooksDir, h); err != nil {
+			return err
+		}
+		m.reloadCockpitCatalogs()
+		for i, hb := range m.cockpitHookBundles {
+			if hb.ID == h.ID {
+				m.agentManageCursor = i
+				break
+			}
+		}
 		m.agentManageField = 0
 		m.agentManageListOffset = m.agentManageCursor
 		m.agentManageDetailOffset = 0
@@ -485,7 +849,12 @@ func (m *model) createManagedAgentItem() error {
 		return err
 	}
 	m.reloadCockpitCatalogs()
-	m.agentManageCursor = len(m.cockpitPresets) - 1
+	for i, pr := range m.cockpitPresets {
+		if pr.ID == p.ID {
+			m.agentManageCursor = i
+			break
+		}
+	}
 	m.agentManageField = 0
 	m.agentManageListOffset = m.agentManageCursor
 	m.agentManageDetailOffset = 0
@@ -494,11 +863,22 @@ func (m *model) createManagedAgentItem() error {
 
 func (m model) currentManagedItemID() string {
 	idx := m.agentManageCursor
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if idx < 0 || idx >= len(m.cockpitProviders) {
 			return ""
 		}
 		return m.cockpitProviders[idx].ID
+	case "prompt":
+		if idx < 0 || idx >= len(m.cockpitPrompts) {
+			return ""
+		}
+		return m.cockpitPrompts[idx].ID
+	case "hookbundle":
+		if idx < 0 || idx >= len(m.cockpitHookBundles) {
+			return ""
+		}
+		return m.cockpitHookBundles[idx].ID
 	}
 	if idx < 0 || idx >= len(m.cockpitPresets) {
 		return ""
@@ -510,11 +890,20 @@ func (m *model) deleteManagedAgentItem(id string) error {
 	if id == "" {
 		return fmt.Errorf("missing id")
 	}
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if err := cockpit.DeleteProvider(m.cockpitPaths.ProvidersDir, id); err != nil {
 			return err
 		}
-	} else {
+	case "prompt":
+		if err := cockpit.DeletePrompt(m.cockpitPaths.PromptsDir, id); err != nil {
+			return err
+		}
+	case "hookbundle":
+		if err := cockpit.DeleteHookBundle(m.cockpitPaths.HooksDir, id); err != nil {
+			return err
+		}
+	default:
 		if err := cockpit.DeletePreset(m.cockpitPaths.PresetsDir, id); err != nil {
 			return err
 		}
@@ -534,7 +923,8 @@ func (m *model) deleteManagedAgentItem(id string) error {
 func (m *model) duplicateManagedAgentItem() error {
 	idx := m.agentManageCursor
 	stamp := time.Now().Format("150405")
-	if m.agentManageKind == "provider" {
+	switch m.agentManageKind {
+	case "provider":
 		if idx < 0 || idx >= len(m.cockpitProviders) {
 			return fmt.Errorf("no provider selected")
 		}
@@ -548,6 +938,50 @@ func (m *model) duplicateManagedAgentItem() error {
 		m.reloadCockpitCatalogs()
 		for i, p := range m.cockpitProviders {
 			if p.ID == dup.ID {
+				m.agentManageCursor = i
+				break
+			}
+		}
+		m.agentManageField = 0
+		m.agentManageListOffset = m.agentManageCursor
+		m.agentManageDetailOffset = 0
+		return nil
+	case "prompt":
+		if idx < 0 || idx >= len(m.cockpitPrompts) {
+			return fmt.Errorf("no prompt selected")
+		}
+		src := m.cockpitPrompts[idx]
+		dup := src
+		dup.ID = src.ID + "-copy-" + stamp
+		dup.Name = src.Name + " (copy)"
+		if err := cockpit.SavePrompt(m.cockpitPaths.PromptsDir, dup); err != nil {
+			return err
+		}
+		m.reloadCockpitCatalogs()
+		for i, p := range m.cockpitPrompts {
+			if p.ID == dup.ID {
+				m.agentManageCursor = i
+				break
+			}
+		}
+		m.agentManageField = 0
+		m.agentManageListOffset = m.agentManageCursor
+		m.agentManageDetailOffset = 0
+		return nil
+	case "hookbundle":
+		if idx < 0 || idx >= len(m.cockpitHookBundles) {
+			return fmt.Errorf("no hook bundle selected")
+		}
+		src := m.cockpitHookBundles[idx]
+		dup := src
+		dup.ID = src.ID + "-copy-" + stamp
+		dup.Name = src.Name + " (copy)"
+		if err := cockpit.SaveHookBundle(m.cockpitPaths.HooksDir, dup); err != nil {
+			return err
+		}
+		m.reloadCockpitCatalogs()
+		for i, h := range m.cockpitHookBundles {
+			if h.ID == dup.ID {
 				m.agentManageCursor = i
 				break
 			}
@@ -620,36 +1054,86 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc", "q":
+		m.agentManageWizard = false
 		m.mode = modeAgentList
 		return m, nil
 	case "tab":
-		m.agentManageFocus = (m.agentManageFocus + 1) % 2
+		if m.agentManageFocus == 0 {
+			m.agentManageFocus = 1
+			m.agentManageEnsureGroupField()
+		} else {
+			m.agentManageCycleGroup(1)
+		}
 		return m, nil
 	case "shift+tab":
-		m.agentManageFocus = (m.agentManageFocus + 1) % 2
+		if m.agentManageFocus == 0 {
+			m.agentManageFocus = 1
+			m.agentManageEnsureGroupField()
+		} else if m.agentManageGroup == 0 {
+			m.agentManageFocus = 0
+		} else {
+			m.agentManageCycleGroup(-1)
+		}
+		return m, nil
+	case "h", "left":
+		if m.agentManageFocus == 1 {
+			m.agentManageFocus = 0
+			return m, nil
+		}
+	case "l", "right":
+		if m.agentManageFocus == 0 {
+			m.agentManageFocus = 1
+			m.agentManageEnsureGroupField()
+			return m, nil
+		}
+	case "a":
+		m.agentManageAdvanced = !m.agentManageAdvanced
+		groups := m.agentManageGroupOrder()
+		if m.agentManageGroup >= len(groups) {
+			m.agentManageGroup = len(groups) - 1
+		}
+		m.agentManageEnsureGroupField()
+		if m.agentManageAdvanced {
+			m.statusMsg = "advanced fields shown"
+		} else {
+			m.statusMsg = "advanced fields hidden"
+		}
+		m.statusExpiry = time.Now().Add(2 * time.Second)
 		return m, nil
 	case "[":
-		m.agentManageKind = "preset"
+		m.agentManageKind = cycleAgentManageKind(m.agentManageKind, -1)
 		m.agentManageCursor = 0
 		m.agentManageField = 0
+		m.agentManageGroup = 0
+		m.agentManageWizard = false
 		m.agentManageListOffset = 0
 		m.agentManageDetailOffset = 0
+		m.agentManageEnsureGroupField()
 		return m, nil
 	case "]":
-		m.agentManageKind = "provider"
+		m.agentManageKind = cycleAgentManageKind(m.agentManageKind, 1)
 		m.agentManageCursor = 0
 		m.agentManageField = 0
+		m.agentManageGroup = 0
+		m.agentManageWizard = false
 		m.agentManageListOffset = 0
 		m.agentManageDetailOffset = 0
+		m.agentManageEnsureGroupField()
 		return m, nil
 	case "n":
 		if err := m.createManagedAgentItem(); err != nil {
 			m.statusMsg = "new item: " + err.Error()
-		} else {
-			m.statusMsg = "created " + m.agentManageKind
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+			return m, nil
 		}
+		m.statusMsg = "created " + m.agentManageKind + " — fill out the wizard"
 		m.statusExpiry = time.Now().Add(3 * time.Second)
-		return m, nil
+		m.agentManageGroup = 0
+		m.agentManageFocus = 1
+		m.agentManageWizard = true
+		m.agentManageEnsureGroupField()
+		cmd := m.beginAgentManageEdit()
+		return m, cmd
 	case "D":
 		if err := m.duplicateManagedAgentItem(); err != nil {
 			m.statusMsg = "duplicate: " + err.Error()
@@ -671,8 +1155,28 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "e":
 		if m.agentManageFocus == 0 {
 			m.agentManageFocus = 1
-			m.agentManageDetailOffset = m.agentManageField
+			m.agentManageEnsureGroupField()
 			return m, nil
+		}
+		// Enum fields cycle in place instead of opening the editor.
+		specs := m.agentManageFieldSpecs()
+		if m.agentManageField >= 0 && m.agentManageField < len(specs) {
+			key := specs[m.agentManageField].Key
+			if options := m.enumOptionsForFieldKey(key); len(options) > 0 {
+				current := m.agentManageFieldValue(m.agentManageCursor, m.agentManageField)
+				next := cycleEnumValue(options, current, 1)
+				if err := m.setAgentManageFieldValue(m.agentManageCursor, m.agentManageField, next); err != nil {
+					m.statusMsg = "cycle: " + err.Error()
+					m.statusExpiry = time.Now().Add(3 * time.Second)
+				} else {
+					savedID := m.agentManageItemID(m.agentManageCursor)
+					prevCursor := m.agentManageCursor
+					m.statusMsg = specs[m.agentManageField].Label + " → " + next
+					m.statusExpiry = time.Now().Add(2 * time.Second)
+					m.refreshManagedSelectionAfterSave(savedID, prevCursor)
+				}
+				return m, nil
+			}
 		}
 		cmd := m.beginAgentManageEdit()
 		return m, cmd
@@ -683,9 +1187,12 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.agentManageListOffset++
 			}
 		} else {
-			if m.agentManageField < len(m.agentManageFieldSpecs())-1 {
-				m.agentManageField++
-				m.agentManageDetailOffset++
+			indices := m.agentManageGroupFieldIndices()
+			for i, idx := range indices {
+				if idx == m.agentManageField && i+1 < len(indices) {
+					m.agentManageField = indices[i+1]
+					break
+				}
 			}
 		}
 	case "k", "up":
@@ -695,9 +1202,12 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.agentManageListOffset--
 			}
 		} else {
-			if m.agentManageField > 0 {
-				m.agentManageField--
-				m.agentManageDetailOffset--
+			indices := m.agentManageGroupFieldIndices()
+			for i, idx := range indices {
+				if idx == m.agentManageField && i > 0 {
+					m.agentManageField = indices[i-1]
+					break
+				}
 			}
 		}
 	case "pgdown", "pgdn":
@@ -708,11 +1218,7 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.agentManageListOffset = m.agentManageCursor
 		} else {
-			m.agentManageField += 5
-			if n := len(m.agentManageFieldSpecs()); m.agentManageField >= n {
-				m.agentManageField = n - 1
-			}
-			m.agentManageDetailOffset = m.agentManageField
+			m.agentManageCycleGroup(1)
 		}
 	case "pgup":
 		if m.agentManageFocus == 0 {
@@ -722,19 +1228,17 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.agentManageListOffset = m.agentManageCursor
 		} else {
-			m.agentManageField -= 5
-			if m.agentManageField < 0 {
-				m.agentManageField = 0
-			}
-			m.agentManageDetailOffset = m.agentManageField
+			m.agentManageCycleGroup(-1)
 		}
 	case "g":
 		if m.agentManageFocus == 0 {
 			m.agentManageCursor = 0
 			m.agentManageListOffset = 0
 		} else {
-			m.agentManageField = 0
-			m.agentManageDetailOffset = 0
+			indices := m.agentManageGroupFieldIndices()
+			if len(indices) > 0 {
+				m.agentManageField = indices[0]
+			}
 		}
 	case "G":
 		if m.agentManageFocus == 0 {
@@ -743,12 +1247,13 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.agentManageListOffset = m.agentManageCursor
 			}
 		} else {
-			if n := len(m.agentManageFieldSpecs()); n > 0 {
-				m.agentManageField = n - 1
-				m.agentManageDetailOffset = m.agentManageField
+			indices := m.agentManageGroupFieldIndices()
+			if len(indices) > 0 {
+				m.agentManageField = indices[len(indices)-1]
 			}
 		}
 	}
+	m.agentManageEnsureGroupField()
 	m.clampAgentManageOffsets()
 	return m, nil
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -162,6 +163,8 @@ type model struct {
 	cockpitClient      cockpit.Client
 	cockpitPresets     []cockpit.LaunchPreset
 	cockpitProviders   []cockpit.ProviderProfile
+	cockpitPrompts     []cockpit.PromptTemplate
+	cockpitHookBundles []cockpit.HookBundle
 	cockpitPaths       cockpit.Paths
 	cockpitJobs        []cockpit.Job
 	cockpitEvents      <-chan cockpit.Event
@@ -185,6 +188,8 @@ type model struct {
 	launchFocus        int // 0=recipe 1=provider 2=repo 3=brief 4=review
 	launchReviewOffset int
 	launchQueueOnly    bool
+	launchRepoCustom   textinput.Model // active when typing a custom repo path
+	launchRepoEditing  bool            // true while launchRepoCustom is focused
 	attachedJobID      cockpit.JobID
 	attachedInput      textarea.Model
 	attachedFocus      int    // 0=transcript (shortcuts + scroll), 1=input (typing)
@@ -199,6 +204,9 @@ type model struct {
 	agentManageFocus        int    // 0=list 1=fields
 	agentManageCursor       int
 	agentManageField        int
+	agentManageGroup        int  // index into agentManageGroupOrder()
+	agentManageAdvanced     bool // reveals Hooks + Advanced groups
+	agentManageWizard       bool // n-just-pressed, auto-advance groups on save
 	agentManageListOffset   int
 	agentManageDetailOffset int
 	agentManageEditing      bool
@@ -237,6 +245,11 @@ func newModel(cfg *config.Config) model {
 	launchBrief.SetHeight(6)
 	launchBrief.CharLimit = 0
 
+	launchRepoCustom := textinput.New()
+	launchRepoCustom.Placeholder = "absolute path to repo (or leave blank)"
+	launchRepoCustom.CharLimit = 1024
+	launchRepoCustom.Width = 60
+
 	attachedInput := textarea.New()
 	attachedInput.Placeholder = "send to agent…"
 	attachedInput.SetWidth(80)
@@ -262,6 +275,7 @@ func newModel(cfg *config.Config) model {
 		dumpClarifyArea:   clarify,
 		chainFeedback:     chainFB,
 		launchBrief:       launchBrief,
+		launchRepoCustom:  launchRepoCustom,
 		attachedInput:     attachedInput,
 		agentManageKind:   "preset",
 		agentManageEditor: manageEditor,
@@ -303,7 +317,11 @@ func (m model) Init() tea.Cmd {
 				Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
 			})
 		}
-		_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets)
+		_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets, workmd.IndexOptions{
+			ScanRoots:    m.cfg.ExpandedScanRoots(),
+			FilePatterns: m.cfg.FilePatterns,
+			IdeaDirs:     m.cfg.ExpandedIdeaDirs(),
+		})
 		return projectsLoadedMsg{projects: projects}
 	})
 	return tea.Batch(cmds...)

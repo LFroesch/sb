@@ -20,6 +20,8 @@ func TestSocketRoundtrip(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "campaigns"),
 		PresetsDir:   filepath.Join(dir, "presets"),
 		ProvidersDir: filepath.Join(dir, "providers"),
+		PromptsDir:   filepath.Join(dir, "prompts"),
+		HooksDir:     filepath.Join(dir, "hooks"),
 		Socket:       filepath.Join(dir, "sock"),
 		PIDFile:      filepath.Join(dir, "pid"),
 		LogFile:      filepath.Join(dir, "log"),

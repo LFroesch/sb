@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -58,95 +56,61 @@ func (m *model) normalizeLaunchFocus() {
 	}
 }
 
-func (m model) createPresetTemplate() (string, error) {
-	if err := os.MkdirAll(m.cockpitPaths.PresetsDir, 0o755); err != nil {
-		return "", err
-	}
-	id := fmt.Sprintf("custom-%s", time.Now().Format("20060102-150405"))
-	path := filepath.Join(m.cockpitPaths.PresetsDir, id+".json")
-	body := fmt.Sprintf(`{
-  "id": "%s",
-  "name": "Custom preset",
-  "role": "custom",
-  "launch_mode": "single_job",
-  "system_prompt": "Describe the job this preset should do.",
-  "executor": {
-    "type": "claude"
-  },
-  "hooks": {
-    "prompt": [
-      {
-        "kind": "literal",
-        "placement": "after",
-        "label": "extra context",
-        "body": "Optional extra prompt block."
-      }
-    ],
-    "pre_shell": [
-      {
-        "name": "example pre hook",
-        "cmd": "pwd"
-      }
-    ],
-    "post_shell": [
-      {
-        "name": "example post hook",
-        "cmd": "git status --short"
-      }
-    ],
-    "iteration": {
-      "mode": "one_shot"
-    }
-  },
-  "permissions": "scoped-write"
-}
-`, id)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
+func (m *model) moveLaunchFocusToNote() tea.Cmd {
+	m.launchFocus = m.launchNoteFocus()
+	m.launchBrief.Focus()
+	return m.launchBrief.Cursor.BlinkCmd()
 }
 
-func (m model) createProviderTemplate() (string, error) {
-	if err := os.MkdirAll(m.cockpitPaths.ProvidersDir, 0o755); err != nil {
-		return "", err
+func (m *model) syncLaunchRepoToVisibleChoice() {
+	if !m.launchHasRepoStep() {
+		return
 	}
-	id := fmt.Sprintf("custom-%s", time.Now().Format("20060102-150405"))
-	path := filepath.Join(m.cockpitPaths.ProvidersDir, id+".json")
-	body := fmt.Sprintf(`{
-  "id": "%s",
-  "name": "Custom provider",
-  "executor": {
-    "type": "claude"
-  }
-}
-`, id)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		return "", err
+	repos := m.launchRepoChoices()
+	if len(repos) == 0 {
+		return
 	}
-	return path, nil
+	m.launchRepo = repos[indexOfLaunchRepo(repos, m.launchRepo)]
 }
 
 func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Custom-repo path entry consumes keys until esc or enter.
+	if m.launchRepoEditing {
+		switch msg.String() {
+		case "esc":
+			m.launchRepoEditing = false
+			m.launchRepoCustom.Blur()
+			return m, nil
+		case "enter":
+			path := strings.TrimSpace(m.launchRepoCustom.Value())
+			m.launchRepoEditing = false
+			m.launchRepoCustom.Blur()
+			if path != "" {
+				m.launchRepo = path
+				m.statusMsg = "repo set to " + path
+				m.statusExpiry = time.Now().Add(2 * time.Second)
+				return m, m.moveLaunchFocusToNote()
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.launchRepoCustom, cmd = m.launchRepoCustom.Update(msg)
+		return m, cmd
+	}
+
 	switch msg.String() {
 	case "esc":
-		// Freeform launches (no sources) came from the list; sourced
-		// launches came from the picker. Return to whichever we came from.
-		if len(m.launchSources) == 0 {
-			m.mode = modeAgentList
-		} else {
-			m.mode = modeAgentPicker
-		}
+		// Without sources, the user came from the picker's freeform sentinel
+		// (or dashboard A on a project without items); either way return to
+		// the picker so they can change their mind. Sourced runs also came
+		// from the picker, so the same target works for both.
+		m.mode = modeAgentPicker
 		m.agentCursor = 0
 		return m, nil
 	case "q":
 		// q only acts as back when the brief isn't being typed.
 		if m.launchFocus != m.launchNoteFocus() {
-			if len(m.launchSources) == 0 {
-				m.mode = modeAgentList
-			} else {
-				m.mode = modeAgentPicker
-			}
+			m.mode = modeAgentPicker
 			m.agentCursor = 0
 			return m, nil
 		}
@@ -176,6 +140,20 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		// Enter launches from the preset/provider pickers. When the brief
 		// textarea has focus, enter inserts a newline (handled below).
+		// On the Repo tab, enter confirms the repo choice and advances to
+		// the note editor; if the "(custom path...)" sentinel is selected,
+		// it first opens the inline path editor.
+		if m.launchHasRepoStep() && m.launchFocus == 2 {
+			m.syncLaunchRepoToVisibleChoice()
+			if strings.TrimSpace(m.launchRepo) == repoSentinelCustom {
+				m.launchRepoCustom.SetValue("")
+				m.launchRepoCustom.Width = maxInt(1, m.width-14)
+				m.launchRepoCustom.Focus()
+				m.launchRepoEditing = true
+				return m, m.launchRepoCustom.Cursor.BlinkCmd()
+			}
+			return m, m.moveLaunchFocusToNote()
+		}
 		if m.launchFocus != m.launchNoteFocus() {
 			return m.doLaunch()
 		}
@@ -283,8 +261,10 @@ func (m model) doLaunch() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	preset := m.cockpitPresets[m.launchPresetIdx]
-	repo := m.launchRepo
-	if repo == "" {
+	repo := strings.TrimSpace(m.launchRepo)
+	if repo == repoSentinelCustom {
+		// User landed on the "custom path..." sentinel without typing one.
+		// Fall back to default rather than passing the marker through.
 		repo = m.defaultLaunchRepo()
 	}
 	req := cockpit.LaunchRequest{
@@ -331,18 +311,26 @@ func (m model) defaultLaunchRepo() string {
 	return ""
 }
 
+// repoSentinelCustom is a non-path marker. When it's the selected repo
+// the view shows "(custom path...)" and pressing enter opens an inline
+// text input so the user can type any absolute path — even one that
+// isn't a discovered WORK.md project.
+const repoSentinelCustom = "\x00custom"
+
+// launchRepoChoices returns the menu shown on the Repo tab: every
+// discovered repo path plus a "(custom path...)" entry at the end so
+// the user can type a path that isn't tracked by sb.
 func (m model) launchRepoChoices() []string {
 	seen := map[string]bool{}
-	var repos []string
+	repos := []string{repoSentinelCustom}
 	add := func(path string) {
 		path = strings.TrimSpace(path)
-		if path == "" || seen[path] {
+		if path == "" || path == repoSentinelCustom || seen[path] {
 			return
 		}
 		seen[path] = true
 		repos = append(repos, path)
 	}
-	add(m.launchRepo)
 	add(m.defaultLaunchRepo())
 	for _, p := range m.projects {
 		add(p.Dir)
@@ -351,14 +339,18 @@ func (m model) launchRepoChoices() []string {
 	if err == nil {
 		add(cwd)
 	}
-	if len(repos) == 0 {
-		return []string{""}
-	}
+	add(m.launchRepo)
 	return repos
 }
 
 func indexOfLaunchRepo(repos []string, current string) int {
 	current = strings.TrimSpace(current)
+	if current == "" {
+		if len(repos) > 1 {
+			return 1
+		}
+		return 0
+	}
 	for i, repo := range repos {
 		if strings.TrimSpace(repo) == current {
 			return i

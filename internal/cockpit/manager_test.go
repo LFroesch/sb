@@ -2,6 +2,7 @@ package cockpit
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,8 @@ func TestLaunchJobFallsBackToCurrentWorkingDir(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -164,6 +167,8 @@ func TestLaunchJobStoresTaskSummarySeparatelyFromPrompt(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -205,6 +210,8 @@ func TestStopJobMarksTurnStoppedAndReturnsIdle(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -266,6 +273,8 @@ func TestDeleteJobWaitsForCanceledTurnToExit(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -313,6 +322,8 @@ func TestLaunchJobTaskQueueSequenceCreatesQueuedSiblingJobs(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -383,6 +394,8 @@ func TestQueuedJobsAdvanceSeriallyPerRepo(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -465,6 +478,8 @@ func TestSkipJobPreservesRecordAndAdvancesQueuedSibling(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -554,6 +569,8 @@ func TestSkipCampaignSkipsCurrentAndQueuedTail(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -656,6 +673,8 @@ func TestQueueOnlyLaunchWaitsForForeman(t *testing.T) {
 		ForemanFile:  filepath.Join(dir, "state", "foreman.json"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -723,6 +742,8 @@ func TestStartJobPromotesWaitingForemanJobWithoutEnablingForeman(t *testing.T) {
 		ForemanFile:  filepath.Join(dir, "state", "foreman.json"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -794,6 +815,8 @@ func TestForemanStatePersistsAcrossManagerRestart(t *testing.T) {
 		ForemanFile:  filepath.Join(dir, "state", "foreman.json"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -853,6 +876,8 @@ func TestRegistryRehydrateKeepsRunningTmuxJobs(t *testing.T) {
 		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
 		PresetsDir:   filepath.Join(dir, "config", "presets"),
 		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
 		Socket:       filepath.Join(dir, "state", "foreman.sock"),
 		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
 		LogFile:      filepath.Join(dir, "state", "foreman.log"),
@@ -910,4 +935,286 @@ func waitForJobTerminalState(t *testing.T, mgr *Manager, id JobID) {
 	}
 	j, _ := mgr.GetJob(id)
 	t.Fatalf("job did not settle: status=%s note=%q", j.Status, j.Note)
+}
+
+// stubProviderLimitPct overrides the package var for the duration of t.
+func stubProviderLimitPct(t *testing.T, fn func(provider string) (int, bool)) {
+	t.Helper()
+	prev := providerLimitPct
+	providerLimitPct = fn
+	t.Cleanup(func() { providerLimitPct = prev })
+}
+
+func newSchedulerTestManager(t *testing.T) (*Manager, string) {
+	t.Helper()
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		ForemanFile:  filepath.Join(dir, "state", "foreman.json"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
+		Socket:       filepath.Join(dir, "state", "foreman.sock"),
+		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
+		LogFile:      filepath.Join(dir, "state", "foreman.log"),
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	return mgr, dir
+}
+
+func waitForEligibilityReason(t *testing.T, mgr *Manager, id JobID, want string) Job {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		j, ok := mgr.GetJob(id)
+		if ok && j.EligibilityReason == want {
+			return j
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	j, _ := mgr.GetJob(id)
+	t.Fatalf("eligibility reason = %q, want %q", j.EligibilityReason, want)
+	return j
+}
+
+func waitForJobStatus(t *testing.T, mgr *Manager, id JobID, want Status) Job {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		j, ok := mgr.GetJob(id)
+		if ok && j.Status == want {
+			return j
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	j, _ := mgr.GetJob(id)
+	t.Fatalf("job %s status = %s, want %s (note=%q)", id, j.Status, want, j.Note)
+	return Job{}
+}
+
+func TestForemanOffMarksParkedJobsWaitingForForeman(t *testing.T) {
+	mgr, dir := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(string) (int, bool) { return 0, false })
+
+	job, err := mgr.LaunchJob(LaunchRequest{
+		Repo: dir,
+		Preset: LaunchPreset{
+			ID:          "shell",
+			Name:        "Shell",
+			Executor:    ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+			Hooks:       HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+			Permissions: "scoped-write",
+		},
+		Freeform:  "echo hello",
+		QueueOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("LaunchJob: %v", err)
+	}
+	waitForEligibilityReason(t, mgr, job.ID, "waiting for foreman")
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled(true): %v", err)
+	}
+	waitForJobTerminalState(t, mgr, job.ID)
+	final, _ := mgr.GetJob(job.ID)
+	if final.EligibilityReason != "" {
+		t.Fatalf("EligibilityReason after start = %q, want empty", final.EligibilityReason)
+	}
+}
+
+func TestForemanStartsEligibleJobsAcrossReposInParallel(t *testing.T) {
+	mgr, _ := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(string) (int, bool) { return 0, false })
+
+	jobA, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "sleep 2",
+		Repo:           t.TempDir(),
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		WaitForForeman: true,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create jobA: %v", err)
+	}
+	jobB, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "sleep 2",
+		Repo:           t.TempDir(),
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		WaitForForeman: true,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create jobB: %v", err)
+	}
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled(true): %v", err)
+	}
+
+	startedA := waitForJobStatus(t, mgr, jobA.ID, StatusRunning)
+	startedB := waitForJobStatus(t, mgr, jobB.ID, StatusRunning)
+	if startedA.WaitForForeman || startedB.WaitForForeman {
+		t.Fatalf("jobs still marked waiting for foreman: A=%v B=%v", startedA.WaitForForeman, startedB.WaitForForeman)
+	}
+
+	waitForJobTerminalState(t, mgr, jobA.ID)
+	waitForJobTerminalState(t, mgr, jobB.ID)
+}
+
+func TestForemanConcurrencyCapDefersExtraJobs(t *testing.T) {
+	mgr, _ := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(string) (int, bool) { return 0, false })
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled: %v", err)
+	}
+
+	// Pre-populate three foreman-managed running jobs across distinct
+	// repos (so repo lock doesn't masquerade as the cap).
+	for i := 0; i < 3; i++ {
+		repo := filepath.Join(t.TempDir(), fmt.Sprintf("r%d", i))
+		if _, err := mgr.Registry.Create(Job{
+			PresetID:       "shell",
+			Brief:          "running",
+			Repo:           repo,
+			Permissions:    "scoped-write",
+			Status:         StatusRunning,
+			ForemanManaged: true,
+		}); err != nil {
+			t.Fatalf("Create active job: %v", err)
+		}
+	}
+
+	queuedRepo := t.TempDir()
+	queued, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "fourth",
+		Repo:           queuedRepo,
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create queued: %v", err)
+	}
+
+	mgr.tickScheduler()
+	waitForEligibilityReason(t, mgr, queued.ID, "foreman concurrency cap (3/3)")
+}
+
+func TestForemanLimitGuardDefersClaudeWhenNearLimit(t *testing.T) {
+	mgr, dir := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(provider string) (int, bool) {
+		if provider == "claude" {
+			return 95, true
+		}
+		return 0, false
+	})
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled: %v", err)
+	}
+
+	queued, err := mgr.Registry.Create(Job{
+		PresetID:       "claude",
+		Brief:          "claude run",
+		Repo:           dir,
+		Executor:       ExecutorSpec{Type: "claude"},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mgr.tickScheduler()
+	waitForEligibilityReason(t, mgr, queued.ID, "claude near 5h limit (95%)")
+}
+
+func TestForemanLimitGuardSkipsLocalProviders(t *testing.T) {
+	mgr, dir := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(string) (int, bool) { return 99, true })
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled: %v", err)
+	}
+
+	job, err := mgr.LaunchJob(LaunchRequest{
+		Repo: dir,
+		Preset: LaunchPreset{
+			ID:          "shell",
+			Name:        "Shell",
+			Executor:    ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+			Hooks:       HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+			Permissions: "scoped-write",
+		},
+		Freeform:  "echo hello",
+		QueueOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("LaunchJob: %v", err)
+	}
+	waitForJobTerminalState(t, mgr, job.ID)
+	final, _ := mgr.GetJob(job.ID)
+	if final.EligibilityReason != "" {
+		t.Fatalf("shell job blocked by limit guard: reason=%q", final.EligibilityReason)
+	}
+}
+
+func TestRepoBusyReasonNamesBlockingJob(t *testing.T) {
+	mgr, dir := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(string) (int, bool) { return 0, false })
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled: %v", err)
+	}
+
+	holder, err := mgr.Registry.Create(Job{
+		PresetID:    "shell",
+		Brief:       "holder",
+		Repo:        dir,
+		Permissions: "scoped-write",
+		Status:      StatusNeedsReview,
+	})
+	if err != nil {
+		t.Fatalf("Create holder: %v", err)
+	}
+
+	queued, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "blocked",
+		Repo:           dir,
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create queued: %v", err)
+	}
+
+	mgr.tickScheduler()
+	got := waitForEligibilityReason(t, mgr, queued.ID, "repo busy: "+shortDisplayJobID(holder.ID))
+	if !strings.Contains(got.EligibilityReason, "repo busy") {
+		t.Fatalf("reason missing repo busy prefix: %q", got.EligibilityReason)
+	}
 }

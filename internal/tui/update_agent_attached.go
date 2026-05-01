@@ -287,6 +287,19 @@ func (m model) openAgentJob(id cockpit.JobID, preferInput bool) (tea.Model, tea.
 		return m, cockpitRefreshCmd(m.cockpitClient)
 	}
 	if j.Runner == cockpit.RunnerTmux {
+		if j.Status == cockpit.StatusQueued {
+			reason := strings.TrimSpace(j.EligibilityReason)
+			switch {
+			case reason != "":
+				m.statusMsg = "job queued: " + reason
+			case j.WaitForForeman:
+				m.statusMsg = "job queued: waiting for foreman"
+			default:
+				m.statusMsg = "job queued: press R to start"
+			}
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+			return m, tea.Batch(cockpitRefreshCmd(m.cockpitClient), cockpitForemanRefreshCmd(m.cockpitClient))
+		}
 		if j.TmuxTarget != "" {
 			if err := attachTmuxLocal(j); err == nil {
 				m.mode = modeAgentList
@@ -305,10 +318,10 @@ func (m model) openAgentJob(id cockpit.JobID, preferInput bool) (tea.Model, tea.
 			if strings.TrimSpace(j.Note) != "" {
 				m.statusMsg = "tmux launch failed: " + j.Note
 			} else {
-				m.statusMsg = "tmux window not recorded for this job"
+				m.statusMsg = "tmux session still initializing"
 			}
 			m.statusExpiry = time.Now().Add(3 * time.Second)
-			return m, nil
+			return m, cockpitRefreshCmd(m.cockpitClient)
 		}
 		return m.attachJob(id, false)
 	}
