@@ -41,7 +41,7 @@ func (m model) updateAgentPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Land on the Repo tab so the user explicitly picks (or
 				// types) the repo before composing the brief — Lucas's
 				// feedback was the implicit-cwd default felt "stuck".
-				m.launchFocus = 2
+				m.launchFocus = m.launchRepoFocus()
 				m.launchBrief.Blur()
 				m.mode = modeAgentLaunch
 				return m, nil

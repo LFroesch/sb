@@ -457,7 +457,7 @@ func TestHandleAgentMouseWheelUsesPickerAndLaunchLists(t *testing.T) {
 	m.launchSources = nil
 	m.projects = []workmd.Project{{Dir: "/tmp/a"}, {Dir: "/tmp/b"}}
 	m.launchRepo = "/tmp/a"
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 	next = m.handleAgentMouseWheel(1).(model)
 	if next.launchRepo == "/tmp/a" {
 		t.Fatalf("launchRepo = %q, want repo selection to advance", next.launchRepo)
@@ -478,7 +478,7 @@ func TestUpdateAgentLaunchEnterOnRepoStepAdvancesToNoteInsteadOfLaunching(t *tes
 	m.projects = []workmd.Project{{Dir: "/tmp/a"}, {Dir: "/tmp/b"}}
 	m.launchSources = nil
 	m.launchRepo = "/tmp/a"
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 
 	got, cmd := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyEnter})
 	next := got.(model)
@@ -504,7 +504,7 @@ func TestUpdateAgentLaunchEnterOnRepoStepAppliesVisibleDefaultChoice(t *testing.
 	m.projects = []workmd.Project{{Dir: "/tmp/a"}, {Dir: "/tmp/b"}}
 	m.launchSources = nil
 	m.launchRepo = ""
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 
 	got, _ := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyEnter})
 	next := got.(model)
@@ -543,7 +543,7 @@ func TestUpdateAgentLaunchCustomRepoEnterSetsRepoAndAdvancesToNote(t *testing.T)
 	m := newModel(nil)
 	m.mode = modeAgentLaunch
 	m.launchSources = nil
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 	m.launchRepo = repoSentinelCustom
 	m.launchRepoEditing = true
 	m.launchRepoCustom.SetValue("/tmp/custom-repo")
@@ -571,7 +571,7 @@ func TestUpdateRoutesTypingIntoCustomRepoInput(t *testing.T) {
 	m.mode = modeAgentLaunch
 	m.cockpitClient = stubCockpitClient{}
 	m.launchSources = nil
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 	m.launchRepo = repoSentinelCustom
 	m.launchRepoEditing = true
 	m.launchRepoCustom.Focus()
@@ -597,7 +597,7 @@ func TestLaunchRepoChoicesReachCustomPathWithOneMoveUpFromDefault(t *testing.T) 
 	}
 	m.launchSources = nil
 	m.launchRepo = ""
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 
 	next := m.handleAgentMouseWheel(-1).(model)
 	m = next

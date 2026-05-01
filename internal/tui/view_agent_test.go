@@ -501,7 +501,7 @@ func TestRenderAgentLaunchShowsRepoTabForFreeform(t *testing.T) {
 	m.height = 40
 	m.mode = modeAgentLaunch
 	m.launchRepo = "/tmp/demo"
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
 	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
 
@@ -517,7 +517,7 @@ func TestRenderAgentLaunchShowsLongerRepoPaths(t *testing.T) {
 	m.height = 40
 	m.mode = modeAgentLaunch
 	m.launchRepo = "/tmp/demo/projects/alpha/with/a/very/long/path/name"
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 	m.projects = []workmd.Project{
 		{Dir: "/tmp/demo/projects/alpha/with/a/very/long/path/name"},
 		{Dir: "/tmp/demo/projects/beta"},
@@ -536,7 +536,7 @@ func TestRenderAgentLaunchKeepsCustomRepoEditorVisibleOnShorterTerminals(t *test
 	m.width = 34
 	m.height = 18
 	m.mode = modeAgentLaunch
-	m.launchFocus = 2
+	m.launchFocus = m.launchRepoFocus()
 	m.launchRepo = repoSentinelCustom
 	m.launchRepoEditing = true
 	m.launchRepoCustom.SetValue("/tmp/demo/custom/repo")

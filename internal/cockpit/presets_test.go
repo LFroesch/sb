@@ -161,14 +161,11 @@ func TestComposeBrief_Order(t *testing.T) {
 	}
 }
 
-func TestComposeBrief_IncludesForemanProtocolForQueuedRuns(t *testing.T) {
+func TestComposeBrief_OmitsForemanProtocolBlock(t *testing.T) {
 	preset := LaunchPreset{}
 	out := ComposeBrief(preset, nil, "", true)
-	if !strings.Contains(out, "## FOREMAN PROTOCOL") {
-		t.Fatalf("missing foreman protocol heading:\n%s", out)
-	}
-	if !strings.Contains(out, "ITERATE UNTIL COMPLETE TO PASSED PROMPT PARAMETERS") {
-		t.Fatalf("missing foreman protocol body:\n%s", out)
+	if strings.Contains(out, "FOREMAN PROTOCOL") {
+		t.Fatalf("foreman protocol block should be gone; perms enum drives unattended behaviour now:\n%s", out)
 	}
 }
 

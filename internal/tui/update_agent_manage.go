@@ -13,6 +13,23 @@ import (
 
 var agentManageKinds = []string{"preset", "prompt", "hookbundle", "provider"}
 
+// switchAgentManageKind jumps to a kind directly (used by 1/2/3/4 and r/p/h/g
+// hotkeys) and resets the cursor + per-item navigation state. No-op if the
+// kind is already active or the editor is open.
+func (m *model) switchAgentManageKind(kind string) {
+	if m.agentManageKind == kind || m.agentManageEditing {
+		return
+	}
+	m.agentManageKind = kind
+	m.agentManageCursor = 0
+	m.agentManageField = 0
+	m.agentManageGroup = 0
+	m.agentManageWizard = false
+	m.agentManageListOffset = 0
+	m.agentManageDetailOffset = 0
+	m.agentManageEnsureGroupField()
+}
+
 func cycleAgentManageKind(current string, delta int) string {
 	idx := 0
 	for i, k := range agentManageKinds {
@@ -1101,24 +1118,22 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 		return m, nil
 	case "[":
-		m.agentManageKind = cycleAgentManageKind(m.agentManageKind, -1)
-		m.agentManageCursor = 0
-		m.agentManageField = 0
-		m.agentManageGroup = 0
-		m.agentManageWizard = false
-		m.agentManageListOffset = 0
-		m.agentManageDetailOffset = 0
-		m.agentManageEnsureGroupField()
+		m.switchAgentManageKind(cycleAgentManageKind(m.agentManageKind, -1))
 		return m, nil
 	case "]":
-		m.agentManageKind = cycleAgentManageKind(m.agentManageKind, 1)
-		m.agentManageCursor = 0
-		m.agentManageField = 0
-		m.agentManageGroup = 0
-		m.agentManageWizard = false
-		m.agentManageListOffset = 0
-		m.agentManageDetailOffset = 0
-		m.agentManageEnsureGroupField()
+		m.switchAgentManageKind(cycleAgentManageKind(m.agentManageKind, 1))
+		return m, nil
+	case "1":
+		m.switchAgentManageKind("preset")
+		return m, nil
+	case "2":
+		m.switchAgentManageKind("prompt")
+		return m, nil
+	case "3":
+		m.switchAgentManageKind("hookbundle")
+		return m, nil
+	case "4":
+		m.switchAgentManageKind("provider")
 		return m, nil
 	case "n":
 		if err := m.createManagedAgentItem(); err != nil {

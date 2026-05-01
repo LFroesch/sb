@@ -20,33 +20,72 @@ func (m *model) resetAgentLaunch() {
 	m.launchFocus = 0
 	m.launchPresetIdx = defaultPresetIndex(m.cockpitPresets)
 	m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+	m.launchPromptIdx = -1
+	m.launchHookBundleIdx = -1
+	m.launchPermsIdx = 0
 	m.launchReviewOffset = 0
 	m.launchQueueOnly = false
 }
+
+// Focus tab layout:
+//
+//	0=Role  1=Engine  2=Prompt  3=Hooks  4=Perms  [5=Repo]  Note  Review
+//
+// Repo only appears when launching without sources (freeform); the rest
+// of the steps are always present.
+const (
+	launchFocusRole   = 0
+	launchFocusEngine = 1
+	launchFocusPrompt = 2
+	launchFocusHooks  = 3
+	launchFocusPerms  = 4
+)
 
 func (m model) launchHasRepoStep() bool {
 	return len(m.launchSources) == 0
 }
 
-func (m model) launchFocusCount() int {
+func (m model) launchRepoFocus() int {
 	if m.launchHasRepoStep() {
 		return 5
 	}
-	return 4
+	return -1
+}
+
+func (m model) launchFocusCount() int {
+	// 5 override tabs + (repo) + note + review
+	if m.launchHasRepoStep() {
+		return 8
+	}
+	return 7
 }
 
 func (m model) launchNoteFocus() int {
 	if m.launchHasRepoStep() {
-		return 3
+		return 6
 	}
-	return 2
+	return 5
 }
 
 func (m model) launchReviewFocus() int {
 	if m.launchHasRepoStep() {
-		return 4
+		return 7
 	}
-	return 3
+	return 6
+}
+
+var launchPermsLabels = []string{"(role)", "read-only", "scoped-write", "wide-open"}
+
+func launchPermsValue(idx int) string {
+	switch idx {
+	case 1:
+		return "read-only"
+	case 2:
+		return "scoped-write"
+	case 3:
+		return "wide-open"
+	}
+	return ""
 }
 
 func (m *model) normalizeLaunchFocus() {
@@ -143,7 +182,7 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// On the Repo tab, enter confirms the repo choice and advances to
 		// the note editor; if the "(custom path...)" sentinel is selected,
 		// it first opens the inline path editor.
-		if m.launchHasRepoStep() && m.launchFocus == 2 {
+		if m.launchHasRepoStep() && m.launchFocus == m.launchRepoFocus() {
 			m.syncLaunchRepoToVisibleChoice()
 			if strings.TrimSpace(m.launchRepo) == repoSentinelCustom {
 				m.launchRepoCustom.SetValue("")
@@ -177,69 +216,9 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "j", "down":
-		switch m.launchFocus {
-		case 0:
-			if m.launchPresetIdx < len(m.cockpitPresets)-1 {
-				m.launchPresetIdx++
-				m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
-			}
-		case 1:
-			if m.launchProviderIdx < len(providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders))-1 {
-				m.launchProviderIdx++
-			}
-		case 2:
-			if m.launchHasRepoStep() {
-				repos := m.launchRepoChoices()
-				idx := indexOfLaunchRepo(repos, m.launchRepo)
-				if idx < len(repos)-1 {
-					m.launchRepo = repos[idx+1]
-				}
-			} else {
-				m.launchReviewOffset++
-				m.clampLaunchReviewOffset()
-			}
-		case 3:
-			if !m.launchHasRepoStep() {
-				m.launchReviewOffset++
-				m.clampLaunchReviewOffset()
-			}
-		case 4:
-			m.launchReviewOffset++
-			m.clampLaunchReviewOffset()
-		}
+		m.launchListMove(+1)
 	case "k", "up":
-		switch m.launchFocus {
-		case 0:
-			if m.launchPresetIdx > 0 {
-				m.launchPresetIdx--
-				m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
-			}
-		case 1:
-			if m.launchProviderIdx > 0 {
-				m.launchProviderIdx--
-			}
-		case 2:
-			if m.launchHasRepoStep() {
-				repos := m.launchRepoChoices()
-				idx := indexOfLaunchRepo(repos, m.launchRepo)
-				if idx > 0 {
-					m.launchRepo = repos[idx-1]
-				}
-			} else if m.launchReviewOffset > 0 {
-				m.launchReviewOffset--
-				m.clampLaunchReviewOffset()
-			}
-		case 3:
-			if !m.launchHasRepoStep() && m.launchReviewOffset > 0 {
-				m.launchReviewOffset--
-				m.clampLaunchReviewOffset()
-			}
-		case 4:
-			if m.launchReviewOffset > 0 {
-				m.launchReviewOffset--
-				m.clampLaunchReviewOffset()
-			}
-		}
+		m.launchListMove(-1)
 	case "pgdown", "pgdn":
 		if m.launchFocus == m.launchReviewFocus() {
 			m.launchReviewOffset += 5
@@ -254,13 +233,94 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// launchListMove handles j/k on every focus tab. delta is +1 (down) or -1 (up).
+func (m *model) launchListMove(delta int) {
+	switch m.launchFocus {
+	case launchFocusRole:
+		next := m.launchPresetIdx + delta
+		if next >= 0 && next < len(m.cockpitPresets) {
+			m.launchPresetIdx = next
+			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+			// Reset overrides when role changes — fresh start on a new role.
+			m.launchPromptIdx = -1
+			m.launchHookBundleIdx = -1
+			m.launchPermsIdx = 0
+		}
+	case launchFocusEngine:
+		choices := providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+		next := m.launchProviderIdx + delta
+		if next >= 0 && next < len(choices) {
+			m.launchProviderIdx = next
+		}
+	case launchFocusPrompt:
+		next := m.launchPromptIdx + delta
+		// -1 represents "(role default)"; allow it as the leftmost option.
+		if next >= -1 && next < len(m.cockpitPrompts) {
+			m.launchPromptIdx = next
+		}
+	case launchFocusHooks:
+		next := m.launchHookBundleIdx + delta
+		if next >= -1 && next < len(m.cockpitHookBundles) {
+			m.launchHookBundleIdx = next
+		}
+	case launchFocusPerms:
+		next := m.launchPermsIdx + delta
+		if next >= 0 && next < len(launchPermsLabels) {
+			m.launchPermsIdx = next
+		}
+	default:
+		if m.launchFocus == m.launchRepoFocus() {
+			repos := m.launchRepoChoices()
+			idx := indexOfLaunchRepo(repos, m.launchRepo)
+			next := idx + delta
+			if next >= 0 && next < len(repos) {
+				m.launchRepo = repos[next]
+			}
+			return
+		}
+		if m.launchFocus == m.launchReviewFocus() {
+			m.launchReviewOffset += delta
+			if m.launchReviewOffset < 0 {
+				m.launchReviewOffset = 0
+			}
+			m.clampLaunchReviewOffset()
+		}
+	}
+}
+
+// effectiveLaunchPreset folds the per-launch overrides into a one-off
+// LaunchPreset. The role provides defaults; Prompt/Hooks/Perms tabs swap
+// individual fields without persisting anything.
+func (m model) effectiveLaunchPreset() cockpit.LaunchPreset {
+	preset := m.cockpitPresets[m.launchPresetIdx]
+	if m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts) {
+		p := m.cockpitPrompts[m.launchPromptIdx]
+		preset.PromptID = p.ID
+		preset.SystemPrompt = p.Body
+	}
+	if m.launchHookBundleIdx >= 0 && m.launchHookBundleIdx < len(m.cockpitHookBundles) {
+		b := m.cockpitHookBundles[m.launchHookBundleIdx]
+		preset.HookBundleID = b.ID
+		preset.Hooks = cockpit.HookSpec{
+			Prompt:    b.Prompt,
+			PreShell:  b.PreShell,
+			PostShell: b.PostShell,
+			Iteration: b.Iteration,
+		}
+	}
+	if v := launchPermsValue(m.launchPermsIdx); v != "" {
+		preset.Permissions = v
+	}
+	return preset
+}
+
 func (m model) doLaunch() (tea.Model, tea.Cmd) {
 	if len(m.cockpitPresets) == 0 {
 		m.statusMsg = "no presets available"
 		m.statusExpiry = time.Now().Add(3 * time.Second)
 		return m, nil
 	}
-	preset := m.cockpitPresets[m.launchPresetIdx]
+	preset := m.effectiveLaunchPreset()
 	repo := strings.TrimSpace(m.launchRepo)
 	if repo == repoSentinelCustom {
 		// User landed on the "custom path..." sentinel without typing one.

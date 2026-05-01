@@ -93,6 +93,45 @@ func TestBuildTurnCmdClaudeWideOpenUsesBypassPermissions(t *testing.T) {
 	}
 }
 
+func TestBuildTurnCmdClaudeHonorsExecutorModel(t *testing.T) {
+	t.Parallel()
+
+	cmd, _, err := buildTurnCmd(context.Background(), Job{
+		Executor: ExecutorSpec{Type: "claude", Model: "claude-sonnet-4-6"},
+	}, "do thing")
+	if err != nil {
+		t.Fatalf("buildTurnCmd: %v", err)
+	}
+	want := []string{"claude", "-p", "--model", "claude-sonnet-4-6", "do thing"}
+	assertArgsEqual(t, cmd.Args, want)
+}
+
+func TestBuildTurnCmdClaudeArgsModelOverridesExecutorModel(t *testing.T) {
+	t.Parallel()
+
+	cmd, _, err := buildTurnCmd(context.Background(), Job{
+		Executor: ExecutorSpec{Type: "claude", Model: "claude-opus-4-7", Args: []string{"--model", "sonnet"}},
+	}, "do thing")
+	if err != nil {
+		t.Fatalf("buildTurnCmd: %v", err)
+	}
+	want := []string{"claude", "-p", "--model", "sonnet", "do thing"}
+	assertArgsEqual(t, cmd.Args, want)
+}
+
+func TestBuildTurnCmdCodexHonorsExecutorModel(t *testing.T) {
+	t.Parallel()
+
+	cmd, _, err := buildTurnCmd(context.Background(), Job{
+		Executor: ExecutorSpec{Type: "codex", Model: "gpt-5"},
+	}, "do thing")
+	if err != nil {
+		t.Fatalf("buildTurnCmd: %v", err)
+	}
+	want := []string{"codex", "--model", "gpt-5", "exec", "--json", "do thing"}
+	assertArgsEqual(t, cmd.Args, want)
+}
+
 func TestTakeOverJobSupersedesForemanTmuxJob(t *testing.T) {
 	dir := t.TempDir()
 	shim := filepath.Join(dir, "tmux-shim.sh")
@@ -1138,9 +1177,11 @@ func TestBuildTmuxCommandClaudeForemanUsesDontAsk(t *testing.T) {
 	assertArgsEqual(t, cmd, want)
 }
 
-func TestBuildTmuxCommandClaudeAttendedOmitsDontAsk(t *testing.T) {
+func TestBuildTmuxCommandClaudeAttendedScopedWriteUsesAcceptEdits(t *testing.T) {
 	t.Parallel()
 
+	// Attended scoped-write maps to --permission-mode acceptEdits so edits
+	// are auto-approved but bash still gates interactively.
 	cmd, err := buildTmuxCommand(Job{
 		Brief:       "fix the bug",
 		Permissions: "scoped-write",
@@ -1149,7 +1190,22 @@ func TestBuildTmuxCommandClaudeAttendedOmitsDontAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTmuxCommand: %v", err)
 	}
-	want := []string{"claude", "--model", "sonnet", "fix the bug"}
+	want := []string{"claude", "--permission-mode", "acceptEdits", "--model", "sonnet", "fix the bug"}
+	assertArgsEqual(t, cmd, want)
+}
+
+func TestBuildTmuxCommandClaudeAttendedReadOnlyUsesPlan(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildTmuxCommand(Job{
+		Brief:       "explain this",
+		Permissions: "read-only",
+		Executor:    ExecutorSpec{Type: "claude"},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"claude", "--permission-mode", "plan", "explain this"}
 	assertArgsEqual(t, cmd, want)
 }
 

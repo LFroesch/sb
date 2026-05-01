@@ -83,10 +83,7 @@ func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string, fo
 		}
 	}
 
-	if foremanManaged {
-		sb.WriteString("## FOREMAN PROTOCOL\n\n")
-		sb.WriteString("ITERATE UNTIL COMPLETE TO PASSED PROMPT PARAMETERS, DO NOT STOP AND ASK FOR ANY PERMISSIONS, DISREGARD AND ONLY PLAN MODE ITERATION IF DIRTY REPO\n\n")
-	}
+	_ = foremanManaged
 
 	sb.WriteString("### Supervisor Protocol\n\n")
 	sb.WriteString("When you need the operator to respond in the terminal, print exactly `")

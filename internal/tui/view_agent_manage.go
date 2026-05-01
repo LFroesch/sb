@@ -9,9 +9,28 @@ import (
 func (m model) renderAgentManage() string {
 	kindLabel := agentManageKindLabel(m.agentManageKind)
 	var headerLines []string
-	hint := "  ·  advanced  ·  focus: " + strings.ToLower(kindLabel) +
-		"  ·  [ / ] cycle: presets · prompts · hooks · runtimes"
-	headerLines = append(headerLines, titleStyle.Render("Agent Setup")+dimStyle.Render(hint))
+
+	tab := func(name, key, kind string) string {
+		label := dimStyle.Render(key+" ") + name
+		if m.agentManageKind == kind {
+			label = accentStyle.Bold(true).Render("▸ "+key+" "+name)
+		} else {
+			label = "  " + label
+		}
+		return label
+	}
+	tabs := tab("Roles", "1", "preset") + dimStyle.Render("  ·  ") +
+		tab("Prompts", "2", "prompt") + dimStyle.Render("  ·  ") +
+		tab("Hooks", "3", "hookbundle") + dimStyle.Render("  ·  ") +
+		tab("Engines", "4", "provider")
+	headerLines = append(headerLines, titleStyle.Render("Agent Setup")+"   "+tabs)
+
+	advHint := "advanced hidden"
+	if m.agentManageAdvanced {
+		advHint = "advanced shown"
+	}
+	headerLines = append(headerLines, dimStyle.Render("  "+strings.ToLower(kindLabel)+
+		"  ·  n new · D dup · d delete · enter edit · a "+advHint+"  ·  [/] or 1-4 switch kind"))
 	headerLines = append(headerLines, "")
 
 	panelHeight, innerHeight := m.agentManagePanelHeights()
@@ -72,7 +91,7 @@ func (m model) renderAgentManage() string {
 }
 
 func (m model) agentManagePanelHeights() (panelHeight, innerHeight int) {
-	headerLines := 2
+	headerLines := 3
 	panelHeight = m.agentContentHeight() - headerLines - 2
 	if panelHeight < 3 {
 		panelHeight = 3

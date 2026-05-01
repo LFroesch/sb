@@ -906,12 +906,26 @@ func claudeBin(spec ExecutorSpec) string {
 }
 
 func claudeLaunchArgs(j Job) []string {
-	args := make([]string, 0, len(j.Executor.Args)+2)
+	args := make([]string, 0, len(j.Executor.Args)+4)
 	if mode := claudePermissionMode(j); mode != "" {
 		args = append(args, "--permission-mode", mode)
 	}
-	args = append(args, normalizedClaudeArgs(j.Executor.Args)...)
+	userArgs := normalizedClaudeArgs(j.Executor.Args)
+	if model := strings.TrimSpace(j.Executor.Model); model != "" && !argsContainFlag(userArgs, "--model") {
+		args = append(args, "--model", model)
+	}
+	args = append(args, userArgs...)
 	return args
+}
+
+func argsContainFlag(args []string, flag string) bool {
+	prefix := flag + "="
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitCodexArgs(args []string) ([]string, []string) {
@@ -953,17 +967,34 @@ func codexLaunchArgs(j Job) ([]string, error) {
 		return nil, fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
 	}
 	args := append([]string{}, codexRuntimeArgs(j)...)
+	if model := strings.TrimSpace(j.Executor.Model); model != "" && !argsContainFlag(extraArgs, "--model") && !argsContainFlag(extraArgs, "-m") {
+		args = append(args, "--model", model)
+	}
 	args = append(args, extraArgs...)
 	return args, nil
 }
 
 func claudePermissionMode(j Job) string {
+	// Unattended foreman/queued runs always bypass interactive prompts;
+	// the perms enum still constrains *what* the agent can do via
+	// downstream tool gating, but we can't have it sit waiting for input.
+	if jobRunsUnattended(j) {
+		switch strings.ToLower(strings.TrimSpace(j.Permissions)) {
+		case "wide-open":
+			return "bypassPermissions"
+		case "read-only":
+			return "plan"
+		default:
+			return "dontAsk"
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(j.Permissions)) {
+	case "read-only":
+		return "plan"
+	case "scoped-write":
+		return "acceptEdits"
 	case "wide-open":
 		return "bypassPermissions"
-	}
-	if jobRunsUnattended(j) {
-		return "dontAsk"
 	}
 	return ""
 }

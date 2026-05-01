@@ -244,46 +244,7 @@ func (m model) handleAgentMouseWheel(delta int) tea.Model {
 		}
 	case modeAgentLaunch:
 		m.normalizeLaunchFocus()
-		switch m.launchFocus {
-		case 0:
-			if delta > 0 && m.launchPresetIdx < len(m.cockpitPresets)-1 {
-				m.launchPresetIdx++
-				m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
-			}
-			if delta < 0 && m.launchPresetIdx > 0 {
-				m.launchPresetIdx--
-				m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
-			}
-		case 1:
-			providers := providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
-			if delta > 0 && m.launchProviderIdx < len(providers)-1 {
-				m.launchProviderIdx++
-			}
-			if delta < 0 && m.launchProviderIdx > 0 {
-				m.launchProviderIdx--
-			}
-		case 2:
-			if m.launchHasRepoStep() {
-				repos := m.launchRepoChoices()
-				idx := indexOfLaunchRepo(repos, m.launchRepo)
-				if delta > 0 && idx < len(repos)-1 {
-					m.launchRepo = repos[idx+1]
-				}
-				if delta < 0 && idx > 0 {
-					m.launchRepo = repos[idx-1]
-				}
-				return m
-			}
-			fallthrough
-		case 3:
-			if m.launchFocus == m.launchReviewFocus() {
-				m.launchReviewOffset += delta
-				m.clampLaunchReviewOffset()
-			}
-		case 4:
-			m.launchReviewOffset += delta
-			m.clampLaunchReviewOffset()
-		}
+		m.launchListMove(delta)
 	default:
 		jobs := m.filteredAgentJobs()
 		if delta > 0 && m.agentCursor < len(jobs)-1 {

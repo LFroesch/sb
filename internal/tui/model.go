@@ -180,16 +180,19 @@ type model struct {
 	pickerRepo         string
 	pickerItems        []cockpit.PickerItem
 	pickerSelected     map[int]bool
-	launchSources      []cockpit.SourceTask
-	launchRepo         string
-	launchPresetIdx    int
-	launchProviderIdx  int // 0 = preset default, 1..n = providers[idx-1]
-	launchBrief        textarea.Model
-	launchFocus        int // 0=recipe 1=provider 2=repo 3=brief 4=review
-	launchReviewOffset int
-	launchQueueOnly    bool
-	launchRepoCustom   textinput.Model // active when typing a custom repo path
-	launchRepoEditing  bool            // true while launchRepoCustom is focused
+	launchSources       []cockpit.SourceTask
+	launchRepo          string
+	launchPresetIdx     int
+	launchProviderIdx   int  // index into m.cockpitProviders
+	launchPromptIdx     int  // -1 = use role default, else index into m.cockpitPrompts
+	launchHookBundleIdx int  // -1 = use role default, else index into m.cockpitHookBundles
+	launchPermsIdx      int  // 0 = role default, 1=read-only, 2=scoped-write, 3=wide-open
+	launchBrief         textarea.Model
+	launchFocus         int // 0=role 1=engine 2=prompt 3=hooks 4=perms [5=repo] note review
+	launchReviewOffset  int
+	launchQueueOnly     bool
+	launchRepoCustom    textinput.Model // active when typing a custom repo path
+	launchRepoEditing   bool            // true while launchRepoCustom is focused
 	attachedJobID      cockpit.JobID
 	attachedInput      textarea.Model
 	attachedFocus      int    // 0=transcript (shortcuts + scroll), 1=input (typing)
