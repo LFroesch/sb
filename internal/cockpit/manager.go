@@ -120,6 +120,7 @@ type LaunchRequest struct {
 	Sources   []SourceTask  `json:"sources,omitempty"`
 	Repo      string        `json:"repo"`
 	Freeform  string        `json:"freeform,omitempty"`
+	PromptAdd string        `json:"prompt_add,omitempty"`
 	Provider  *ExecutorSpec `json:"provider,omitempty"`
 	QueueOnly bool          `json:"queue_only,omitempty"`
 }
@@ -209,6 +210,9 @@ func (m *Manager) launchQueuedSequence(req LaunchRequest) (Job, error) {
 
 func (m *Manager) createQueuedJob(req LaunchRequest, sources []SourceTask, campaignID CampaignID, queueIndex, queueTotal int) (Job, error) {
 	brief := ComposeBrief(req.Preset, sources, req.Freeform, req.QueueOnly)
+	if extra := strings.TrimSpace(req.PromptAdd); extra != "" {
+		brief = strings.TrimRight(brief, "\n") + "\n\n" + extra + "\n"
+	}
 	task := SummarizeTask(sources, req.Freeform)
 	repoStatusAtLaunch := gitStatusSnapshot(req.Repo)
 	executor := req.Preset.Executor
@@ -315,7 +319,7 @@ func (m *Manager) tickScheduler() {
 		}
 		if j.ForemanManaged {
 			switch j.Status {
-			case StatusRunning, StatusIdle, StatusNeedsReview, StatusBlocked:
+			case StatusRunning, StatusIdle, StatusBlocked:
 				activeForeman++
 			}
 		}
@@ -458,7 +462,7 @@ func jobLocksRepo(j Job) bool {
 		return false
 	}
 	switch j.Status {
-	case StatusRunning, StatusIdle, StatusNeedsReview, StatusBlocked:
+	case StatusRunning, StatusIdle, StatusAwaitingHuman, StatusNeedsReview, StatusBlocked:
 		return true
 	default:
 		return false
@@ -830,15 +834,8 @@ func buildTurnCmd(ctx context.Context, j Job, userInput string) (*exec.Cmd, stri
 	spec := j.Executor
 	switch strings.ToLower(spec.Type) {
 	case "claude":
-		bin := spec.Cmd
-		if bin == "" {
-			bin = "claude"
-		}
 		args := []string{"-p"}
-		if mode := claudePermissionMode(j); mode != "" {
-			args = append(args, "--permission-mode", mode)
-		}
-		extraArgs := normalizedClaudeArgs(spec.Args)
+		args = append(args, claudeLaunchArgs(j)...)
 		// First assistant turn: pin the session id. Subsequent: resume it.
 		if countAssistantTurns(&j) == 0 {
 			if j.SessionID != "" {
@@ -847,31 +844,23 @@ func buildTurnCmd(ctx context.Context, j Job, userInput string) (*exec.Cmd, stri
 		} else if j.SessionID != "" {
 			args = append(args, "--resume", j.SessionID)
 		}
-		args = append(args, extraArgs...)
 		args = append(args, userInput)
-		return exec.CommandContext(ctx, bin, args...), "", nil
+		return exec.CommandContext(ctx, claudeBin(spec), args...), "", nil
 	case "codex":
-		bin := spec.Cmd
-		if bin == "" {
-			bin = "codex"
+		args, err := codexLaunchArgs(j)
+		if err != nil {
+			return nil, "", err
 		}
-		extraArgs, positionalArgs := splitCodexArgs(spec.Args)
-		if len(positionalArgs) > 0 {
-			return nil, "", fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
-		}
-		args := append([]string{}, codexRuntimeArgs(j)...)
 		if j.SessionID != "" {
 			args = append(args, "exec", "resume")
-			args = append(args, extraArgs...)
 			args = append(args, "--json")
 			args = append(args, j.SessionID, userInput)
-			return exec.CommandContext(ctx, bin, args...), "", nil
+			return exec.CommandContext(ctx, codexBin(spec), args...), "", nil
 		}
 		args = append(args, "exec")
-		args = append(args, extraArgs...)
 		args = append(args, "--json")
 		args = append(args, userInput)
-		return exec.CommandContext(ctx, bin, args...), "", nil
+		return exec.CommandContext(ctx, codexBin(spec), args...), "", nil
 	case "ollama":
 		bin := spec.Cmd
 		if bin == "" {
@@ -909,6 +898,22 @@ func normalizedClaudeArgs(args []string) []string {
 	return out
 }
 
+func claudeBin(spec ExecutorSpec) string {
+	if strings.TrimSpace(spec.Cmd) != "" {
+		return spec.Cmd
+	}
+	return "claude"
+}
+
+func claudeLaunchArgs(j Job) []string {
+	args := make([]string, 0, len(j.Executor.Args)+2)
+	if mode := claudePermissionMode(j); mode != "" {
+		args = append(args, "--permission-mode", mode)
+	}
+	args = append(args, normalizedClaudeArgs(j.Executor.Args)...)
+	return args
+}
+
 func splitCodexArgs(args []string) ([]string, []string) {
 	opts := make([]string, 0, len(args))
 	positionals := make([]string, 0)
@@ -933,6 +938,23 @@ func splitCodexArgs(args []string) ([]string, []string) {
 		}
 	}
 	return opts, positionals
+}
+
+func codexBin(spec ExecutorSpec) string {
+	if strings.TrimSpace(spec.Cmd) != "" {
+		return spec.Cmd
+	}
+	return "codex"
+}
+
+func codexLaunchArgs(j Job) ([]string, error) {
+	extraArgs, positionalArgs := splitCodexArgs(j.Executor.Args)
+	if len(positionalArgs) > 0 {
+		return nil, fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
+	}
+	args := append([]string{}, codexRuntimeArgs(j)...)
+	args = append(args, extraArgs...)
+	return args, nil
 }
 
 func claudePermissionMode(j Job) string {
@@ -1171,6 +1193,67 @@ func (m *Manager) RetryJob(id JobID, presets []LaunchPreset) (Job, error) {
 	})
 }
 
+func (m *Manager) TakeOverJob(id JobID, presets []LaunchPreset) (Job, error) {
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return Job{}, fmt.Errorf("unknown job %s", id)
+	}
+	if err := validateTakeOverJob(j); err != nil {
+		return Job{}, err
+	}
+	var preset LaunchPreset
+	for _, p := range presets {
+		if p.ID == j.PresetID {
+			preset = p
+			break
+		}
+	}
+	if preset.ID == "" {
+		return Job{}, fmt.Errorf("preset %s not found", j.PresetID)
+	}
+
+	handoff, err := BuildTakeoverPrompt(j)
+	if err != nil {
+		return Job{}, err
+	}
+	replacement, err := m.createQueuedJob(LaunchRequest{
+		Preset:    preset,
+		Sources:   j.Sources,
+		Repo:      j.Repo,
+		Freeform:  j.Freeform,
+		PromptAdd: handoff,
+	}, j.Sources, "", 0, 1)
+	if err != nil {
+		return Job{}, err
+	}
+
+	if err := m.closeTakeoverSource(j.ID); err != nil {
+		return Job{}, err
+	}
+	_ = m.Registry.Update(j.ID, func(jj *Job) {
+		jj.SupersededBy = replacement.ID
+		jj.Status = StatusCompleted
+		jj.SyncBackState = SyncBackSkipped
+		jj.Note = "taken over by " + string(replacement.ID)
+		jj.FinishedAt = time.Now()
+		jj.ForemanManaged = false
+		jj.WaitForForeman = false
+	})
+	_ = m.Registry.Update(replacement.ID, func(jj *Job) {
+		jj.TakeoverOf = j.ID
+		jj.Note = "manual takeover of " + string(j.ID)
+	})
+	if err := m.startQueuedJob(replacement.ID); err != nil {
+		return Job{}, err
+	}
+	final, _ := m.Registry.Get(replacement.ID)
+	m.emit(Event{TS: time.Now(), JobID: j.ID, Kind: EventStatusChanged, Payload: map[string]any{
+		"status": string(StatusCompleted),
+		"note":   "taken over by " + string(replacement.ID),
+	}})
+	return final, nil
+}
+
 // SkipJob marks a queued/reviewed item as intentionally skipped while
 // preserving the job record for operator history, then advances any
 // blocked queue for the repo/campaign.
@@ -1243,6 +1326,22 @@ func (m *Manager) skipOneJob(id JobID, note string) error {
 		"status": string(StatusCompleted),
 		"note":   note,
 	}})
+	return nil
+}
+
+func (m *Manager) closeTakeoverSource(id JobID) error {
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %s", id)
+	}
+	if j.Runner == RunnerTmux && j.TmuxTarget != "" {
+		if snapshot, err := CapturePane(j.TmuxTarget); err == nil && strings.TrimSpace(snapshot) != "" {
+			_ = appendTranscriptLine(j.LogPath, "\n[takeover snapshot]\n"+snapshot+"\n")
+		}
+		if err := KillWindow(j.TmuxTarget); err != nil && !isTmuxMissingResourceError(err) {
+			return err
+		}
+	}
 	return nil
 }
 

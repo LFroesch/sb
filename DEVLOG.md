@@ -510,3 +510,13 @@
 - Added minimal preset/provider management to the Agent page: `p` creates a preset JSON template (including hook examples) and opens it in the editor, `v` does the same for a provider, and `P` / `V` open the config directories directly.
 - Filtered legacy provider IDs `claude-interactive` and `codex-interactive` out of `LoadProviders`, so users with older `~/.config/sb/providers/` seeds no longer see duplicate Claude/Codex entries in the cockpit.
 - Added `CleanLegacyConfig` at startup to rewrite old cockpit config instead of papering over it at runtime: it deletes `claude-interactive.json` / `codex-interactive.json` and strips redundant Claude/Codex executor args from provider and preset JSON on disk.
+# 2026-05-01
+
+- tightened tmux session supervision and transcript readability for Agents/Foreman runs
+- preserved meaningful indentation in sanitized session logs so review panes stop mangling commands/code blocks
+- widened tmux pane fallback detection to treat common follow-up / confirmation phrases as operator-yield signals when a model forgets to print `SB_STATUS`
+- added regression coverage for Foreman unattended launch flags and `ctrl+r` attended relaunch behavior
+- deduplicated Claude/Codex launch-policy argv assembly so exec turns, tmux runs, Foreman queue starts, and attended takeovers all share the same permission/runtime flag builder
+- broadened tmux fallback handoff detection so direct questions, soft keep-going offers, and GUI-style choice prompts all yield back to the human
+- gated tmux supervisor yields behind a 10-second quiet period on the session log so handoff phrases only trigger once the turn has actually gone idle
+- split Foreman human handoffs into a first-class `awaiting_human` state so yielded jobs release Foreman concurrency while still holding same-repo write locks until the operator resolves them

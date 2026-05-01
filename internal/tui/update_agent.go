@@ -105,11 +105,11 @@ func agentJobMatchesFilter(j cockpit.Job, filter string) bool {
 	status, _ := jobOperatorStatus(j)
 	switch filter {
 	case "live":
-		return status == "working" || status == "waiting for input" || status == "queued" || status == "waiting for foreman" || status == "deferred"
+		return status == "working" || status == "waiting on you" || status == "waiting for input" || status == "queued" || status == "waiting for foreman" || status == "deferred"
 	case "running":
 		return status == "working"
 	case "attention":
-		return status == "needs review" || status == "blocked" || status == "failed" || status == "stopped" || status == "closed" || status == "deferred"
+		return status == "waiting on you" || status == "needs review" || status == "blocked" || status == "failed" || status == "stopped" || status == "closed" || status == "deferred"
 	case "foreman":
 		return j.ForemanManaged
 	case "done":
@@ -145,7 +145,7 @@ type agentManageFieldSpec struct {
 }
 
 // orderAgentJobs sorts the operator-facing cockpit order:
-// working → waiting for input → needs review → queued → done.
+// working → waiting on you → needs review → queued → done.
 func orderAgentJobs(jobs []cockpit.Job) []cockpit.Job {
 	out := append([]cockpit.Job(nil), jobs...)
 	sort.SliceStable(out, func(i, j int) bool {
@@ -437,6 +437,10 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.openAgentJob(j.ID, true)
 		}
+	case "ctrl+r":
+		if m.agentCursor < len(jobs) {
+			return m.beginTakeover(jobs[m.agentCursor].ID)
+		}
 	case "K":
 		if m.agentCursor < len(jobs) {
 			j := jobs[m.agentCursor]
@@ -539,6 +543,10 @@ func (m *model) armAgentConfirm(kind string, id cockpit.JobID) {
 	m.agentConfirmTarget = id
 }
 
+func (m model) agentTakeoverPrompt(j cockpit.Job) string {
+	return "take over " + string(j.ID) + "? y/n (stop Foreman session, relaunch attended, preserve history)"
+}
+
 func (m model) agentDeletePrompt(j cockpit.Job) string {
 	if j.Status == cockpit.StatusRunning {
 		return "delete " + string(j.ID) + "? y/n (will interrupt the running job and remove it)"
@@ -638,9 +646,85 @@ func (m model) runConfirmedAgentAction() (tea.Model, tea.Cmd) {
 		}
 		m.statusExpiry = time.Now().Add(3 * time.Second)
 		return m, cockpitRefreshCmd(m.cockpitClient)
+	case "takeover":
+		job, err := m.cockpitClient.TakeOverJob(id, m.cockpitPresets)
+		if err != nil {
+			m.statusMsg = "take over: " + err.Error()
+			m.statusExpiry = time.Now().Add(3 * time.Second)
+			return m, cockpitRefreshCmd(m.cockpitClient)
+		}
+		m.statusMsg = "taken over " + string(id)
+		m.statusExpiry = time.Now().Add(2 * time.Second)
+		return m.openAgentJob(job.ID, true)
 	default:
 		return m, nil
 	}
+}
+
+func (m model) beginTakeover(id cockpit.JobID) (tea.Model, tea.Cmd) {
+	j, ok := m.cockpitClient.GetJob(id)
+	if !ok {
+		m.statusMsg = "take over: job not found"
+		m.statusExpiry = time.Now().Add(2 * time.Second)
+		return m, nil
+	}
+	if !eligibleForTakeover(j) {
+		m.statusMsg = "take over unavailable for this job"
+		m.statusExpiry = time.Now().Add(3 * time.Second)
+		return m, nil
+	}
+	m.armAgentConfirm("takeover", id)
+	m.statusMsg = m.agentTakeoverPrompt(j)
+	m.statusExpiry = time.Now().Add(10 * time.Second)
+	return m, nil
+}
+
+func eligibleForTakeover(j cockpit.Job) bool {
+	if !j.ForemanManaged || j.Runner != cockpit.RunnerTmux || strings.TrimSpace(j.TmuxTarget) == "" {
+		return false
+	}
+	switch j.Status {
+	case cockpit.StatusRunning, cockpit.StatusIdle, cockpit.StatusAwaitingHuman:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *model) focusTakeoverJob(id cockpit.JobID) {
+	m.page = pageAgent
+	m.mode = modeAgentList
+	m.agentFilter = "all"
+	jobs := m.filteredAgentJobs()
+	for i, job := range jobs {
+		if job.ID == id {
+			m.agentCursor = i
+			m.agentDetailOffset = 0
+			return
+		}
+	}
+	m.agentCursor = clampAgentCursor(m.agentCursor, len(jobs))
+	m.agentDetailOffset = 0
+}
+
+func (m model) beginTakeoverFromPendingTarget() (tea.Model, tea.Cmd, bool) {
+	target, ok, err := cockpit.ShowEnvironment(cockpit.EnvTakeoverTarget)
+	if err == nil && ok {
+		_ = cockpit.UnsetEnvironment(cockpit.EnvTakeoverTarget)
+		for _, job := range m.orderedAgentJobs() {
+			if job.TmuxTarget == target {
+				m.focusTakeoverJob(job.ID)
+				next, cmd := m.beginTakeover(job.ID)
+				return next, cmd, true
+			}
+		}
+		m.page = pageAgent
+		m.mode = modeAgentList
+		m.statusMsg = "take over: no job found for " + target
+		m.statusExpiry = time.Now().Add(3 * time.Second)
+		return m, nil, true
+	}
+	return m, nil, false
 }
 
 // devlogPathForJob picks the DEVLOG.md path next to the first source

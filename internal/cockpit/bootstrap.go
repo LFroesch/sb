@@ -21,8 +21,9 @@ var ExecFallback bool
 
 // Env keys we set/read to keep the bootstrap from looping.
 const (
-	EnvInCockpit = "SB_IN_COCKPIT" // set to 1 by the re-exec child
-	EnvNoTmux    = "SB_NO_TMUX"    // user opt-out
+	EnvInCockpit      = "SB_IN_COCKPIT" // set to 1 by the re-exec child
+	EnvNoTmux         = "SB_NO_TMUX"    // user opt-out
+	EnvTakeoverTarget = "SB_TAKEOVER_TARGET"
 )
 
 const cockpitDashboardTarget = CockpitSession + ":" + CockpitDashboardWindow
@@ -142,6 +143,12 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 	_ = BindKey("F1", "select-window -t "+cockpitDashboardTarget)
 	_ = BindKey("C-g", "select-window -t "+cockpitDashboardTarget)
 	_ = BindKey("F12", "select-window -t "+cockpitDashboardTarget)
+	_, _ = runTmux(
+		"bind-key", "-T", "root", "C-r",
+		"if-shell", "-F", dashboardWindowCondition(),
+		"send-keys C-r",
+		`set-environment -g `+EnvTakeoverTarget+` "#{session_name}:#{window_id}" \; select-window -t `+cockpitDashboardTarget+` \; send-keys -t `+cockpitDashboardTarget+` C-r`,
+	)
 	// Make Ctrl+C safer in attached job windows: on the shared dashboard,
 	// detach just the current client when multiple terminals are attached
 	// so one operator does not kill sb for everyone else. Everywhere else,

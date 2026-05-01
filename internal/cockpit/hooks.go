@@ -12,6 +12,7 @@ import (
 const (
 	SupervisorWaitingHumanMarker = "SB_STATUS:WAITING_HUMAN"
 	SupervisorReadyReviewMarker  = "SB_STATUS:READY_REVIEW"
+	SupervisorQuietPeriod        = 10 * time.Second
 )
 
 // ComposeBrief builds the final prompt string handed to the executor.

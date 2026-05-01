@@ -19,3 +19,12 @@ func TestSanitizeDropsBoxDrawingChrome(t *testing.T) {
 		t.Fatalf("Sanitize() = %q, want %q", got, want)
 	}
 }
+
+func TestSanitizePreservesMeaningfulIndentation(t *testing.T) {
+	raw := "result:\n    go test ./...\n  PASS\n"
+	got := Sanitize(raw)
+	want := "result:\n    go test ./...\n  PASS"
+	if got != want {
+		t.Fatalf("Sanitize() = %q, want %q", got, want)
+	}
+}

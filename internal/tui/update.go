@@ -339,6 +339,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.helpScroll = 0
 			}
 			return m, nil
+		case "ctrl+r":
+			if m.cockpitClient != nil {
+				if next, cmd, ok := m.beginTakeoverFromPendingTarget(); ok {
+					return next, cmd
+				}
+			}
 		}
 
 		if m.mode == modeHelp {

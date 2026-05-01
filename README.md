@@ -121,7 +121,7 @@ The `o` key opens project directories in your editor — set `$VISUAL` (GUI) or 
 
 ```bash
 export EDITOR=nvim      # terminal editor
-export VISUAL=cursor    # GUI editor (checked first)
+export VISUAL=code      # GUI editor (checked first)
 ```
 
 The header now shows the active LLM profile and model, for example `llm=openai:gpt-4.1-mini`. If the selected provider is incomplete, sb shows a warning like `llm disabled (missing OPENAI_API_KEY)` instead of leaving the active backend ambiguous.
@@ -193,7 +193,7 @@ Press `t` on any project — the active model reads the WORK.md and tells you th
 
 ### Fix non-list lines (`-`)
 
-Scans WORK.md for lines that aren't proper list items and fixes them in-place. Useful after messy manual edits.
+Scans your project .md files for lines that aren't proper list items and fixes them in-place. Useful after messy manual edits.
 
 ### Agents (Agents tab)
 
@@ -233,13 +233,14 @@ From the dashboard, switch to the **Agents** tab:
    Accept will refuse sync-back when the target `WORK.md` or `DEVLOG.md` already has uncommitted changes.
 17. `R` starts a waiting Foreman job immediately if it is still queued, or opens the selected existing session if it is already live/stopped.
 18. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
-19. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, and `enter` edits a field — except `Permissions` and `Iteration mode` cycle in place between their fixed options. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, `enter`-to-cycle fields refresh immediately too, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away. The old static `↻ ...` hint text was removed from field rows because it was not live state.
+19. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, and `enter` edits a field — except `Permissions` and `Iteration mode` cycle in place between their fixed options. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, `enter`-to-cycle fields refresh immediately too, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away.
    `n` creates a new role/engine and drops you into the wizard with `Name` already focused; saving each field auto-advances to the next group.
    `D` duplicates and `d` deletes the highlighted item.
    The picker, setup, list, and attached-session views share the same terminal-height budget, so local scrolling should not hide the app chrome on short terminals.
 
-tmux-backed jobs now also carry an explicit supervisor protocol inside the launch prompt. When a session needs the user to respond, it should print `SB_STATUS:WAITING_HUMAN`. When it is done and ready for review, it should print `SB_STATUS:READY_REVIEW`. `sb` watches the pane for those markers so normal jobs visibly flip into `waiting for input` / `needs review`, and Foreman can treat that as a real yield signal instead of guessing from whether the tmux window is still open.
-As a fallback, `sb` also treats obvious interruption / provider-limit messages in the live pane (for example `conversation interrupted` or `usage limit reached`) as a yield back to the operator, so one sloppy session is less likely to block the rest of a Foreman queue forever.
+tmux-backed jobs now also carry an explicit supervisor protocol inside the launch prompt. When a session needs the user to respond, it should print `SB_STATUS:WAITING_HUMAN`. When it is done and ready for review, it should print `SB_STATUS:READY_REVIEW`. `sb` watches the pane for those markers so normal jobs visibly flip into `waiting on you` / `needs review`, and Foreman can treat that as a real yield signal instead of guessing from whether the tmux window is still open.
+As a fallback, `sb` also treats obvious interruption / provider-limit messages in the live pane (for example `conversation interrupted` or `usage limit reached`) as a yield back to the operator, and it now also catches broader handoff endings when the model forgets to print `SB_STATUS`: direct questions, soft `if you'd like me to keep going...` offers, `Choose one` / `Select an option` prompts, `y/n` confirmations, and similar GUI-style follow-up requests. Those fallback detections only fire after the tmux session log has been quiet for 10 seconds, so an in-progress answer is less likely to false-trigger midway through a turn.
+Foreman handoffs now split cleanly: `waiting on you` and `needs review` no longer consume a Foreman concurrency slot, but write-capable jobs still keep their repo lock until you resolve them so later same-repo queued work does not pile onto a dirty tree by accident.
 
 **Roles** describe reusable launch behavior: role/persona, launch mode, system prompt, hooks, iteration, policies, and a suggested engine. **Engines** describe the concrete executor/runtime (Claude CLI, Codex CLI, Ollama model). A role can be launched with any loaded engine.
 
@@ -248,18 +249,15 @@ Seed **roles** currently materialise in `~/.config/sb/presets/` on first run: `s
 Seed **engines** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`.
 
 Edit any `*.json` in those dirs to customise. The on-disk schema still uses `presets` and `providers` for compatibility, even though the UI now frames them as roles and engines. Older utility roles still load if you already have them; they now sort below the core coding roles instead of crowding the top of the picker.
-From the Agents page, `m` opens in-app Agent Setup. The previous `p`/`v`/`P`/`V` shortcuts (write JSON template + open in `$EDITOR`, open the presets/providers dir) were removed in favor of the in-app wizard.
-
-Older preset/recipe files that still contain legacy executor args like Claude `--print` or Codex `exec` / `--json` are normalized at runtime, so they continue to work after the tmux split.
+From the Agents page, `m` opens in-app Agent Setup.
 
 ### tmux status bar and scrolling
 
 The bar at the bottom of live Claude/Codex sessions is the `tmux` status bar for the isolated `sb-cockpit` session. `sb` now gives that session its own styling, mouse support, higher scrollback, and no-prefix wheel/page scrolling without touching your personal tmux server or config.
 
 - The tmux bar refreshes on a moderate interval, and Claude usage snapshots are cached for a few minutes so the status command does not hammer the usage API.
-- The right side now shows only Claude/Codex limits; it no longer repeats the fixed `sb-cockpit` / `0:main` labels there, and any available 5h reset time is shown with the same `@3pm` marker for both providers.
-- Tmux window tabs render by name only instead of `N:name`, so the status line stays focused on the actual window names without duplicating numeric indices.
-- `mouse` is enabled for the cockpit session, and wheel-up / `PageUp` now enter tmux scrollback automatically for the active pane. Keep scrolling normally; `Esc` or `q` exits tmux copy-mode.
+- The right side now shows only Claude/Codex limits; and any available 5h reset time is shown with the same `@3pm` marker for both providers.
+- `mouse` is enabled for the cockpit session, and wheel-up; `Esc` or `q` exits tmux copy-mode.
 - If you want the normal `sb` transcript/log view instead of the live native CLI pane, use `F1` / `Ctrl+g` / `F12` to return to `sb`.
 - Finished tmux jobs are easier to review inside `sb` itself, where `j/k`, `pgup/pgdn`, and the sessions rail are handled by the TUI instead of the native CLI.
 

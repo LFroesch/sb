@@ -237,6 +237,8 @@ func statusLabel(s cockpit.Status) string {
 	switch s {
 	case cockpit.StatusRunning:
 		return "working"
+	case cockpit.StatusAwaitingHuman:
+		return "waiting on you"
 	case cockpit.StatusIdle:
 		return "waiting for input"
 	case cockpit.StatusQueued:
@@ -837,6 +839,10 @@ func (m model) renderReviewLines(j cockpit.Job, width int) []string {
 		lines = append(lines, "    "+dimStyle.Render("K skip current item"))
 		lines = append(lines, "    "+dimStyle.Render("C skip this item + rest of queue"))
 	}
+	if eligibleForTakeover(j) {
+		lines = append(lines, "  "+primaryStyle.Render("take over"))
+		lines = append(lines, "    "+dimStyle.Render("ctrl+r relaunch attended from this Foreman session"))
+	}
 	if len(artifact.HookEvents) > 0 || len(artifact.PendingPostHooks) > 0 {
 		lines = append(lines, "  "+primaryStyle.Render("hooks"))
 		for _, line := range summarizeHookActivity(artifact, width-4, 4) {
@@ -870,7 +876,7 @@ func (m model) renderReviewLines(j cockpit.Job, width int) []string {
 // to be relevant yet.
 func postHookPreviewsForReview(j cockpit.Job) []cockpit.HookPreview {
 	switch j.Status {
-	case cockpit.StatusIdle, cockpit.StatusNeedsReview, cockpit.StatusCompleted, cockpit.StatusFailed, cockpit.StatusBlocked:
+	case cockpit.StatusIdle, cockpit.StatusAwaitingHuman, cockpit.StatusNeedsReview, cockpit.StatusCompleted, cockpit.StatusFailed, cockpit.StatusBlocked:
 	default:
 		return nil
 	}
@@ -1043,10 +1049,15 @@ func jobOperatorStatus(j cockpit.Job) (string, lipgloss.Style) {
 		}
 		return "queued", dimStyle
 	case cockpit.StatusCompleted:
+		if j.SupersededBy != "" {
+			return "taken over", dimStyle
+		}
 		if j.SyncBackState == cockpit.SyncBackSkipped || strings.Contains(strings.ToLower(j.Note), "skipped") {
 			return "skipped", dimStyle
 		}
 		return "done", dimStyle
+	case cockpit.StatusAwaitingHuman:
+		return "waiting on you", accentStyle
 	case cockpit.StatusIdle:
 		switch stoppedLikeStatusLabel(j) {
 		case "closed":
@@ -1069,6 +1080,8 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 	deferred := j.EligibilityReason != "" && j.EligibilityReason != "waiting for foreman"
 	if j.QueueTotal <= 1 {
 		switch j.Status {
+		case cockpit.StatusAwaitingHuman:
+			return "input", accentStyle
 		case cockpit.StatusNeedsReview:
 			return "review", warnStyle
 		case cockpit.StatusRunning, cockpit.StatusIdle:
@@ -1077,6 +1090,9 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 			}
 			return "active", primaryStyle
 		case cockpit.StatusCompleted:
+			if j.SupersededBy != "" {
+				return "taken over", dimStyle
+			}
 			if j.SyncBackState == cockpit.SyncBackSkipped || strings.Contains(strings.ToLower(j.Note), "skipped") {
 				return "skipped", dimStyle
 			}
@@ -1104,6 +1120,8 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 			return label + " foreman", accentStyle
 		}
 		return label + " next", dimStyle
+	case cockpit.StatusAwaitingHuman:
+		return label + " input", accentStyle
 	case cockpit.StatusNeedsReview:
 		return label + " review", warnStyle
 	case cockpit.StatusRunning, cockpit.StatusIdle:
@@ -1112,6 +1130,9 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 		}
 		return label + " active", primaryStyle
 	case cockpit.StatusCompleted:
+		if j.SupersededBy != "" {
+			return label + " taken over", dimStyle
+		}
 		if j.SyncBackState == cockpit.SyncBackSkipped || strings.Contains(strings.ToLower(j.Note), "skipped") {
 			return label + " skipped", dimStyle
 		}
@@ -1125,6 +1146,8 @@ func jobAdvanceState(j cockpit.Job) (string, lipgloss.Style) {
 
 func compactJobStatus(j cockpit.Job) string {
 	switch status, _ := jobOperatorStatus(j); status {
+	case "waiting on you":
+		return "human"
 	case "waiting for input":
 		return "waiting"
 	case "waiting for foreman":
@@ -1206,7 +1229,7 @@ func tmuxJobLikelyWaiting(j cockpit.Job) bool {
 	if err != nil {
 		return false
 	}
-	if time.Since(st.ModTime()) <= 12*time.Second {
+	if time.Since(st.ModTime()) <= cockpit.SupervisorQuietPeriod {
 		return false
 	}
 	return true
@@ -1221,6 +1244,8 @@ func jobElapsedSummary(j cockpit.Job) string {
 		if j.Runner == cockpit.RunnerTmux {
 			return "session open " + formatTurnDuration(time.Since(j.CreatedAt))
 		}
+	case cockpit.StatusAwaitingHuman:
+		return "waiting on you for " + formatTurnDuration(time.Since(j.CreatedAt))
 	case cockpit.StatusIdle:
 		if stoppedLikeStatusLabel(j) != "" {
 			return ""
@@ -1494,18 +1519,20 @@ func jobOrderRank(j cockpit.Job) int {
 	switch status {
 	case "working":
 		return 0
-	case "waiting for input":
+	case "waiting on you":
 		return 1
-	case "needs review":
+	case "waiting for input":
 		return 2
-	case "queued", "waiting for foreman", "deferred":
+	case "needs review":
 		return 3
-	case "blocked", "failed", "stopped", "closed":
+	case "queued", "waiting for foreman", "deferred":
 		return 4
-	case "done", "skipped":
+	case "blocked", "failed", "stopped", "closed":
 		return 5
-	default:
+	case "done", "skipped":
 		return 6
+	default:
+		return 7
 	}
 }
 

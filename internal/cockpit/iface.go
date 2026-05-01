@@ -22,6 +22,7 @@ type Client interface {
 	DeleteJob(id JobID) error
 	ApproveJob(id JobID, devlogPath string) error
 	RetryJob(id JobID, presets []LaunchPreset) (Job, error)
+	TakeOverJob(id JobID, presets []LaunchPreset) (Job, error)
 	SendInput(id JobID, data []byte) error
 	ReadTranscript(id JobID) (string, error)
 

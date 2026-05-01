@@ -162,6 +162,32 @@ exit 0
 	}
 }
 
+func TestShowEnvironmentReadsGlobalValue(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "tmux-shim.sh")
+	body := `#!/bin/sh
+if [ "$1" = "-L" ]; then
+  shift 2
+fi
+if [ "$1" = "show-environment" ]; then
+  printf 'SB_TAKEOVER_TARGET=sb-cockpit:@3\n'
+fi
+exit 0
+`
+	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SB_TMUX_BIN", shim)
+
+	got, ok, err := ShowEnvironment("SB_TAKEOVER_TARGET")
+	if err != nil {
+		t.Fatalf("ShowEnvironment: %v", err)
+	}
+	if !ok || got != "sb-cockpit:@3" {
+		t.Fatalf("ShowEnvironment = (%q, %v), want target", got, ok)
+	}
+}
+
 func TestEnsureDashboardWindowRespawnsPlaceholderShell(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "tmux.log")

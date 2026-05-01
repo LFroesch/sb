@@ -280,6 +280,12 @@ func (c *SocketClient) RetryJob(id JobID, presets []LaunchPreset) (Job, error) {
 	return out.Job, err
 }
 
+func (c *SocketClient) TakeOverJob(id JobID, presets []LaunchPreset) (Job, error) {
+	var out TakeOverJobResult
+	err := c.call(MethodTakeOverJob, TakeOverJobParams{ID: id, Presets: presets}, &out)
+	return out.Job, err
+}
+
 func (c *SocketClient) SendInput(id JobID, data []byte) error {
 	return c.call(MethodSendInput, SendInputParams{ID: id, Data: data}, nil)
 }

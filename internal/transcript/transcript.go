@@ -68,7 +68,7 @@ func cleanLines(lines []string) string {
 			continue
 		}
 		lastBlank = false
-		out = append(out, trimmed)
+		out = append(out, line)
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }

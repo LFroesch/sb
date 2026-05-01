@@ -42,7 +42,14 @@ func (m model) renderAgentLaunch() string {
 		queueMode = "send to Foreman"
 		queueStyle = accentStyle
 	}
-	lines = append(lines, dimStyle.Render("  launch mode=")+queueStyle.Render(queueMode), "")
+	foremanLabel := "OFF"
+	foremanStyle := warnStyle
+	if m.cockpitForeman.Enabled {
+		foremanLabel = "ON"
+		foremanStyle = primaryStyle
+	}
+	lines = append(lines, dimStyle.Render("  launch mode=")+queueStyle.Render(queueMode)+
+		dimStyle.Render("  ·  foreman ")+foremanStyle.Bold(true).Render(foremanLabel), "")
 	if len(m.launchSources) > 0 {
 		var src []string
 		for i, s := range m.launchSources {

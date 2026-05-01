@@ -653,6 +653,76 @@ func TestUpdateAgentListRStartsWaitingForemanJob(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentListCtrlRArmsTakeoverConfirm(t *testing.T) {
+	m := newModel(nil)
+	job := cockpit.Job{
+		ID:             "job-foreman",
+		PresetID:       "senior-dev",
+		Status:         cockpit.StatusIdle,
+		Runner:         cockpit.RunnerTmux,
+		TmuxTarget:     "sb-cockpit:@3",
+		ForemanManaged: true,
+		CreatedAt:      time.Now().Add(-1 * time.Minute),
+	}
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+
+	got, _ := m.updateAgentList(tea.KeyMsg{Type: tea.KeyCtrlR})
+	next := got.(model)
+	if !next.agentConfirmActive || next.agentConfirmKind != "takeover" || next.agentConfirmTarget != job.ID {
+		t.Fatalf("takeover confirm not armed: %+v", next)
+	}
+	if !strings.Contains(next.statusMsg, "take over "+string(job.ID)) {
+		t.Fatalf("statusMsg = %q, want takeover prompt", next.statusMsg)
+	}
+}
+
+func TestGlobalCtrlRUsesPendingTmuxTakeoverTarget(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "tmux-shim.sh")
+	body := `#!/bin/sh
+if [ "$1" = "-L" ]; then
+  shift 2
+fi
+case "$1" in
+  show-environment)
+    printf 'SB_TAKEOVER_TARGET=sb-cockpit:@3\n'
+    ;;
+  set-environment)
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SB_TMUX_BIN", shim)
+
+	m := newModel(nil)
+	job := cockpit.Job{
+		ID:             "job-foreman",
+		PresetID:       "senior-dev",
+		Status:         cockpit.StatusIdle,
+		Runner:         cockpit.RunnerTmux,
+		TmuxTarget:     "sb-cockpit:@3",
+		ForemanManaged: true,
+		CreatedAt:      time.Now().Add(-1 * time.Minute),
+	}
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.page = pageDashboard
+	m.mode = modeNormal
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	next := got.(model)
+	if next.page != pageAgent || next.mode != modeAgentList {
+		t.Fatalf("page/mode = %v/%v, want agent list", next.page, next.mode)
+	}
+	if next.agentConfirmKind != "takeover" || next.agentConfirmTarget != job.ID {
+		t.Fatalf("takeover confirm = %q %q", next.agentConfirmKind, next.agentConfirmTarget)
+	}
+}
+
 func TestOpenAgentJobQueuedTmuxReportsQueueReasonInsteadOfMissingWindow(t *testing.T) {
 	m := newModel(nil)
 	job := cockpit.Job{

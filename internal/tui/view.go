@@ -968,6 +968,7 @@ func (m model) helpLines() []string {
 			{"alt+enter", "Launch from note"},
 			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
 			{"ctrl+g", "Live tmux session: jump back to the shared sb main window"},
+			{"ctrl+r", "Take over eligible Foreman tmux job and relaunch it in attended mode (confirm)"},
 			{"R", "Start waiting job now, or open the selected session"},
 			{"j/k", "Scroll transcript/log in attached view"},
 			{"wheel", "List nav / transcript scroll"},

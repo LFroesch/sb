@@ -339,6 +339,35 @@ func UnbindKey(key string) error {
 	return err
 }
 
+func ShowEnvironment(name string) (string, bool, error) {
+	out, err := runTmux("show-environment", "-g", name)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown variable") {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	line := strings.TrimSpace(out)
+	if line == "" || strings.HasPrefix(line, "-") {
+		return "", false, nil
+	}
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) != name {
+		return "", false, nil
+	}
+	return parts[1], true, nil
+}
+
+func SetEnvironment(name, value string) error {
+	_, err := runTmux("set-environment", "-g", name, value)
+	return err
+}
+
+func UnsetEnvironment(name string) error {
+	_, err := runTmux("set-environment", "-gu", name)
+	return err
+}
+
 func setOption(target, key, value string) error {
 	args := []string{"set-option", "-g"}
 	if strings.TrimSpace(target) != "" {

@@ -32,13 +32,14 @@ type SourceTask struct {
 type Status string
 
 const (
-	StatusQueued      Status = "queued"
-	StatusRunning     Status = "running" // a turn is in flight
-	StatusIdle        Status = "idle"    // waiting for next user turn
-	StatusNeedsReview Status = "needs_review"
-	StatusBlocked     Status = "blocked"
-	StatusCompleted   Status = "completed" // user marked done (approve) or shell oneshot exit
-	StatusFailed      Status = "failed"
+	StatusQueued        Status = "queued"
+	StatusRunning       Status = "running" // a turn is in flight
+	StatusIdle          Status = "idle"    // waiting for next user turn
+	StatusAwaitingHuman Status = "awaiting_human"
+	StatusNeedsReview   Status = "needs_review"
+	StatusBlocked       Status = "blocked"
+	StatusCompleted     Status = "completed" // user marked done (approve) or shell oneshot exit
+	StatusFailed        Status = "failed"
 )
 
 type SyncBackState string
@@ -170,7 +171,7 @@ type LaunchPreset struct {
 type ForemanState struct {
 	Enabled       bool      `json:"enabled"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
-	MaxConcurrent int       `json:"max_concurrent,omitempty"` // 0 = unlimited; defaults to 3 when zero on read
+	MaxConcurrent int       `json:"max_concurrent,omitempty"`  // 0 = unlimited; defaults to 3 when zero on read
 	LimitGuardPct int       `json:"limit_guard_pct,omitempty"` // 0 = use default 90
 }
 
@@ -237,6 +238,8 @@ type Job struct {
 	QueueTotal         int           `json:"queue_total,omitempty"`
 	WaitForForeman     bool          `json:"wait_for_foreman,omitempty"`
 	ForemanManaged     bool          `json:"foreman_managed,omitempty"`
+	SupersededBy       JobID         `json:"superseded_by,omitempty"`
+	TakeoverOf         JobID         `json:"takeover_of,omitempty"`
 
 	// EligibilityReason explains why the scheduler last passed over this
 	// job (repo busy, foreman concurrency cap, provider near limit, etc).
@@ -275,10 +278,10 @@ type ReviewArtifact struct {
 type HookPreviewStatus string
 
 const (
-	HookPreviewOK        HookPreviewStatus = "ok"          // exit 0
-	HookPreviewWouldFail HookPreviewStatus = "would_fail"  // exit non-zero
-	HookPreviewSkipped   HookPreviewStatus = "skipped"     // mutating cmd, no preview run
-	HookPreviewError     HookPreviewStatus = "error"       // failed to run (timeout, missing binary, etc)
+	HookPreviewOK        HookPreviewStatus = "ok"         // exit 0
+	HookPreviewWouldFail HookPreviewStatus = "would_fail" // exit non-zero
+	HookPreviewSkipped   HookPreviewStatus = "skipped"    // mutating cmd, no preview run
+	HookPreviewError     HookPreviewStatus = "error"      // failed to run (timeout, missing binary, etc)
 )
 
 // HookPreview is a single post-hook's dry-run result, captured before

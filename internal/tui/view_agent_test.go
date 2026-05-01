@@ -68,6 +68,15 @@ func (s stubCockpitClient) RetryJob(cockpit.JobID, []cockpit.LaunchPreset) (cock
 	return cockpit.Job{}, nil
 }
 
+func (s stubCockpitClient) TakeOverJob(id cockpit.JobID, _ []cockpit.LaunchPreset) (cockpit.Job, error) {
+	job := s.jobs[id]
+	job.Status = cockpit.StatusRunning
+	job.ForemanManaged = false
+	job.WaitForForeman = false
+	job.TakeoverOf = id
+	return job, nil
+}
+
 func (s stubCockpitClient) SendInput(cockpit.JobID, []byte) error { return nil }
 
 func (s stubCockpitClient) ReadTranscript(cockpit.JobID) (string, error) { return "", nil }
@@ -334,6 +343,16 @@ func TestJobOperatorStatusShowsDeferredWhenEligibilityReasonSet(t *testing.T) {
 	})
 	if got != "deferred" {
 		t.Fatalf("jobOperatorStatus(deferred) = %q, want deferred", got)
+	}
+}
+
+func TestJobOperatorStatusShowsTakenOverForSupersededJob(t *testing.T) {
+	got, _ := jobOperatorStatus(cockpit.Job{
+		Status:       cockpit.StatusCompleted,
+		SupersededBy: "job-new",
+	})
+	if got != "taken over" {
+		t.Fatalf("jobOperatorStatus(taken over) = %q, want taken over", got)
 	}
 }
 

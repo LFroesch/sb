@@ -93,6 +93,154 @@ func TestBuildTurnCmdClaudeWideOpenUsesBypassPermissions(t *testing.T) {
 	}
 }
 
+func TestTakeOverJobSupersedesForemanTmuxJob(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "tmux-shim.sh")
+	logPath := filepath.Join(dir, "tmux.log")
+	body := `#!/bin/sh
+if [ "$1" = "-L" ]; then
+  shift 2
+fi
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$1" in
+  list-panes)
+    printf '0\n'
+    ;;
+  capture-pane)
+    printf '$ go test ./...\nopened app/main.go\n'
+    ;;
+  kill-window)
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
+		t.Fatalf("WriteFile(shim): %v", err)
+	}
+	t.Setenv("SB_TMUX_BIN", shim)
+
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
+		Socket:       filepath.Join(dir, "state", "foreman.sock"),
+		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
+		LogFile:      filepath.Join(dir, "state", "foreman.log"),
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sourceFile := filepath.Join(dir, "WORK.md")
+	if err := os.WriteFile(sourceFile, []byte("- task\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source): %v", err)
+	}
+	old, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Task:           "ship it",
+		Brief:          "ship it",
+		Prompt:         "ship it",
+		Freeform:       "echo ship-it",
+		Repo:           dir,
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Status:         StatusIdle,
+		Runner:         RunnerTmux,
+		TmuxTarget:     "sb-cockpit:@3",
+		LogPath:        filepath.Join(dir, "old.log"),
+		TranscriptPath: filepath.Join(dir, "old.txt"),
+		ArtifactsDir:   filepath.Join(dir, "artifacts"),
+		Sources:        []SourceTask{{File: sourceFile, Line: 1, Text: "ship it"}},
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create(old): %v", err)
+	}
+	if err := os.MkdirAll(old.ArtifactsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(artifacts): %v", err)
+	}
+	if err := os.WriteFile(old.LogPath, []byte("$ go test ./...\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(log): %v", err)
+	}
+	if err := os.WriteFile(old.TranscriptPath, []byte("opened app/main.go\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(transcript): %v", err)
+	}
+
+	replacement, err := mgr.TakeOverJob(old.ID, []LaunchPreset{{
+		ID:          "shell",
+		Name:        "Shell",
+		Permissions: "scoped-write",
+		Executor:    ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:       HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+	}})
+	if err != nil {
+		t.Fatalf("TakeOverJob: %v", err)
+	}
+	waitForJobTerminalState(t, mgr, replacement.ID)
+
+	updatedOld, ok := mgr.GetJob(old.ID)
+	if !ok {
+		t.Fatalf("old job missing")
+	}
+	if updatedOld.SupersededBy != replacement.ID {
+		t.Fatalf("old.SupersededBy = %q, want %q", updatedOld.SupersededBy, replacement.ID)
+	}
+	if updatedOld.Status != StatusCompleted {
+		t.Fatalf("old.Status = %s, want completed", updatedOld.Status)
+	}
+	updatedNew, ok := mgr.GetJob(replacement.ID)
+	if !ok {
+		t.Fatalf("replacement job missing")
+	}
+	if updatedNew.TakeoverOf != old.ID {
+		t.Fatalf("new.TakeoverOf = %q, want %q", updatedNew.TakeoverOf, old.ID)
+	}
+	if updatedNew.ForemanManaged || updatedNew.WaitForForeman {
+		t.Fatalf("replacement should not be Foreman-managed: %+v", updatedNew)
+	}
+	if len(updatedNew.Sources) != 1 || updatedNew.Sources[0].Text != "ship it" {
+		t.Fatalf("replacement sources changed: %+v", updatedNew.Sources)
+	}
+	if !strings.Contains(updatedNew.Prompt, "## Manual Takeover Handoff") {
+		t.Fatalf("replacement prompt missing handoff block:\n%s", updatedNew.Prompt)
+	}
+}
+
+func TestTakeOverJobRejectsNonForemanJobs(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
+		Socket:       filepath.Join(dir, "state", "foreman.sock"),
+		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
+		LogFile:      filepath.Join(dir, "state", "foreman.log"),
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	job, err := mgr.Registry.Create(Job{
+		PresetID: "shell",
+		Repo:     dir,
+		Status:   StatusIdle,
+		Runner:   RunnerTmux,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.TakeOverJob(job.ID, nil); err == nil || !strings.Contains(err.Error(), "Foreman-managed") {
+		t.Fatalf("expected Foreman-managed error, got %v", err)
+	}
+}
+
 func TestRenderHistoryReplayCompactsLaunchPromptOnFollowUps(t *testing.T) {
 	t.Parallel()
 
@@ -828,7 +976,7 @@ func TestSupervisorStateFromPane(t *testing.T) {
 	t.Parallel()
 
 	status, note, ok := supervisorStateFromPane("hello\nSB_STATUS:WAITING_HUMAN\n")
-	if !ok || status != StatusIdle || note != "waiting for human input" {
+	if !ok || status != StatusAwaitingHuman || note != "waiting for human input" {
 		t.Fatalf("waiting marker = (%v, %q, %v)", status, note, ok)
 	}
 
@@ -847,9 +995,52 @@ func TestSupervisorStateFromPane(t *testing.T) {
 		t.Fatalf("limit fallback = (%v, %q, %v)", status, note, ok)
 	}
 
+	status, note, ok = supervisorStateFromPane("done with the patch\nWould you like me to also add the migration?\n")
+	if !ok || status != StatusAwaitingHuman || note != "awaiting operator input" {
+		t.Fatalf("question fallback = (%v, %q, %v)", status, note, ok)
+	}
+
+	status, note, ok = supervisorStateFromPane("tests are green\nIf you'd like, I can also clean up the helper naming.\n")
+	if !ok || status != StatusAwaitingHuman || note != "awaiting operator input" {
+		t.Fatalf("follow-up fallback = (%v, %q, %v)", status, note, ok)
+	}
+
+	status, note, ok = supervisorStateFromPane("I fixed the root issue.\nThe next obvious cleanup, if you'd like me to keep going, is to pull the tmux waiting heuristics into a structured matcher instead of the current hardcoded string block.\n")
+	if !ok || status != StatusAwaitingHuman || note != "awaiting operator input" {
+		t.Fatalf("soft offer fallback = (%v, %q, %v)", status, note, ok)
+	}
+
+	status, note, ok = supervisorStateFromPane("Done.\nChoose one: keep current behavior, broaden detection, or add a config knob.\n")
+	if !ok || status != StatusAwaitingHuman || note != "awaiting operator input" {
+		t.Fatalf("choice fallback = (%v, %q, %v)", status, note, ok)
+	}
+
 	_, _, ok = supervisorStateFromPane("hello\nno markers\n")
 	if ok {
 		t.Fatal("unexpected marker detection")
+	}
+}
+
+func TestSupervisorQuietLongEnough(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tmux.log")
+	if err := os.WriteFile(logPath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(logPath, now, now); err != nil {
+		t.Fatalf("Chtimes(now): %v", err)
+	}
+	if supervisorQuietLongEnough(logPath, now.Add(5*time.Second)) {
+		t.Fatal("quiet gate triggered too early")
+	}
+	if err := os.Chtimes(logPath, now.Add(-11*time.Second), now.Add(-11*time.Second)); err != nil {
+		t.Fatalf("Chtimes(old): %v", err)
+	}
+	if !supervisorQuietLongEnough(logPath, now) {
+		t.Fatal("quiet gate did not trigger after quiet period")
 	}
 }
 
@@ -947,6 +1138,38 @@ func TestBuildTmuxCommandClaudeForemanUsesDontAsk(t *testing.T) {
 	assertArgsEqual(t, cmd, want)
 }
 
+func TestBuildTmuxCommandClaudeAttendedOmitsDontAsk(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildTmuxCommand(Job{
+		Brief:       "fix the bug",
+		Permissions: "scoped-write",
+		Executor:    ExecutorSpec{Type: "claude", Args: []string{"--model", "sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"claude", "--model", "sonnet", "fix the bug"}
+	assertArgsEqual(t, cmd, want)
+}
+
+func TestBuildTmuxCommandCodexAttendedScopedWriteOmitsAskNever(t *testing.T) {
+	t.Parallel()
+
+	repo := "/tmp/sb-demo"
+	cmd, err := buildTmuxCommand(Job{
+		Repo:        repo,
+		Brief:       "scaffold tests",
+		Permissions: "scoped-write",
+		Executor:    ExecutorSpec{Type: "codex", Args: []string{"--model", "gpt-5"}},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"codex", "--sandbox", "workspace-write", "--cd", repo, "--model", "gpt-5", "scaffold tests"}
+	assertArgsEqual(t, cmd, want)
+}
+
 func TestRegistryRehydrateKeepsRunningTmuxJobs(t *testing.T) {
 	t.Parallel()
 
@@ -1009,7 +1232,7 @@ func waitForJobTerminalState(t *testing.T, mgr *Manager, id JobID) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		j, ok := mgr.GetJob(id)
-		if ok && (j.Status == StatusIdle || j.Status == StatusFailed || j.Status == StatusCompleted || j.Status == StatusBlocked || j.Status == StatusNeedsReview) {
+		if ok && (j.Status == StatusIdle || j.Status == StatusAwaitingHuman || j.Status == StatusFailed || j.Status == StatusCompleted || j.Status == StatusBlocked || j.Status == StatusNeedsReview) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -1198,6 +1421,67 @@ func TestForemanConcurrencyCapDefersExtraJobs(t *testing.T) {
 
 	mgr.tickScheduler()
 	waitForEligibilityReason(t, mgr, queued.ID, "foreman concurrency cap (3/3)")
+}
+
+func TestAwaitingHumanReleasesForemanConcurrencyButKeepsRepoLock(t *testing.T) {
+	mgr, dir := newSchedulerTestManager(t)
+	stubProviderLimitPct(t, func(string) (int, bool) { return 0, false })
+
+	if _, err := mgr.SetForemanEnabled(true); err != nil {
+		t.Fatalf("SetForemanEnabled: %v", err)
+	}
+
+	holder, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "holder",
+		Repo:           dir,
+		Permissions:    "scoped-write",
+		Status:         StatusAwaitingHuman,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create holder: %v", err)
+	}
+
+	sameRepo, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "echo same-repo",
+		Repo:           dir,
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create sameRepo: %v", err)
+	}
+
+	otherRepo := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(otherRepo, 0o755); err != nil {
+		t.Fatalf("MkdirAll(otherRepo): %v", err)
+	}
+	other, err := mgr.Registry.Create(Job{
+		PresetID:       "shell",
+		Brief:          "echo other-repo",
+		Repo:           otherRepo,
+		Executor:       ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:          HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+		Permissions:    "scoped-write",
+		Status:         StatusQueued,
+		ForemanManaged: true,
+	})
+	if err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+
+	mgr.tickScheduler()
+	waitForEligibilityReason(t, mgr, sameRepo.ID, "repo busy: "+shortDisplayJobID(holder.ID))
+	waitForJobTerminalState(t, mgr, other.ID)
+	finalOther, _ := mgr.GetJob(other.ID)
+	if finalOther.Status != StatusIdle {
+		t.Fatalf("other repo job status = %s, want idle after concurrency slot released", finalOther.Status)
+	}
 }
 
 func TestForemanLimitGuardDefersClaudeWhenNearLimit(t *testing.T) {

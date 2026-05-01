@@ -30,6 +30,7 @@ const (
 	MethodDeleteJob      Method = "delete_job"
 	MethodApproveJob     Method = "approve_job"
 	MethodRetryJob       Method = "retry_job"
+	MethodTakeOverJob    Method = "take_over_job"
 	MethodSendInput      Method = "send_input"
 	MethodReadTranscript Method = "read_transcript"
 	MethodAttachTmux     Method = "attach_tmux"
@@ -107,6 +108,14 @@ type RetryJobParams struct {
 	Presets []LaunchPreset `json:"presets"`
 }
 type RetryJobResult struct {
+	Job Job `json:"job"`
+}
+
+type TakeOverJobParams struct {
+	ID      JobID          `json:"id"`
+	Presets []LaunchPreset `json:"presets"`
+}
+type TakeOverJobResult struct {
 	Job Job `json:"job"`
 }
 

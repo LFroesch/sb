@@ -221,6 +221,8 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.openAgentJob(job.ID, true)
 		}
 		return m.openAgentJob(m.attachedJobID, true)
+	case "ctrl+r":
+		return m.beginTakeover(m.attachedJobID)
 	case "K":
 		j, _ := m.cockpitClient.GetJob(m.attachedJobID)
 		m.armAgentConfirm("skip", m.attachedJobID)

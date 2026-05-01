@@ -252,7 +252,7 @@ func (r *tmuxRunner) scan() {
 				jj.Note = note
 			}
 		})
-		if updated, ok := r.reg.Get(id); ok && (updated.Status == StatusNeedsReview || updated.Status == StatusIdle || updated.Status == StatusCompleted) {
+		if updated, ok := r.reg.Get(id); ok && (updated.Status == StatusAwaitingHuman || updated.Status == StatusNeedsReview || updated.Status == StatusIdle || updated.Status == StatusCompleted) {
 			_ = CaptureReviewArtifact(updated)
 		}
 		r.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(next), "note": note}})
@@ -265,6 +265,9 @@ func (r *tmuxRunner) scan() {
 func (r *tmuxRunner) observeLiveJob(id JobID, target string) {
 	j, ok := r.reg.Get(id)
 	if !ok || j.Status != StatusRunning {
+		return
+	}
+	if !supervisorQuietLongEnough(j.LogPath, time.Now()) {
 		return
 	}
 	body, err := CapturePane(target)
@@ -282,7 +285,7 @@ func (r *tmuxRunner) observeLiveJob(id JobID, target string) {
 			jj.FinishedAt = time.Now()
 		}
 	})
-	if updated, ok := r.reg.Get(id); ok && (updated.Status == StatusNeedsReview || updated.Status == StatusIdle) {
+	if updated, ok := r.reg.Get(id); ok && (updated.Status == StatusAwaitingHuman || updated.Status == StatusNeedsReview || updated.Status == StatusIdle) {
 		_ = CaptureReviewArtifact(updated)
 	}
 	r.emit(Event{TS: time.Now(), JobID: id, Kind: EventStatusChanged, Payload: map[string]any{"status": string(next), "note": note}})
@@ -294,6 +297,17 @@ func (r *tmuxRunner) observeLiveJob(id JobID, target string) {
 	}
 }
 
+func supervisorQuietLongEnough(logPath string, now time.Time) bool {
+	if strings.TrimSpace(logPath) == "" {
+		return false
+	}
+	st, err := os.Stat(logPath)
+	if err != nil {
+		return false
+	}
+	return now.Sub(st.ModTime()) > SupervisorQuietPeriod
+}
+
 func supervisorStateFromPane(body string) (Status, string, bool) {
 	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -302,7 +316,7 @@ func supervisorStateFromPane(body string) (Status, string, bool) {
 		case SupervisorReadyReviewMarker:
 			return StatusNeedsReview, "ready for review", true
 		case SupervisorWaitingHumanMarker:
-			return StatusIdle, "waiting for human input", true
+			return StatusAwaitingHuman, "waiting for human input", true
 		}
 	}
 	const heuristicWindow = 80
@@ -316,6 +330,9 @@ func supervisorStateFromPane(body string) (Status, string, bool) {
 	}
 	if looksLimitBlocked(recent) {
 		return StatusIdle, "provider limit reached", true
+	}
+	if looksWaitingForHuman(recent) {
+		return StatusAwaitingHuman, "awaiting operator input", true
 	}
 	return "", "", false
 }
@@ -343,6 +360,121 @@ func looksLimitBlocked(body string) bool {
 	default:
 		return false
 	}
+}
+
+func looksWaitingForHuman(body string) bool {
+	lines := recentNonEmptyLines(body, 6)
+	if len(lines) == 0 {
+		return false
+	}
+	for i, line := range lines {
+		isLast := i == len(lines)-1
+		switch {
+		case looksQuestionPrompt(line),
+			looksInstructionPrompt(line, isLast),
+			looksOfferPrompt(line, isLast),
+			looksChoicePrompt(line):
+			return true
+		}
+	}
+	return false
+}
+
+func looksQuestionPrompt(line string) bool {
+	return strings.HasSuffix(line, "?")
+}
+
+func looksInstructionPrompt(line string, isLast bool) bool {
+	if !isLast {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(line, "please confirm"),
+		strings.HasPrefix(line, "confirm "),
+		strings.HasPrefix(line, "let me know"),
+		strings.HasPrefix(line, "tell me"),
+		strings.HasPrefix(line, "choose "),
+		strings.HasPrefix(line, "pick "),
+		strings.HasPrefix(line, "select "),
+		strings.HasPrefix(line, "reply with "),
+		strings.HasPrefix(line, "send "),
+		strings.HasPrefix(line, "share "),
+		strings.HasPrefix(line, "provide "),
+		strings.HasPrefix(line, "decide "),
+		strings.HasPrefix(line, "approve "),
+		strings.HasPrefix(line, "deny "),
+		strings.Contains(line, "waiting for your input"),
+		strings.Contains(line, "awaiting your input"),
+		strings.Contains(line, "awaiting operator input"),
+		strings.Contains(line, "waiting on you"),
+		strings.Contains(line, "over to you"):
+		return true
+	default:
+		return false
+	}
+}
+
+func looksOfferPrompt(line string, isLast bool) bool {
+	if !isLast {
+		return false
+	}
+	switch {
+	case strings.Contains(line, "if you'd like"),
+		strings.Contains(line, "if you would like"),
+		strings.Contains(line, "if you want me to keep going"),
+		strings.Contains(line, "if you'd like me to keep going"),
+		strings.Contains(line, "want me to"),
+		strings.Contains(line, "would you like me to"),
+		strings.Contains(line, "do you want me to"),
+		strings.Contains(line, "what would you like me to"),
+		strings.Contains(line, "how would you like me to"),
+		strings.Contains(line, "which option would you like"),
+		strings.Contains(line, "which option should i"),
+		strings.Contains(line, "should i proceed"),
+		strings.Contains(line, "i can also"),
+		strings.Contains(line, "i can continue"),
+		strings.Contains(line, "i can do that next"),
+		strings.Contains(line, "i can take that on next"),
+		strings.Contains(line, "i can clean that up next"),
+		strings.Contains(line, "i can follow up with"):
+		return true
+	default:
+		return false
+	}
+}
+
+func looksChoicePrompt(line string) bool {
+	switch {
+	case strings.Contains(line, "y/n"),
+		strings.Contains(line, "[y/n]"),
+		strings.Contains(line, "(y/n)"),
+		strings.Contains(line, "yes/no"),
+		strings.Contains(line, "choose one"),
+		strings.Contains(line, "pick one"),
+		strings.Contains(line, "select one"),
+		strings.Contains(line, "choose an option"),
+		strings.Contains(line, "pick an option"),
+		strings.Contains(line, "select an option"):
+		return true
+	default:
+		return false
+	}
+}
+
+func recentNonEmptyLines(body string, n int) []string {
+	raw := strings.Split(body, "\n")
+	out := make([]string, 0, n)
+	for i := len(raw) - 1; i >= 0 && len(out) < n; i-- {
+		line := strings.TrimSpace(raw[i])
+		if line == "" {
+			continue
+		}
+		out = append(out, strings.ToLower(line))
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 // Shutdown stops the poll loop. Called from Manager.Close (reserved;
@@ -387,33 +519,20 @@ func buildTmuxCommand(j Job) ([]string, error) {
 	spec := j.Executor
 	switch strings.ToLower(spec.Type) {
 	case "claude":
-		bin := spec.Cmd
-		if bin == "" {
-			bin = "claude"
-		}
-		args := make([]string, 0, len(spec.Args)+2)
-		if mode := claudePermissionMode(j); mode != "" {
-			args = append(args, "--permission-mode", mode)
-		}
-		args = append(args, normalizedClaudeArgs(spec.Args)...)
+		args := claudeLaunchArgs(j)
 		if brief != "" {
 			args = append(args, brief)
 		}
-		return append([]string{bin}, args...), nil
+		return append([]string{claudeBin(spec)}, args...), nil
 	case "codex":
-		bin := spec.Cmd
-		if bin == "" {
-			bin = "codex"
+		args, err := codexLaunchArgs(j)
+		if err != nil {
+			return nil, err
 		}
-		args, positionalArgs := splitCodexArgs(spec.Args)
-		if len(positionalArgs) > 0 {
-			return nil, fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
-		}
-		args = append(codexRuntimeArgs(j), args...)
 		if brief != "" {
 			args = append(args, brief)
 		}
-		return append([]string{bin}, args...), nil
+		return append([]string{codexBin(spec)}, args...), nil
 	default:
 		return nil, fmt.Errorf("tmux runner does not support executor type %q", spec.Type)
 	}

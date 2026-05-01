@@ -301,6 +301,19 @@ func dispatch(_ context.Context, mgr *Manager, req Envelope, activateSub func())
 		}
 		reply.Result = mustJSON(RetryJobResult{Job: j})
 
+	case MethodTakeOverJob:
+		var p TakeOverJobParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		j, err := mgr.TakeOverJob(p.ID, p.Presets)
+		if err != nil {
+			reply.Error = err.Error()
+			return reply
+		}
+		reply.Result = mustJSON(TakeOverJobResult{Job: j})
+
 	case MethodSendInput:
 		var p SendInputParams
 		if err := json.Unmarshal(req.Params, &p); err != nil {
