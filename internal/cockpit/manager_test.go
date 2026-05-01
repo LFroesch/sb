@@ -56,6 +56,43 @@ func TestBuildTurnCmdCodexRejectsPositionalExtraArgs(t *testing.T) {
 	}
 }
 
+func TestBuildTurnCmdCodexForemanUsesExplicitSandboxAndNoApproval(t *testing.T) {
+	t.Parallel()
+
+	repo := "/tmp/sb-demo"
+	cmd, stdinBody, err := buildTurnCmd(context.Background(), Job{
+		Repo:           repo,
+		Permissions:    "scoped-write",
+		ForemanManaged: true,
+		Executor:       ExecutorSpec{Type: "codex"},
+	}, "follow-up")
+	if err != nil {
+		t.Fatalf("buildTurnCmd: %v", err)
+	}
+	want := []string{"codex", "--sandbox", "workspace-write", "--cd", repo, "--ask-for-approval", "never", "exec", "--json", "follow-up"}
+	assertArgsEqual(t, cmd.Args, want)
+	if stdinBody != "" {
+		t.Fatal("expected codex prompt as argv, not stdin replay")
+	}
+}
+
+func TestBuildTurnCmdClaudeWideOpenUsesBypassPermissions(t *testing.T) {
+	t.Parallel()
+
+	cmd, stdinBody, err := buildTurnCmd(context.Background(), Job{
+		Permissions: "wide-open",
+		Executor:    ExecutorSpec{Type: "claude"},
+	}, "follow-up")
+	if err != nil {
+		t.Fatalf("buildTurnCmd: %v", err)
+	}
+	want := []string{"claude", "-p", "--permission-mode", "bypassPermissions", "follow-up"}
+	assertArgsEqual(t, cmd.Args, want)
+	if stdinBody != "" {
+		t.Fatal("expected claude prompt as argv")
+	}
+}
+
 func TestRenderHistoryReplayCompactsLaunchPromptOnFollowUps(t *testing.T) {
 	t.Parallel()
 
@@ -800,6 +837,16 @@ func TestSupervisorStateFromPane(t *testing.T) {
 		t.Fatalf("review marker = (%v, %q, %v)", status, note, ok)
 	}
 
+	status, note, ok = supervisorStateFromPane("hello\nConversation interrupted\n")
+	if !ok || status != StatusIdle || note != "conversation interrupted" {
+		t.Fatalf("interrupt fallback = (%v, %q, %v)", status, note, ok)
+	}
+
+	status, note, ok = supervisorStateFromPane("hello\nUsage limit reached, try again at 3am\n")
+	if !ok || status != StatusIdle || note != "provider limit reached" {
+		t.Fatalf("limit fallback = (%v, %q, %v)", status, note, ok)
+	}
+
 	_, _, ok = supervisorStateFromPane("hello\nno markers\n")
 	if ok {
 		t.Fatal("unexpected marker detection")
@@ -863,6 +910,40 @@ func TestBuildTmuxCommandCodexNormalizesExecJSONArgs(t *testing.T) {
 		t.Fatalf("buildTmuxCommand: %v", err)
 	}
 	want := []string{"codex", "--model", "gpt-5", "scaffold tests"}
+	assertArgsEqual(t, cmd, want)
+}
+
+func TestBuildTmuxCommandCodexForemanUsesExplicitRuntimePolicy(t *testing.T) {
+	t.Parallel()
+
+	repo := "/tmp/sb-demo"
+	cmd, err := buildTmuxCommand(Job{
+		Repo:           repo,
+		Brief:          "scaffold tests",
+		Permissions:    "wide-open",
+		ForemanManaged: true,
+		Executor:       ExecutorSpec{Type: "codex", Args: []string{"--model", "gpt-5"}},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"codex", "--sandbox", "danger-full-access", "--cd", repo, "--ask-for-approval", "never", "--model", "gpt-5", "scaffold tests"}
+	assertArgsEqual(t, cmd, want)
+}
+
+func TestBuildTmuxCommandClaudeForemanUsesDontAsk(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildTmuxCommand(Job{
+		Brief:          "fix the bug",
+		Permissions:    "scoped-write",
+		ForemanManaged: true,
+		Executor:       ExecutorSpec{Type: "claude", Args: []string{"--model", "sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("buildTmuxCommand: %v", err)
+	}
+	want := []string{"claude", "--permission-mode", "dontAsk", "--model", "sonnet", "fix the bug"}
 	assertArgsEqual(t, cmd, want)
 }
 

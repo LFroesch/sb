@@ -224,19 +224,22 @@ From the dashboard, switch to the **Agents** tab:
 10. Finished tmux runs open an in-app log/review view. The peek prefers tmux pane snapshots and falls back to captured transcript/log output only when needed.
 11. Ollama and shell runs stay on the exec-per-turn path and use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
 12. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. Relaunching `sb` reattaches to the same session, and a second `sb` reuses the same shared cockpit/foreman.
-13. `F` from the Agents list toggles **Foreman** on or off. When Foreman is off, runs explicitly sent to Foreman stay parked as `waiting for Foreman`, show up in the `foreman` filter, and do not auto-start. Turning Foreman on lets eligible Foreman runs launch unattended in their own tmux sessions, while same-repo write-capable work stays serialized.
-14. Session controls are now literal. `s` sends `Esc` to a tmux-backed session as a soft stop/back action; it does not put the run into a separate paused state. `S` sends `Ctrl+C` as a hard interrupt. `c` literally sends `continue`. For exec runs, `S` still cancels the in-flight turn, while `c` sends a normal follow-up turn with `continue`.
-15. `a` accepts the selected reviewed run. For sourced runs this syncs back into `WORK.md` plus `DEVLOG.md`; for runs without a task source it marks the run complete without editing task files.
+13. `F` from the Agents list toggles **Foreman** on or off. Inside the New Run composer, `ctrl+t` toggles whether the run starts immediately or gets sent to Foreman, so the Note textarea can still accept a literal uppercase `F`. When Foreman is off, runs explicitly sent to Foreman stay parked as `waiting for Foreman`, show up in the `foreman` filter, and do not auto-start. Turning Foreman on lets eligible Foreman runs launch unattended in their own tmux sessions, while same-repo write-capable work stays serialized.
+14. Runs explicitly sent to Foreman now also get an extra `FOREMAN PROTOCOL` block appended to the composed prompt, telling the agent to iterate until complete without permission prompts unless it hits the dirty-repo plan-only case.
+    For Claude/Codex providers, `sb` also now translates the role permission policy into the actual provider CLI flags at launch time, so unattended runs do not silently fall back to the provider's default interactive approval prompts.
+15. Session controls are now literal. `s` sends `Esc` to a tmux-backed session as a soft stop/back action; it does not put the run into a separate paused state. `S` sends `Ctrl+C` as a hard interrupt. `c` literally sends `continue`. For exec runs, `S` still cancels the in-flight turn, while `c` sends a normal follow-up turn with `continue`.
+16. `a` accepts the selected reviewed run. For sourced runs this syncs back into `WORK.md` plus `DEVLOG.md`; for runs without a task source it marks the run complete without editing task files.
    Review surfaces preview the task removals, `DEVLOG.md` additions, changed files, diff stat, hook activity, and preexisting dirty files before you accept.
    Accept will refuse sync-back when the target `WORK.md` or `DEVLOG.md` already has uncommitted changes.
-16. `R` starts a waiting Foreman job immediately if it is still queued, or opens the selected existing session if it is already live/stopped.
-17. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
-18. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, and `enter` edits a field — except `Permissions` and `Iteration mode` cycle in place between their fixed options. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, `enter`-to-cycle fields refresh immediately too, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away. The old static `↻ ...` hint text was removed from field rows because it was not live state.
+17. `R` starts a waiting Foreman job immediately if it is still queued, or opens the selected existing session if it is already live/stopped.
+18. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
+19. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, and `enter` edits a field — except `Permissions` and `Iteration mode` cycle in place between their fixed options. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, `enter`-to-cycle fields refresh immediately too, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away. The old static `↻ ...` hint text was removed from field rows because it was not live state.
    `n` creates a new role/engine and drops you into the wizard with `Name` already focused; saving each field auto-advances to the next group.
    `D` duplicates and `d` deletes the highlighted item.
    The picker, setup, list, and attached-session views share the same terminal-height budget, so local scrolling should not hide the app chrome on short terminals.
 
 tmux-backed jobs now also carry an explicit supervisor protocol inside the launch prompt. When a session needs the user to respond, it should print `SB_STATUS:WAITING_HUMAN`. When it is done and ready for review, it should print `SB_STATUS:READY_REVIEW`. `sb` watches the pane for those markers so normal jobs visibly flip into `waiting for input` / `needs review`, and Foreman can treat that as a real yield signal instead of guessing from whether the tmux window is still open.
+As a fallback, `sb` also treats obvious interruption / provider-limit messages in the live pane (for example `conversation interrupted` or `usage limit reached`) as a yield back to the operator, so one sloppy session is less likely to block the rest of a Foreman queue forever.
 
 **Roles** describe reusable launch behavior: role/persona, launch mode, system prompt, hooks, iteration, policies, and a suggested engine. **Engines** describe the concrete executor/runtime (Claude CLI, Codex CLI, Ollama model). A role can be launched with any loaded engine.
 
@@ -311,7 +314,8 @@ Agents tab:
 | Key | Action |
 |-----|--------|
 | `n` | New run picker (row 0 is `★ New run without task source`, then projects) |
-| `F` | List: toggle Foreman on/off · New run: toggle immediate launch vs send to Foreman |
+| `F` | List: toggle Foreman on/off |
+| `ctrl+t` | New run: toggle immediate launch vs send to Foreman |
 | `f` | List: cycle job filters |
 | `tab` | List: cycle filters · New run: cycle role → engine → repo → note → review · Agent Setup: cycle wizard groups · Attached exec-chat: swap transcript ↔ input |
 | `space` | Toggle task in picker |

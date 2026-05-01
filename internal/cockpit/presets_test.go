@@ -145,7 +145,7 @@ func TestComposeBrief_Order(t *testing.T) {
 		},
 	}
 	sources := []SourceTask{{Text: "do thing"}}
-	out := ComposeBrief(preset, sources, "extra freeform")
+	out := ComposeBrief(preset, sources, "extra freeform", false)
 	// Simple order check: persona, then BEFORE, then Tasks/do thing, then extra, then AFTER.
 	wantSeq := []string{"persona", "BEFORE", "do thing", "extra freeform", "AFTER"}
 	last := -1
@@ -158,6 +158,17 @@ func TestComposeBrief_Order(t *testing.T) {
 	}
 	if !strings.Contains(out, SupervisorWaitingHumanMarker) || !strings.Contains(out, SupervisorReadyReviewMarker) {
 		t.Fatalf("missing supervisor markers:\n%s", out)
+	}
+}
+
+func TestComposeBrief_IncludesForemanProtocolForQueuedRuns(t *testing.T) {
+	preset := LaunchPreset{}
+	out := ComposeBrief(preset, nil, "", true)
+	if !strings.Contains(out, "## FOREMAN PROTOCOL") {
+		t.Fatalf("missing foreman protocol heading:\n%s", out)
+	}
+	if !strings.Contains(out, "ITERATE UNTIL COMPLETE TO PASSED PROMPT PARAMETERS") {
+		t.Fatalf("missing foreman protocol body:\n%s", out)
 	}
 }
 

@@ -40,6 +40,44 @@ func TestUpdateAllowsQuestionMarkInAgentLaunchBrief(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentLaunchCtrlTTogglesForemanModeFromNote(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentLaunch
+	m.launchSources = []cockpit.SourceTask{{Text: "keep draft state"}}
+	m.launchFocus = m.launchNoteFocus()
+	m.launchRepo = "/tmp/demo"
+	m.launchBrief.Focus()
+
+	got, _ := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyCtrlT})
+	next := got.(model)
+	if !next.launchQueueOnly {
+		t.Fatalf("launchQueueOnly = false, want true")
+	}
+	if next.statusMsg != "this run will be sent to Foreman" {
+		t.Fatalf("statusMsg = %q, want Foreman toggle message", next.statusMsg)
+	}
+}
+
+func TestUpdateAgentLaunchNoteAllowsUppercaseF(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentLaunch
+	m.launchSources = []cockpit.SourceTask{{Text: "keep draft state"}}
+	m.launchFocus = m.launchNoteFocus()
+	m.launchRepo = "/tmp/demo"
+	m.launchBrief.Focus()
+
+	got, _ := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'F'}})
+	next := got.(model)
+	if next.launchQueueOnly {
+		t.Fatalf("launchQueueOnly = true, want false")
+	}
+	if !strings.Contains(next.launchBrief.Value(), "F") {
+		t.Fatalf("launchBrief = %q, want typed uppercase F", next.launchBrief.Value())
+	}
+}
+
 func TestSetAgentManageFieldValueAutoFillsPresetIDFromName(t *testing.T) {
 	dir := t.TempDir()
 	m := newModel(nil)
@@ -76,10 +114,10 @@ func TestSetAgentManageFieldValueAutoFillsPresetIDFromName(t *testing.T) {
 func TestEndAgentManageEditRenamesPresetFileAndKeepsSelectionOnEditedPreset(t *testing.T) {
 	dir := t.TempDir()
 	original := cockpit.LaunchPreset{
-		ID:           "new-role",
-		Name:         "New role",
-		LaunchMode:   cockpit.LaunchModeSingleJob,
-		Permissions:  "scoped-write",
+		ID:          "new-role",
+		Name:        "New role",
+		LaunchMode:  cockpit.LaunchModeSingleJob,
+		Permissions: "scoped-write",
 	}
 	if err := cockpit.SavePreset(dir, original); err != nil {
 		t.Fatalf("SavePreset(original): %v", err)

@@ -19,9 +19,9 @@ import (
 // tmuxRunner owns the tmux-backed job lifecycle. There is exactly one
 // per Manager, started on first use.
 type tmuxRunner struct {
-	paths Paths
-	reg   *Registry
-	emit  func(Event)
+	paths      Paths
+	reg        *Registry
+	emit       func(Event)
 	afterYield func()
 
 	mu    sync.Mutex
@@ -33,12 +33,12 @@ type tmuxRunner struct {
 
 func newTmuxRunner(paths Paths, reg *Registry, emit func(Event), afterYield func()) *tmuxRunner {
 	return &tmuxRunner{
-		paths: paths,
-		reg:   reg,
-		emit:  emit,
+		paths:      paths,
+		reg:        reg,
+		emit:       emit,
 		afterYield: afterYield,
-		alive: map[JobID]string{},
-		stop:  make(chan struct{}),
+		alive:      map[JobID]string{},
+		stop:       make(chan struct{}),
 	}
 }
 
@@ -305,7 +305,44 @@ func supervisorStateFromPane(body string) (Status, string, bool) {
 			return StatusIdle, "waiting for human input", true
 		}
 	}
+	const heuristicWindow = 80
+	start := len(lines) - heuristicWindow
+	if start < 0 {
+		start = 0
+	}
+	recent := strings.ToLower(strings.Join(lines[start:], "\n"))
+	if looksInterrupted(recent) {
+		return StatusIdle, "conversation interrupted", true
+	}
+	if looksLimitBlocked(recent) {
+		return StatusIdle, "provider limit reached", true
+	}
 	return "", "", false
+}
+
+func looksInterrupted(body string) bool {
+	return strings.Contains(body, "conversation interrupted") ||
+		strings.Contains(body, "interrupted by user") ||
+		strings.Contains(body, "message interrupted")
+}
+
+func looksLimitBlocked(body string) bool {
+	switch {
+	case strings.Contains(body, "usage limit reached"):
+		return true
+	case strings.Contains(body, "rate limit reached"):
+		return true
+	case strings.Contains(body, "5-hour limit reached"):
+		return true
+	case strings.Contains(body, "limit reached") && strings.Contains(body, "try again"):
+		return true
+	case strings.Contains(body, "limit reached") && strings.Contains(body, "resets at"):
+		return true
+	case strings.Contains(body, "limit reached") && strings.Contains(body, "reset at"):
+		return true
+	default:
+		return false
+	}
 }
 
 // Shutdown stops the poll loop. Called from Manager.Close (reserved;
@@ -354,7 +391,11 @@ func buildTmuxCommand(j Job) ([]string, error) {
 		if bin == "" {
 			bin = "claude"
 		}
-		args := append([]string{}, normalizedClaudeArgs(spec.Args)...)
+		args := make([]string, 0, len(spec.Args)+2)
+		if mode := claudePermissionMode(j); mode != "" {
+			args = append(args, "--permission-mode", mode)
+		}
+		args = append(args, normalizedClaudeArgs(spec.Args)...)
 		if brief != "" {
 			args = append(args, brief)
 		}
@@ -368,6 +409,7 @@ func buildTmuxCommand(j Job) ([]string, error) {
 		if len(positionalArgs) > 0 {
 			return nil, fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
 		}
+		args = append(codexRuntimeArgs(j), args...)
 		if brief != "" {
 			args = append(args, brief)
 		}

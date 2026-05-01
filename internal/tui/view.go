@@ -830,6 +830,7 @@ func (m model) renderFooter() string {
 			add("tab", "focus")
 			add("enter", "launch")
 			add("alt+enter", "launch from note")
+			add("ctrl+t", "toggle Foreman")
 			if m.launchFocus == m.launchNoteFocus() {
 				inInput = true
 			}
@@ -957,7 +958,8 @@ func (m model) helpLines() []string {
 		{"Agents", []struct{ key, desc string }{
 			{"n", "New run (pick a task file or skip task lines)"},
 			{"m", "Open advanced Agent Setup (templates/runtimes; edit/add/duplicate/delete)"},
-			{"F", "List: toggle Foreman on/off · New run: toggle immediate launch vs send to Foreman"},
+			{"F", "List: toggle Foreman on/off"},
+			{"ctrl+t", "New run: toggle immediate launch vs send to Foreman"},
 			{"f / tab", "List: cycle job filters"},
 			{"space", "Toggle task in picker"},
 			{"b", "Picker: back to file list"},

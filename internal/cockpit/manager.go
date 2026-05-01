@@ -116,12 +116,12 @@ func (m *Manager) emit(e Event) {
 // sources list. Provider, if non-nil, overrides the preset's default
 // executor.
 type LaunchRequest struct {
-	Preset   LaunchPreset  `json:"preset"`
-	Sources  []SourceTask  `json:"sources,omitempty"`
-	Repo     string        `json:"repo"`
-	Freeform string        `json:"freeform,omitempty"`
-	Provider *ExecutorSpec `json:"provider,omitempty"`
-	QueueOnly bool         `json:"queue_only,omitempty"`
+	Preset    LaunchPreset  `json:"preset"`
+	Sources   []SourceTask  `json:"sources,omitempty"`
+	Repo      string        `json:"repo"`
+	Freeform  string        `json:"freeform,omitempty"`
+	Provider  *ExecutorSpec `json:"provider,omitempty"`
+	QueueOnly bool          `json:"queue_only,omitempty"`
 }
 
 // LaunchJob registers a job, runs pre-shell hooks, then launches the
@@ -208,7 +208,7 @@ func (m *Manager) launchQueuedSequence(req LaunchRequest) (Job, error) {
 }
 
 func (m *Manager) createQueuedJob(req LaunchRequest, sources []SourceTask, campaignID CampaignID, queueIndex, queueTotal int) (Job, error) {
-	brief := ComposeBrief(req.Preset, sources, req.Freeform)
+	brief := ComposeBrief(req.Preset, sources, req.Freeform, req.QueueOnly)
 	task := SummarizeTask(sources, req.Freeform)
 	repoStatusAtLaunch := gitStatusSnapshot(req.Repo)
 	executor := req.Preset.Executor
@@ -835,6 +835,9 @@ func buildTurnCmd(ctx context.Context, j Job, userInput string) (*exec.Cmd, stri
 			bin = "claude"
 		}
 		args := []string{"-p"}
+		if mode := claudePermissionMode(j); mode != "" {
+			args = append(args, "--permission-mode", mode)
+		}
 		extraArgs := normalizedClaudeArgs(spec.Args)
 		// First assistant turn: pin the session id. Subsequent: resume it.
 		if countAssistantTurns(&j) == 0 {
@@ -856,13 +859,16 @@ func buildTurnCmd(ctx context.Context, j Job, userInput string) (*exec.Cmd, stri
 		if len(positionalArgs) > 0 {
 			return nil, "", fmt.Errorf("codex executor args cannot include positional values: %q", positionalArgs)
 		}
+		args := append([]string{}, codexRuntimeArgs(j)...)
 		if j.SessionID != "" {
-			args := append([]string{"exec", "resume"}, extraArgs...)
+			args = append(args, "exec", "resume")
+			args = append(args, extraArgs...)
 			args = append(args, "--json")
 			args = append(args, j.SessionID, userInput)
 			return exec.CommandContext(ctx, bin, args...), "", nil
 		}
-		args := append([]string{"exec"}, extraArgs...)
+		args = append(args, "exec")
+		args = append(args, extraArgs...)
 		args = append(args, "--json")
 		args = append(args, userInput)
 		return exec.CommandContext(ctx, bin, args...), "", nil
@@ -927,6 +933,40 @@ func splitCodexArgs(args []string) ([]string, []string) {
 		}
 	}
 	return opts, positionals
+}
+
+func claudePermissionMode(j Job) string {
+	switch strings.ToLower(strings.TrimSpace(j.Permissions)) {
+	case "wide-open":
+		return "bypassPermissions"
+	}
+	if jobRunsUnattended(j) {
+		return "dontAsk"
+	}
+	return ""
+}
+
+func codexRuntimeArgs(j Job) []string {
+	args := make([]string, 0, 6)
+	switch strings.ToLower(strings.TrimSpace(j.Permissions)) {
+	case "read-only":
+		args = append(args, "--sandbox", "read-only")
+	case "scoped-write":
+		args = append(args, "--sandbox", "workspace-write")
+	case "wide-open":
+		args = append(args, "--sandbox", "danger-full-access")
+	}
+	if strings.TrimSpace(j.Repo) != "" {
+		args = append(args, "--cd", j.Repo)
+	}
+	if strings.EqualFold(strings.TrimSpace(j.Permissions), "wide-open") || jobRunsUnattended(j) {
+		args = append(args, "--ask-for-approval", "never")
+	}
+	return args
+}
+
+func jobRunsUnattended(j Job) bool {
+	return j.ForemanManaged || j.WaitForForeman
 }
 
 // renderHistoryReplay turns the turn history into a plain-text prompt

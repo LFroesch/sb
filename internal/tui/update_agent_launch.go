@@ -157,7 +157,7 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.launchFocus != m.launchNoteFocus() {
 			return m.doLaunch()
 		}
-	case "F":
+	case "ctrl+t":
 		m.launchQueueOnly = !m.launchQueueOnly
 		if m.launchQueueOnly {
 			m.statusMsg = "this run will be sent to Foreman"

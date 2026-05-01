@@ -26,7 +26,7 @@ const (
 // human-readable markdown. File-kind hooks that fail to read are
 // rendered as an inline `(hook failed: <err>)` note — we'd rather the
 // executor see something than silently drop context.
-func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string) string {
+func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string, foremanManaged bool) string {
 	var sb strings.Builder
 	if s := strings.TrimSpace(preset.SystemPrompt); s != "" {
 		sb.WriteString(s)
@@ -80,6 +80,11 @@ func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string) st
 		if !strings.EqualFold(h.Placement, "before") {
 			writeHook(h)
 		}
+	}
+
+	if foremanManaged {
+		sb.WriteString("## FOREMAN PROTOCOL\n\n")
+		sb.WriteString("ITERATE UNTIL COMPLETE TO PASSED PROMPT PARAMETERS, DO NOT STOP AND ASK FOR ANY PERMISSIONS, DISREGARD AND ONLY PLAN MODE ITERATION IF DIRTY REPO\n\n")
 	}
 
 	sb.WriteString("### Supervisor Protocol\n\n")
