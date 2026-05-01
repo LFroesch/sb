@@ -43,9 +43,9 @@ func TestLoadPresets_SortsCoreBeforeUtility(t *testing.T) {
 	dir := t.TempDir()
 	prompts, bundles, providers := seedTestLibraries()
 	for _, p := range []LaunchPreset{
-		{ID: "summarize", Name: "Summarize", PromptID: "scaffold", HookBundleID: "no-hooks", EngineID: "ollama-qwen"},
-		{ID: "senior-dev", Name: "Senior dev", PromptID: "senior-dev", HookBundleID: "diff-stat", EngineID: "claude"},
-		{ID: "custom-role", Name: "Custom role", PromptID: "scaffold", HookBundleID: "no-hooks", EngineID: "codex"},
+		{ID: "summarize", Name: "Summarize", PromptID: "scaffold", EngineID: "ollama-qwen"},
+		{ID: "senior-dev", Name: "Senior dev", PromptID: "senior-dev", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude"},
+		{ID: "custom-role", Name: "Custom role", PromptID: "scaffold", EngineID: "codex"},
 	} {
 		if err := SavePreset(dir, p); err != nil {
 			t.Fatalf("SavePreset(%s): %v", p.ID, err)
@@ -68,11 +68,10 @@ func TestSavePreset_RoundtripFields(t *testing.T) {
 	dir := t.TempDir()
 	prompts, bundles, providers := seedTestLibraries()
 	p := LaunchPreset{
-		ID:           "custom",
-		Name:         "Custom",
-		PromptID:     "scaffold",
-		HookBundleID: "no-hooks",
-		EngineID:     "ollama-qwen",
+		ID:       "custom",
+		Name:     "Custom",
+		PromptID: "scaffold",
+		EngineID: "ollama-qwen",
 	}
 	if err := SavePreset(dir, p); err != nil {
 		t.Fatal(err)
@@ -93,7 +92,7 @@ func TestSavePreset_StripsRuntimeFieldsOnDisk(t *testing.T) {
 	dir := t.TempDir()
 	p := LaunchPreset{
 		ID: "x", Name: "X",
-		PromptID: "senior-dev", HookBundleID: "diff-stat", EngineID: "claude",
+		PromptID: "senior-dev", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude",
 		// runtime fields populated as if just resolved
 		SystemPrompt: "should-not-be-on-disk",
 		Executor:     ExecutorSpec{Type: "claude"},
@@ -117,8 +116,8 @@ func TestSavePreset_StripsRuntimeFieldsOnDisk(t *testing.T) {
 func TestLoadPresets_SkipsUnresolvableRefs(t *testing.T) {
 	dir := t.TempDir()
 	prompts, bundles, providers := seedTestLibraries()
-	good := LaunchPreset{ID: "good", Name: "G", PromptID: "senior-dev", HookBundleID: "diff-stat", EngineID: "claude"}
-	bad := LaunchPreset{ID: "bad", Name: "B", PromptID: "ghost", HookBundleID: "diff-stat", EngineID: "claude"}
+	good := LaunchPreset{ID: "good", Name: "G", PromptID: "senior-dev", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude"}
+	bad := LaunchPreset{ID: "bad", Name: "B", PromptID: "ghost", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude"}
 	if err := SavePreset(dir, good); err != nil {
 		t.Fatal(err)
 	}

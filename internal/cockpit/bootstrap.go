@@ -170,7 +170,11 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 		ExecFallback = true
 		return false, true, fmt.Errorf("lookpath tmux: %w", err)
 	}
-	args := []string{tmux, "-L", TmuxServerLabel, "attach", "-t", CockpitSession}
+	// Always land on the dashboard window — attaching to the bare session
+	// reattaches to the last-active window, which may be a job pane the
+	// user previously stepped out of. Targeting the window explicitly
+	// selects it before attaching so `sb` always opens to itself.
+	args := []string{tmux, "-L", TmuxServerLabel, "attach", "-t", cockpitDashboardTarget}
 	env := os.Environ()
 	if execErr := syscall.Exec(tmux, args, env); execErr != nil {
 		ExecFallback = true

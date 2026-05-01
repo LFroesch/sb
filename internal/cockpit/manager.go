@@ -1216,11 +1216,14 @@ func (m *Manager) RetryJob(id JobID, presets []LaunchPreset) (Job, error) {
 	if preset.ID == "" {
 		return Job{}, fmt.Errorf("preset %s not found", j.PresetID)
 	}
+	exec := j.Executor
 	return m.LaunchJob(LaunchRequest{
-		Preset:   preset,
-		Sources:  j.Sources,
-		Repo:     j.Repo,
-		Freeform: j.Freeform,
+		Preset:    preset,
+		Sources:   j.Sources,
+		Repo:      j.Repo,
+		Freeform:  j.Freeform,
+		QueueOnly: false,
+		Provider:  &exec,
 	})
 }
 

@@ -114,13 +114,14 @@ func (m model) renderAgentLaunch() string {
 		cursor := m.launchPromptIdx + 1
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusHooks:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Hook Bundle"), dimStyle.Render("  override the role's pre/post hooks for this run"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Choose Hook Bundles"), dimStyle.Render("  space/enter toggles · multiple bundles compose · (role default) clears overrides"), "")
 		var options []string
-		options = append(options, launchOverrideOption("(role default)", m.launchHookBundleIdx == -1))
+		options = append(options, launchHookRow("(role default)", !m.launchHookOverride, m.launchHookCursor == -1, false))
 		for i, b := range m.cockpitHookBundles {
-			options = append(options, launchOverrideOption(b.Name, m.launchHookBundleIdx == i))
+			selected := m.launchHookOverride && m.launchHookSelected[b.ID]
+			options = append(options, launchHookRow(b.Name, selected, m.launchHookCursor == i, true))
 		}
-		cursor := m.launchHookBundleIdx + 1
+		cursor := m.launchHookCursor + 1
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusPerms:
 		lines = append(lines, panelHeaderStyle.Render("  Choose Permissions"), dimStyle.Render("  override the role's permission level for this run"), "")
@@ -190,7 +191,13 @@ func (m model) renderAgentLaunch() string {
 
 func (m model) renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel string) []string {
 	var lines []string
-	lines = append(lines, titleStyle.Render("New Run")+"   "+subtabs, "")
+	title := titleStyle.Render("New Run")
+	if m.launchQueueOnly {
+		title += "   " + accentStyle.Bold(true).Render("[Foreman queue]")
+	} else {
+		title += "   " + dimStyle.Render("[Start now]")
+	}
+	lines = append(lines, title+"   "+subtabs, "")
 	lines = append(lines, "")
 
 	summary := dimStyle.Render("  role=") + textStyle.Render(presetLabel) +
@@ -202,8 +209,18 @@ func (m model) renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel 
 	if m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts) {
 		summary += dimStyle.Render("  prompt=") + accentStyle.Render(m.cockpitPrompts[m.launchPromptIdx].Name)
 	}
-	if m.launchHookBundleIdx >= 0 && m.launchHookBundleIdx < len(m.cockpitHookBundles) {
-		summary += dimStyle.Render("  hooks=") + accentStyle.Render(m.cockpitHookBundles[m.launchHookBundleIdx].Name)
+	if m.launchHookOverride {
+		var names []string
+		for _, b := range m.cockpitHookBundles {
+			if m.launchHookSelected[b.ID] {
+				names = append(names, b.Name)
+			}
+		}
+		label := "(none)"
+		if len(names) > 0 {
+			label = strings.Join(names, "+")
+		}
+		summary += dimStyle.Render("  hooks=") + accentStyle.Render(label)
 	}
 	if v := launchPermsValue(m.launchPermsIdx); v != "" {
 		summary += dimStyle.Render("  perms=") + accentStyle.Render(v)
@@ -218,6 +235,33 @@ func launchOverrideOption(label string, selected bool) string {
 		return accentStyle.Render("▸ ") + accentStyle.Bold(true).Render(label)
 	}
 	return "  " + label
+}
+
+// launchHookRow renders one row of the multi-select hook list. The cursor
+// arrow is the navigation indicator (j/k); the [x]/[ ] checkbox is the
+// selection state (toggle with space/enter). showCheckbox is false for
+// the "(role default)" sentinel — its "selected" state is just whether
+// override is off, shown via the cursor/text styling instead.
+func launchHookRow(label string, selected, atCursor, showCheckbox bool) string {
+	var arrow, box, text string
+	if atCursor {
+		arrow = accentStyle.Render("▸ ")
+	} else {
+		arrow = "  "
+	}
+	if showCheckbox {
+		if selected {
+			box = accentStyle.Render("[x] ")
+		} else {
+			box = dimStyle.Render("[ ] ")
+		}
+	}
+	if selected || atCursor {
+		text = accentStyle.Bold(true).Render(label)
+	} else {
+		text = label
+	}
+	return arrow + box + text
 }
 
 func launchRepoPathLabel(path string) string {

@@ -185,7 +185,9 @@ type model struct {
 	launchPresetIdx     int
 	launchProviderIdx   int  // index into m.cockpitProviders
 	launchPromptIdx     int  // -1 = use role default, else index into m.cockpitPrompts
-	launchHookBundleIdx int  // -1 = use role default, else index into m.cockpitHookBundles
+	launchHookCursor    int             // cursor row in hook step: -1 = "(role default)", else index into m.cockpitHookBundles
+	launchHookOverride  bool            // false = inherit role's hooks; true = use launchHookSelected (which may be empty = no hooks)
+	launchHookSelected  map[string]bool // bundle ID → selected; only meaningful when launchHookOverride
 	launchPermsIdx      int  // 0 = role default, 1=read-only, 2=scoped-write, 3=wide-open
 	launchBrief         textarea.Model
 	launchFocus         int // 0=role 1=engine 2=prompt 3=hooks 4=perms [5=repo] note review

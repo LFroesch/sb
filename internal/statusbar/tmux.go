@@ -32,14 +32,14 @@ func RenderTmuxLine() string {
 func renderTmuxBlock(u Usage) string {
 	var segs []string
 	if u.FiveHour.Available {
-		seg := "#[fg=#cbd5e1]5h " + tmuxPct(u.FiveHour.PctUsed)
+		seg := "#[fg=#cbd5e1]5h:" + tmuxPct(u.FiveHour.PctUsed)
 		if !u.FiveHour.ResetAt.IsZero() {
 			seg += "#[fg=#94a3b8] @" + tmuxShortTime(u.FiveHour.ResetAt)
 		}
 		segs = append(segs, seg)
 	}
 	if u.SevenDay.Available {
-		seg := "#[fg=#cbd5e1]7d " + tmuxPct(u.SevenDay.PctUsed)
+		seg := "#[fg=#cbd5e1]7d:" + tmuxPct(u.SevenDay.PctUsed)
 		if !u.SevenDay.ResetAt.IsZero() {
 			seg += "#[fg=#94a3b8] @" + tmuxShortDate(u.SevenDay.ResetAt)
 		}

@@ -54,6 +54,8 @@ sb
       "base_url": "http://localhost:11434"
     }
   },
+  "model": "qwen2.5:7b",
+  "ollama_host": "http://localhost:11434",
   "scan_roots": [
     { "name": "projects", "path": "~/projects" }
   ],
@@ -62,6 +64,20 @@ sb
   "label_max_depth": 2,
   "index_path": "~/.config/sb/index.md",
   "log_level": "info",
+  "default_preset_id": "senior-dev",
+  "foreman_claude_pauses": [
+    {
+      "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+      "start": "05:00",
+      "end": "11:00",
+      "engines": ["claude"],
+      "note": "Claude 2x usage window"
+    }
+  ],
+  "scan_blacklist_names": [],
+  "scan_blacklist_suffixes": [],
+  "scan_blacklist_dirs": [],
+  "scan_blacklist_substrings": [],
   "catchall_target": null,
   "ideas_target": null
 }
@@ -77,12 +93,20 @@ sb
 | `label_max_depth` | Fallback label depth: keep the last N path components when no title label is present. |
 | `index_path` | Auto-regenerated routing-context cache (see below). |
 | `log_level` | JSON log verbosity for `~/.local/share/sb/logs/sb.log` (`debug`, `info`, `warn`, `error`). |
+| `default_preset_id` | Role selected by default for new agent launches. |
+| `foreman_claude_pauses` | Recurring local-time windows when Foreman should not auto-start matching engines. Useful for Claude usage windows such as `05:00`-`11:00` Pacific. |
+| `scan_blacklist_names` | Exact basenames to skip during discovery, case-insensitive. |
+| `scan_blacklist_suffixes` | File suffixes/extensions to skip during discovery, with or without the leading dot. |
+| `scan_blacklist_dirs` | Directory names/path segments to skip anywhere in a discovered path. |
+| `scan_blacklist_substrings` | Raw substrings that block a path anywhere in the full path. |
 | `catchall_target` | `{ "name": "...", "path": "..." }` — optional bucket for general notes that don't belong to a project. |
 | `ideas_target` | Same shape — optional bucket for project-less ideas. |
 
 Press `,` inside sb to open the main `sb` config directory in your editor.
 
 Use `api_key_env` when possible so secrets stay out of the config file. Existing top-level `model` and `ollama_host` fields are still honored as a compatibility shim for older configs.
+
+Project discovery blacklist matches are case-insensitive. `scan_blacklist_names` checks only the basename, `scan_blacklist_dirs` checks each path segment, and `scan_blacklist_substrings` checks the full path. Idea dirs use the same blacklist rules as recursive scan roots.
 
 Env overrides:
 
@@ -208,7 +232,8 @@ From the dashboard, switch to the **Agents** tab:
 4. The new-run composer stays as small as possible. Task-backed runs cycle through **Role**, **Engine**, **Note**, and **Review** because the repo already comes from the selected task. Runs without a task source add an explicit **Repo** step where you can pick a discovered project, the cwd, or `(custom path…)` to type any absolute path. The repo list stays in a stable order while you scroll; `(custom path…)` is always row 1, but the initial cursor starts on row 2 so the normal repo remains the default and one `↑` opens the custom-path route. `↑/↓` moves within the focused list or review pane, `enter` on **Repo** confirms the selected repo and advances to **Note** (or opens the custom-path editor), `enter` on the other non-note tabs launches, and `alt+enter` launches from the note editor.
    While the custom-path editor is open, the field is kept visible ahead of the repo list and its width stays clamped to the pane so you can still see what you are typing on shorter or narrower terminals.
    While a textarea is focused, typing `?` stays in that textarea instead of toggling help.
-   Press `F` in the composer to switch between **start now** and **send to Foreman**.
+   Press `ctrl+t` in the composer to switch between **start now** and **send to Foreman**.
+   The New Run title now also shows that mode directly as `[Start now]` or `[Foreman queue]` so it stays visible while you move between tabs.
    On shorter terminals, the composer now stays within the visible body area instead of pushing the global header/footer off-screen; longer role/review content scrolls inside the composer.
    Scroll positions are also clamped to the last real screenful now, so paging past the end of review/setup/detail panes should not leave you stuck "below" the visible content.
 5. New runs default to the `senior-dev` role with the `codex` engine when those profiles exist. Multi-task launches can stay bundled or become a queued run sequence, depending on the selected role.
@@ -217,12 +242,12 @@ From the dashboard, switch to the **Agents** tab:
    Queued runs also show explicit progress (`solo`, `1/2 active`, `2/2 next`, `1/3 review`, etc.) without forcing you into the detail pane first.
    `pgup/pgdn` scroll that right-side peek directly from the jobs list.
    Local control copy now stays in the footer instead of being repeated inside each body pane, so picker / new-run / attached / setup content areas stay focused on the actual run state and content.
-   That right-hand detail pane is now intentionally compact: task, repo/session state, review risk, queue-next context, and the most useful output tail first, rather than a full inline review transcript.
-7. `f` or `tab` cycles the run filters (`all/live/running/attention/foreman/done`). The header also shows provider/model session mix, Foreman on/off state, and Claude/Codex limit rows.
+   That right-hand detail pane is now intentionally compact and height-bounded: task, repo/session state, review risk, queue-next context, and the most useful output tail first, rather than a full inline review transcript. On shorter terminals the peek keeps a dedicated scroll window instead of letting wrapped metadata consume the whole pane.
+7. `f` or `tab` cycles the run filters (`all/live/running/attention/foreman/done`). The list header is intentionally minimal now: it only shows the active filter plus Foreman on/off state.
 8. Claude and Codex runs use real `tmux` windows under the shared `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to fake it inside Bubble Tea.
 9. `enter` or `i` on a live tmux-backed run switches the client into that run's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the shared `sb` `main` window.
 10. Finished tmux runs open an in-app log/review view. The peek prefers tmux pane snapshots and falls back to captured transcript/log output only when needed.
-11. Ollama and shell runs stay on the exec-per-turn path and use the attached chat view inside `sb`, including the sessions rail and `[` / `]` quick switching.
+11. Ollama and other exec-per-turn runs now open into a fuller in-app chat surface inside `sb` instead of the smaller supervision split: full-width transcript viewport, boxed composer, stable scroll while replies stream, bottom anchoring that keeps the latest assistant lines visible on shorter terminals, gentler wheel/viewport behavior because refresh and render now share the same height math, and a more compact header/composer layout so the transcript keeps more vertical space. `pgup/pgdn` still scrolls the transcript even while the composer is focused, and `[` / `]` still jumps between jobs.
 12. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. Relaunching `sb` reattaches to the same session, and a second `sb` reuses the same shared cockpit/foreman.
 13. `F` from the Agents list toggles **Foreman** on or off. Inside the New Run composer, `ctrl+t` toggles whether the run starts immediately or gets sent to Foreman, so the Note textarea can still accept a literal uppercase `F`. When Foreman is off, runs explicitly sent to Foreman stay parked as `waiting for Foreman`, show up in the `foreman` filter, and do not auto-start. Turning Foreman on lets eligible Foreman runs launch unattended in their own tmux sessions, while same-repo write-capable work stays serialized.
 14. Runs explicitly sent to Foreman now also get an extra `FOREMAN PROTOCOL` block appended to the composed prompt, telling the agent to iterate until complete without permission prompts unless it hits the dirty-repo plan-only case.
@@ -231,9 +256,10 @@ From the dashboard, switch to the **Agents** tab:
 16. `a` accepts the selected reviewed run. For sourced runs this syncs back into `WORK.md` plus `DEVLOG.md`; for runs without a task source it marks the run complete without editing task files.
    Review surfaces preview the task removals, `DEVLOG.md` additions, changed files, diff stat, hook activity, and preexisting dirty files before you accept.
    Accept will refuse sync-back when the target `WORK.md` or `DEVLOG.md` already has uncommitted changes.
-17. `R` starts a waiting Foreman job immediately if it is still queued, or opens the selected existing session if it is already live/stopped.
-18. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
-19. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, and `enter` edits a field — except `Permissions` and `Iteration mode` cycle in place between their fixed options. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, `enter`-to-cycle fields refresh immediately too, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away.
+17. `r` retries the selected job immediately with the same repo, note, and runtime override, but always as an attended immediate run rather than re-queueing it for Foreman.
+18. `R` reopens the New Run composer prefilled from the selected job so you can edit the role/runtime/repo/note before relaunching.
+19. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
+20. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, and `enter` edits a field — except `Permissions` and `Iteration mode` cycle in place between their fixed options. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, `enter`-to-cycle fields refresh immediately too, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away.
    `n` creates a new role/engine and drops you into the wizard with `Name` already focused; saving each field auto-advances to the next group.
    `D` duplicates and `d` deletes the highlighted item.
    The picker, setup, list, and attached-session views share the same terminal-height budget, so local scrolling should not hide the app chrome on short terminals.
@@ -321,7 +347,8 @@ Agents tab:
 | `pgup/pgdn` | List: page the right-side peek · Attached/review: page the transcript/log |
 | `enter` | Launch (from role/engine/review tabs) · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
 | `alt+enter` | Launch from note |
-| `R` | Start waiting job now, or open the selected session |
+| `r` | Retry the selected job immediately with the same setup |
+| `R` | Reopen the selected job in the New Run composer with its prior settings prefilled |
 | `s` | Send `Esc` to the selected tmux-backed session |
 | `S` | Send `Ctrl+C` to the selected session / hard interrupt the active turn |
 | `c` | Send literal `continue` |

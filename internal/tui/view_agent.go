@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -557,7 +556,7 @@ func renderManageSelectedSummary(m model, width int) []string {
 	lines := []string{
 		renderManageKV("launch", textStyle.Render(describeLaunchMode(p.LaunchMode))),
 		renderManageKV("prompt", textStyle.Render(p.PromptID)),
-		renderManageKV("hooks ref", textStyle.Render(p.HookBundleID)),
+		renderManageKV("hooks ref", textStyle.Render(strings.Join(p.HookBundleIDs, ", "))),
 		renderManageKV("engine ref", textStyle.Render(p.EngineID)),
 		renderManageKV("suggested", textStyle.Render(describeExecutor(p.Executor))),
 		renderManageKV("policy", textStyle.Render(p.Permissions)),
@@ -575,28 +574,30 @@ func (m model) agentPeekHeaderLines(j cockpit.Job, bodyWidth int) []string {
 		bodyWidth = 24
 	}
 	statusText, statusStyle := jobOperatorStatus(j)
+	appendWrapped := func(lines []string, text string) []string {
+		for _, line := range wrapLines(text, bodyWidth) {
+			lines = append(lines, line)
+		}
+		return lines
+	}
 
 	// Title: repo + short id. Avoids a second "Live Peek" header since the
 	// panel chrome already frames this pane.
-	lines := []string{
-		"  " + primaryStyle.Bold(true).Render(jobRepoLabel(j)) +
-			dimStyle.Render("  "+shortJobID(j.ID)),
-		"",
-	}
+	lines := appendWrapped(nil, "  "+primaryStyle.Bold(true).Render(jobRepoLabel(j))+
+		dimStyle.Render("  "+shortJobID(j.ID)))
+	lines = append(lines, "")
 
-	kv := func(label string, value string) string {
+	kv := func(label string, value string) []string {
 		if strings.TrimSpace(value) == "" {
-			return ""
+			return nil
 		}
-		return "  " + dimStyle.Render(fmt.Sprintf("%-9s", label)) + " " + value
+		return wrapLines("  "+dimStyle.Render(fmt.Sprintf("%-9s", label))+" "+value, bodyWidth)
 	}
 	appendKV := func(label, value string) {
-		if line := kv(label, value); line != "" {
-			lines = append(lines, line)
-		}
+		lines = append(lines, kv(label, value)...)
 	}
 
-	lines = append(lines, kv("status", statusStyle.Render(statusText)))
+	lines = append(lines, kv("status", statusStyle.Render(statusText))...)
 	advanceText, advanceStyle := jobAdvanceState(j)
 	appendKV("queue", advanceStyle.Render(advanceText))
 	if j.ForemanManaged {
@@ -618,12 +619,12 @@ func (m model) agentPeekHeaderLines(j cockpit.Job, bodyWidth int) []string {
 	if extra := jobElapsedSummary(j); extra != "" {
 		ageLabel += dimStyle.Render("  (" + extra + ")")
 	}
-	lines = append(lines, kv("age", textStyle.Render(ageLabel)))
+	lines = append(lines, kv("age", textStyle.Render(ageLabel))...)
 	if j.Note != "" {
 		appendKV("note", textStyle.Render(j.Note))
 	}
 	if task := jobTaskText(j); task != "" {
-		appendKV("task", textStyle.Render(truncate(task, bodyWidth-12)))
+		appendKV("task", textStyle.Render(task))
 	}
 	if len(j.Sources) > 0 {
 		src := fmt.Sprintf("%s:%d", shortPath(j.Sources[0].File), j.Sources[0].Line)
@@ -635,7 +636,7 @@ func (m model) agentPeekHeaderLines(j cockpit.Job, bodyWidth int) []string {
 	if len(j.Sources) == 0 && strings.TrimSpace(j.Task) == "" {
 		if brief := strings.TrimSpace(j.Brief); brief != "" {
 			firstLine := strings.SplitN(brief, "\n", 2)[0]
-			appendKV("brief", textStyle.Render(truncate(firstLine, bodyWidth-12)))
+			appendKV("brief", textStyle.Render(firstLine))
 		}
 	}
 	if reviewLines := m.renderPeekReviewSummary(j, bodyWidth); len(reviewLines) > 0 {
@@ -663,12 +664,15 @@ func (m model) renderAgentPeek(j cockpit.Job, width, height, offset int) string 
 	}
 	lines := m.agentPeekHeaderLines(j, bodyWidth)
 	bodyLines := jobPeekBody(j, bodyWidth)
-	visibleBody := height - len(lines)
-	if visibleBody < 3 {
-		visibleBody = 3
+	maxHeaderLines := minInt(14, maxInt(8, height-1))
+	if len(lines) > maxHeaderLines {
+		lines = capLines(lines, maxHeaderLines)
 	}
-	bodyLines = scrollWindowFromBottom(bodyLines, offset, visibleBody)
-	lines = append(lines, bodyLines...)
+	visibleBody := height - len(lines)
+	if visibleBody < 1 {
+		visibleBody = 1
+	}
+	lines = append(lines, scrollWindowFromBottom(bodyLines, offset, visibleBody)...)
 	return strings.Join(capLines(lines, height), "\n")
 }
 
@@ -736,7 +740,12 @@ func (m model) agentDetailVisibleBody(j cockpit.Job) int {
 	if bodyWidth < 24 {
 		bodyWidth = 24
 	}
-	visibleBody := innerHeight - len(m.agentPeekHeaderLines(j, bodyWidth))
+	headerLines := len(m.agentPeekHeaderLines(j, bodyWidth))
+	maxHeaderLines := minInt(14, maxInt(8, innerHeight-1))
+	if headerLines > maxHeaderLines {
+		headerLines = maxHeaderLines
+	}
+	visibleBody := innerHeight - headerLines
 	if visibleBody < 3 {
 		visibleBody = 3
 	}
@@ -1565,87 +1574,16 @@ func renderAgentJobsHeader(jobs []cockpit.Job, active string, foreman cockpit.Fo
 		active = "all"
 	}
 
-	counts := map[string]int{"all": len(jobs)}
-	usage := map[string]int{}
-	for _, j := range jobs {
-		if agentJobMatchesFilter(j, "live") {
-			counts["live"]++
-		}
-		if agentJobMatchesFilter(j, "running") {
-			counts["running"]++
-		}
-		if agentJobMatchesFilter(j, "attention") {
-			counts["attention"]++
-		}
-		if agentJobMatchesFilter(j, "done") {
-			counts["done"]++
-		}
-		usage[describeExecutor(j.Executor)]++
-	}
-
 	foremanLabel := "OFF"
 	foremanStyle := warnStyle
 	if foreman.Enabled {
 		foremanLabel = "ON"
 		foremanStyle = primaryStyle
 	}
-	pool := foremanPoolCounts(jobs, foreman)
-	filterLine := "  " + dimStyle.Render("filter ") +
-		accentStyle.Bold(true).Render(strings.ToUpper(active[:1])+active[1:]) +
-		dimStyle.Render("  ·  foreman ") + foremanStyle.Bold(true).Render(foremanLabel)
-	if pool.hasAny() {
-		filterLine += dimStyle.Render("  ·  pool ") + pool.render()
-	}
-	lines := wrapLines(filterLine, width)
-
-	countLine := "  " + dimStyle.Render("counts ")
-	countOrder := []string{"all", "live", "running", "attention", "foreman", "done"}
-	countParts := make([]string, 0, len(countOrder))
-	for _, label := range countOrder {
-		n := counts[label]
-		labelStyle := textStyle
-		countStyle := accentStyle
-		switch {
-		case n == 0:
-			labelStyle = dimStyle
-			countStyle = dimStyle
-		case label == "attention":
-			countStyle = warnStyle.Bold(true)
-		case label == "running":
-			countStyle = primaryStyle.Bold(true)
-		}
-		if label == active {
-			labelStyle = accentStyle.Bold(true)
-		}
-		countParts = append(countParts, labelStyle.Render(label)+" "+countStyle.Render(fmt.Sprintf("%d", n)))
-	}
-	lines = append(lines, wrapLines(countLine+strings.Join(countParts, dimStyle.Render(" · ")), width)...)
-
-	if len(usage) == 0 {
-		return append(lines, renderProviderLimitsLines(width)...)
-	}
-	type bucket struct {
-		label string
-		n     int
-	}
-	buckets := make([]bucket, 0, len(usage))
-	for label, n := range usage {
-		buckets = append(buckets, bucket{label: label, n: n})
-	}
-	sort.Slice(buckets, func(i, j int) bool {
-		if buckets[i].n == buckets[j].n {
-			return buckets[i].label < buckets[j].label
-		}
-		return buckets[i].n > buckets[j].n
-	})
-	parts := make([]string, 0, len(buckets))
-	for _, b := range buckets {
-		parts = append(parts, textStyle.Render(b.label)+dimStyle.Render(fmt.Sprintf("×%d", b.n)))
-	}
-	lines = append(lines, wrapLines("  "+dimStyle.Render("sessions ")+strings.Join(parts, dimStyle.Render(" · ")), width)...)
-
-	lines = append(lines, renderProviderLimitsLines(width)...)
-	return lines
+	focus := "  " + accentStyle.Bold(true).Render(strings.ToUpper(active[:1])+active[1:])
+	focus += dimStyle.Render("  filter")
+	focus += dimStyle.Render("  ·  foreman ") + foremanStyle.Bold(true).Render(foremanLabel)
+	return wrapLines(focus, width)
 }
 
 type foremanPool struct {
@@ -1856,6 +1794,13 @@ func renderAgentColumnHeader(rowWidth, repoW, advanceW, statusW, presetW int) st
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

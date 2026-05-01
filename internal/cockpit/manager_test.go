@@ -248,6 +248,54 @@ exit 0
 	}
 }
 
+func TestRetryJobPreservesExecutorOverrideAndDropsForemanMode(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	original, err := mgr.Registry.Create(Job{
+		PresetID:       "senior-dev",
+		Repo:           dir,
+		Freeform:       "retry me",
+		Executor:       ExecutorSpec{Type: "codex", Model: "gpt-5"},
+		Permissions:    "scoped-write",
+		Status:         StatusBlocked,
+		ForemanManaged: true,
+		WaitForForeman: true,
+	})
+	if err != nil {
+		t.Fatalf("Create(original): %v", err)
+	}
+
+	retried, err := mgr.RetryJob(original.ID, []LaunchPreset{{
+		ID:          "senior-dev",
+		Name:        "Senior dev",
+		Permissions: "scoped-write",
+		Executor:    ExecutorSpec{Type: "claude", Model: "claude-sonnet-4-6"},
+		Hooks:       HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+	}})
+	if err != nil {
+		t.Fatalf("RetryJob: %v", err)
+	}
+	if retried.Executor.Type != "codex" || retried.Executor.Model != "gpt-5" {
+		t.Fatalf("retried executor = %+v, want original codex override", retried.Executor)
+	}
+	if retried.ForemanManaged || retried.WaitForForeman {
+		t.Fatalf("retried Foreman flags = managed:%v waiting:%v, want both false", retried.ForemanManaged, retried.WaitForForeman)
+	}
+}
+
 func TestTakeOverJobRejectsNonForemanJobs(t *testing.T) {
 	dir := t.TempDir()
 	paths := Paths{

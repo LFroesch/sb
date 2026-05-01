@@ -111,17 +111,26 @@ func resolveInto(p *LaunchPreset, prompts map[string]PromptTemplate, bundles map
 		}
 		p.SystemPrompt = pt.Body
 	}
-	if p.HookBundleID != "" {
-		b, ok := bundles[p.HookBundleID]
-		if !ok {
-			return fmt.Errorf("hook bundle %q not found", p.HookBundleID)
+	if len(p.HookBundleIDs) > 0 {
+		merged := HookSpec{}
+		for _, id := range p.HookBundleIDs {
+			if id == "" {
+				continue
+			}
+			b, ok := bundles[id]
+			if !ok {
+				return fmt.Errorf("hook bundle %q not found", id)
+			}
+			merged.Prompt = append(merged.Prompt, b.Prompt...)
+			merged.PreShell = append(merged.PreShell, b.PreShell...)
+			merged.PostShell = append(merged.PostShell, b.PostShell...)
+			// First non-default iteration policy wins. If no bundle
+			// declares one, the trailer below stamps IterationOneShot.
+			if merged.Iteration.Mode == "" && b.Iteration.Mode != "" && b.Iteration.Mode != IterationOneShot {
+				merged.Iteration = b.Iteration
+			}
 		}
-		p.Hooks = HookSpec{
-			Prompt:    b.Prompt,
-			PreShell:  b.PreShell,
-			PostShell: b.PostShell,
-			Iteration: b.Iteration,
-		}
+		p.Hooks = merged
 	}
 	if p.EngineID != "" {
 		pr, ok := providers[p.EngineID]
@@ -149,13 +158,13 @@ func SavePreset(dir string, p LaunchPreset) error {
 		return fmt.Errorf("preset missing id")
 	}
 	disk := presetOnDisk{
-		ID:           p.ID,
-		Name:         p.Name,
-		LaunchMode:   p.LaunchMode,
-		Permissions:  p.Permissions,
-		PromptID:     p.PromptID,
-		HookBundleID: p.HookBundleID,
-		EngineID:     p.EngineID,
+		ID:            p.ID,
+		Name:          p.Name,
+		LaunchMode:    p.LaunchMode,
+		Permissions:   p.Permissions,
+		PromptID:      p.PromptID,
+		HookBundleIDs: p.HookBundleIDs,
+		EngineID:      p.EngineID,
 	}
 	b, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
@@ -168,13 +177,13 @@ func SavePreset(dir string, p LaunchPreset) error {
 // the runtime struct can carry resolved fields without leaking them into
 // the JSON file.
 type presetOnDisk struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	LaunchMode   string `json:"launch_mode,omitempty"`
-	Permissions  string `json:"permissions,omitempty"`
-	PromptID     string `json:"prompt_id,omitempty"`
-	HookBundleID string `json:"hook_bundle_id,omitempty"`
-	EngineID     string `json:"engine_id,omitempty"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	LaunchMode    string   `json:"launch_mode,omitempty"`
+	Permissions   string   `json:"permissions,omitempty"`
+	PromptID      string   `json:"prompt_id,omitempty"`
+	HookBundleIDs []string `json:"hook_bundle_ids,omitempty"`
+	EngineID      string   `json:"engine_id,omitempty"`
 }
 
 // DeletePreset removes <dir>/<id>.json. Missing files are treated as
@@ -230,47 +239,47 @@ func defaultPresets() []LaunchPreset {
 	return []LaunchPreset{
 		{
 			ID: "senior-dev", Name: "Senior dev",
-			PromptID: "senior-dev", HookBundleID: "diff-stat", EngineID: "claude",
+			PromptID: "senior-dev", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
 			ID: "bug-fixer", Name: "Bug fixer",
-			PromptID: "bug-fixer", HookBundleID: "diff-stat", EngineID: "claude",
+			PromptID: "bug-fixer", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
 			ID: "test-writer", Name: "Test writer",
-			PromptID: "test-writer", HookBundleID: "git-status", EngineID: "claude",
+			PromptID: "test-writer", HookBundleIDs: []string{"git-status"}, EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
 			ID: "refactor", Name: "Refactor (narrow)",
-			PromptID: "refactor", HookBundleID: "diff-stat", EngineID: "claude",
+			PromptID: "refactor", HookBundleIDs: []string{"diff-stat"}, EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
 			ID: "code-analyzer", Name: "Code analyzer (read-only)",
-			PromptID: "code-analyzer", HookBundleID: "no-hooks", EngineID: "claude",
+			PromptID: "code-analyzer", EngineID: "claude",
 			Permissions: "read-only",
 		},
 		{
 			ID: "explainer", Name: "Explainer",
-			PromptID: "explainer", HookBundleID: "no-hooks", EngineID: "claude",
+			PromptID: "explainer", EngineID: "claude",
 			Permissions: "read-only",
 		},
 		{
 			ID: "pm", Name: "PM (plan mode)",
-			PromptID: "pm", HookBundleID: "no-hooks", EngineID: "claude",
+			PromptID: "pm", EngineID: "claude",
 			Permissions: "read-only",
 		},
 		{
 			ID: "docs-writer", Name: "Docs writer",
-			PromptID: "docs-writer", HookBundleID: "git-status", EngineID: "claude",
+			PromptID: "docs-writer", HookBundleIDs: []string{"git-status"}, EngineID: "claude",
 			Permissions: "scoped-write",
 		},
 		{
 			ID: "scaffold", Name: "Scaffold / generate",
-			PromptID: "scaffold", HookBundleID: "git-status", EngineID: "codex",
+			PromptID: "scaffold", HookBundleIDs: []string{"git-status"}, EngineID: "codex",
 			Permissions: "scoped-write",
 		},
 	}

@@ -51,11 +51,14 @@ func (m *model) refreshAttachedViewport(forceBottom bool) {
 		return
 	}
 	m.recalcAttachedViewportLayout()
-	width := m.attachedTranscriptWidth()
 	oldOffset := m.viewport.YOffset
-	follow := forceBottom || m.attachedFocus == 1 || m.viewport.AtBottom()
+	follow := forceBottom || m.viewport.AtBottom()
 	if m.cockpitClient != nil {
 		if j, ok := m.cockpitClient.GetJob(m.attachedJobID); ok {
+			width := m.attachedTranscriptWidth()
+			if j.Runner != cockpit.RunnerTmux {
+				width = m.attachedExecTranscriptWidth()
+			}
 			m.viewport.SetContent(m.attachedConversationText(j, width))
 			if follow {
 				m.viewport.GotoBottom()
@@ -75,6 +78,12 @@ func (m *model) recalcAttachedViewportLayout() {
 	if !ok {
 		return
 	}
+	if j.Runner != cockpit.RunnerTmux {
+		width, height, _ := m.attachedExecViewportDims(j)
+		m.viewport.Width = width
+		m.viewport.Height = height
+		return
+	}
 	_, chatWidth, panelHeight := m.attachedLayoutDims()
 	headerLines := 4
 	if panelHeight <= 8 {
@@ -83,7 +92,6 @@ func (m *model) recalcAttachedViewportLayout() {
 	if len(j.Sources) > 0 {
 		headerLines++
 	}
-
 	_, _, h := m.attachedPanelHeights(j, panelHeight, headerLines)
 	m.viewport.Width = chatWidth - 6
 	m.viewport.Height = h
@@ -120,6 +128,18 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "tab":
 			m.attachedFocus = 0
 			m.attachedInput.Blur()
+			return m, nil
+		case "pgup":
+			m.viewport.ViewUp()
+			return m, nil
+		case "pgdown":
+			m.viewport.ViewDown()
+			return m, nil
+		case "ctrl+u":
+			m.viewport.HalfViewUp()
+			return m, nil
+		case "ctrl+d":
+			m.viewport.HalfViewDown()
 			return m, nil
 		case "x":
 			if m.cockpitDetachQuit {
@@ -209,18 +229,17 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 		return m, nil
 	case "R":
-		if j, ok := m.cockpitClient.GetJob(m.attachedJobID); ok && j.Status == cockpit.StatusQueued {
-			job, err := m.cockpitClient.StartJob(m.attachedJobID)
-			if err != nil {
-				m.statusMsg = "start: " + err.Error()
-				m.statusExpiry = time.Now().Add(3 * time.Second)
-				return m, nil
-			}
-			m.statusMsg = "started " + job.PresetID
+		if j, ok := m.cockpitClient.GetJob(m.attachedJobID); ok {
+			cmd := m.prepareRetryLaunch(j)
+			m.statusMsg = "retry setup loaded from " + j.PresetID
 			m.statusExpiry = time.Now().Add(2 * time.Second)
-			return m.openAgentJob(job.ID, true)
+			return m, cmd
 		}
-		return m.openAgentJob(m.attachedJobID, true)
+		m.statusMsg = "retry setup: job not found"
+		m.statusExpiry = time.Now().Add(2 * time.Second)
+		return m, nil
+	case "r":
+		return m.retryJobNow(m.attachedJobID)
 	case "ctrl+r":
 		return m.beginTakeover(m.attachedJobID)
 	case "K":
@@ -359,15 +378,18 @@ func (m model) attachJob(id cockpit.JobID, preferInput bool) (tea.Model, tea.Cmd
 	m.attachedInput.SetHeight(3)
 	m.attachedInput.Blur()
 	m.attachedFocus = 0
-	if preferInput {
-		if j, ok := m.cockpitClient.GetJob(id); ok {
-			if j.Status != cockpit.StatusRunning &&
-				j.Status != cockpit.StatusCompleted &&
-				j.Status != cockpit.StatusFailed &&
-				j.Status != cockpit.StatusBlocked {
-				m.attachedFocus = 1
-				m.attachedInput.Focus()
-			}
+	if j, ok := m.cockpitClient.GetJob(id); ok {
+		if j.Runner != cockpit.RunnerTmux {
+			m.attachedInput.SetWidth(m.attachedExecInputWidth())
+		}
+		shouldPreferInput := preferInput || j.Runner != cockpit.RunnerTmux
+		if shouldPreferInput &&
+			j.Status != cockpit.StatusRunning &&
+			j.Status != cockpit.StatusCompleted &&
+			j.Status != cockpit.StatusFailed &&
+			j.Status != cockpit.StatusBlocked {
+			m.attachedFocus = 1
+			m.attachedInput.Focus()
 		}
 	}
 	m.mode = modeAgentAttached

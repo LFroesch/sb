@@ -78,6 +78,98 @@ func TestUpdateAgentLaunchNoteAllowsUppercaseF(t *testing.T) {
 	}
 }
 
+func TestPrepareRetryLaunchPrefillsComposerFromJob(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentList
+	m.width = 120
+	m.cockpitPresets = []cockpit.LaunchPreset{
+		{ID: "senior-dev", Name: "Senior dev", Permissions: "scoped-write", Executor: cockpit.ExecutorSpec{Type: "claude"}},
+		{ID: "bug-fixer", Name: "Bug fixer", Permissions: "read-only", Executor: cockpit.ExecutorSpec{Type: "codex"}},
+	}
+	m.cockpitProviders = []cockpit.ProviderProfile{
+		{ID: "claude-sonnet", Name: "Claude Sonnet", Executor: cockpit.ExecutorSpec{Type: "claude", Model: "claude-sonnet-4-6"}},
+		{ID: "codex-gpt5", Name: "Codex GPT-5", Executor: cockpit.ExecutorSpec{Type: "codex", Model: "gpt-5"}},
+	}
+
+	job := cockpit.Job{
+		PresetID:       "bug-fixer",
+		Sources:        []cockpit.SourceTask{{File: "/tmp/demo/WORK.md", Line: 4, Text: "fix the edge case"}},
+		Repo:           "/tmp/demo",
+		Freeform:       "focus on the retry path",
+		Executor:       cockpit.ExecutorSpec{Type: "codex", Model: "gpt-5"},
+		Permissions:    "wide-open",
+		ForemanManaged: true,
+	}
+
+	m.prepareRetryLaunch(job)
+
+	if m.mode != modeAgentLaunch {
+		t.Fatalf("mode = %v, want modeAgentLaunch", m.mode)
+	}
+	if m.launchPresetIdx != 1 {
+		t.Fatalf("launchPresetIdx = %d, want 1", m.launchPresetIdx)
+	}
+	if m.launchProviderIdx != 1 {
+		t.Fatalf("launchProviderIdx = %d, want 1", m.launchProviderIdx)
+	}
+	if m.launchPermsIdx != 3 {
+		t.Fatalf("launchPermsIdx = %d, want 3 for wide-open override", m.launchPermsIdx)
+	}
+	if !m.launchQueueOnly {
+		t.Fatalf("launchQueueOnly = false, want true")
+	}
+	if m.launchRepo != "/tmp/demo" {
+		t.Fatalf("launchRepo = %q, want /tmp/demo", m.launchRepo)
+	}
+	if got := m.launchBrief.Value(); got != "focus on the retry path" {
+		t.Fatalf("launchBrief = %q, want preserved retry note", got)
+	}
+	if len(m.launchSources) != 1 || m.launchSources[0].Text != "fix the edge case" {
+		t.Fatalf("launchSources = %+v, want original task source", m.launchSources)
+	}
+	if m.launchFocus != m.launchNoteFocus() {
+		t.Fatalf("launchFocus = %d, want note focus %d", m.launchFocus, m.launchNoteFocus())
+	}
+}
+
+func TestUpdateAgentListLowercaseRRetriesSelectedJob(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentList
+	m.width = 120
+	m.height = 40
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	job := cockpit.Job{
+		ID:       "job-1",
+		PresetID: "senior-dev",
+		Status:   cockpit.StatusBlocked,
+		Repo:     "/tmp/demo",
+	}
+	retried := cockpit.Job{
+		ID:       "job-2",
+		PresetID: "senior-dev",
+		Status:   cockpit.StatusRunning,
+		Repo:     "/tmp/demo",
+	}
+	retryCalls := 0
+	m.cockpitClient = stubCockpitClient{
+		jobs:        map[cockpit.JobID]cockpit.Job{job.ID: job, retried.ID: retried},
+		retryResult: retried,
+		retryCalls:  &retryCalls,
+	}
+	m.cockpitJobs = []cockpit.Job{job}
+
+	got, _ := m.updateAgentList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	next := got.(model)
+	if retryCalls != 1 {
+		t.Fatalf("retryCalls = %d, want 1", retryCalls)
+	}
+	if next.statusMsg != "retried senior-dev" {
+		t.Fatalf("statusMsg = %q, want retry confirmation", next.statusMsg)
+	}
+}
+
 func TestSetAgentManageFieldValueAutoFillsPresetIDFromName(t *testing.T) {
 	dir := t.TempDir()
 	m := newModel(nil)
@@ -607,49 +699,54 @@ func TestLaunchRepoChoicesReachCustomPathWithOneMoveUpFromDefault(t *testing.T) 
 	}
 }
 
-func TestUpdateAgentListROpensSelectedJob(t *testing.T) {
+func TestUpdateAgentListRLoadsRetrySetupIntoComposer(t *testing.T) {
 	m := newModel(nil)
 	job := cockpit.Job{
 		ID:        "job-1",
 		PresetID:  "senior-dev",
 		Status:    cockpit.StatusIdle,
+		Repo:      "/tmp/demo",
+		Freeform:  "retry this",
 		CreatedAt: time.Now().Add(-1 * time.Minute),
 	}
 	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
 	m.cockpitJobs = []cockpit.Job{job}
 
 	got, _ := m.updateAgentList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	next := got.(model)
-	if next.mode != modeAgentAttached {
-		t.Fatalf("mode = %v, want modeAgentAttached", next.mode)
+	if next.mode != modeAgentLaunch {
+		t.Fatalf("mode = %v, want modeAgentLaunch", next.mode)
 	}
-	if next.attachedJobID != job.ID {
-		t.Fatalf("attachedJobID = %q, want %q", next.attachedJobID, job.ID)
+	if next.launchRepo != "/tmp/demo" {
+		t.Fatalf("launchRepo = %q, want /tmp/demo", next.launchRepo)
 	}
-	if next.attachedFocus != 1 {
-		t.Fatalf("attachedFocus = %d, want 1 for open", next.attachedFocus)
+	if next.launchBrief.Value() != "retry this" {
+		t.Fatalf("launchBrief = %q, want retry note", next.launchBrief.Value())
 	}
 }
 
-func TestUpdateAgentListRStartsWaitingForemanJob(t *testing.T) {
+func TestUpdateAgentListRLoadsForemanRetrySetupIntoComposer(t *testing.T) {
 	m := newModel(nil)
 	job := cockpit.Job{
 		ID:             "job-queued",
 		PresetID:       "senior-dev",
 		Status:         cockpit.StatusQueued,
 		WaitForForeman: true,
+		ForemanManaged: true,
 		CreatedAt:      time.Now().Add(-1 * time.Minute),
 	}
 	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
 	m.cockpitJobs = []cockpit.Job{job}
 
 	got, _ := m.updateAgentList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	next := got.(model)
-	if next.mode != modeAgentAttached {
-		t.Fatalf("mode = %v, want modeAgentAttached", next.mode)
+	if next.mode != modeAgentLaunch {
+		t.Fatalf("mode = %v, want modeAgentLaunch", next.mode)
 	}
-	if next.attachedJobID != job.ID {
-		t.Fatalf("attachedJobID = %q, want %q", next.attachedJobID, job.ID)
+	if !next.launchQueueOnly {
+		t.Fatalf("launchQueueOnly = false, want true")
 	}
 }
 

@@ -10,6 +10,18 @@ import (
 	"github.com/LFroesch/sb/internal/cockpit"
 )
 
+func (m model) attachedExecDims() (width, panelHeight int) {
+	width = m.width
+	if width < 40 {
+		width = 40
+	}
+	panelHeight = m.agentContentHeight()
+	if panelHeight < 1 {
+		panelHeight = 1
+	}
+	return width, panelHeight
+}
+
 func (m model) attachedLayoutDims() (railWidth, chatWidth, panelHeight int) {
 	railWidth = m.width * 31 / 100
 	if railWidth < 32 {
@@ -39,6 +51,24 @@ func (m model) attachedTranscriptWidth() int {
 	return width
 }
 
+func (m model) attachedExecTranscriptWidth() int {
+	width, _ := m.attachedExecDims()
+	content := width - 6
+	if content < 24 {
+		content = 24
+	}
+	return content
+}
+
+func (m model) attachedExecInputWidth() int {
+	width, _ := m.attachedExecDims()
+	content := width - 8
+	if content < 20 {
+		content = 20
+	}
+	return content
+}
+
 func (m model) attachedInputWidth() int {
 	_, chatWidth, _ := m.attachedLayoutDims()
 	width := chatWidth - 8
@@ -46,6 +76,119 @@ func (m model) attachedInputWidth() int {
 		width = 20
 	}
 	return width
+}
+
+func (m *model) attachedExecHeaderLines(j cockpit.Job, lineWidth int) []string {
+	statusText, statusStyle := jobOperatorStatus(j)
+
+	var lines []string
+	header := titleStyle.Render("Chat")
+	header += dimStyle.Render("  ·  ")
+	header += primaryStyle.Bold(true).Render(j.PresetID)
+	header += dimStyle.Render("  ·  ")
+	header += statusStyle.Render(statusText)
+	lines = append(lines, wrapLines(header, lineWidth)...)
+
+	meta := []string{
+		dimStyle.Render(shortJobID(j.ID)),
+		dimStyle.Render("· " + describeExecutor(j.Executor)),
+	}
+	if age := time.Since(j.CreatedAt).Round(time.Second); age > 0 {
+		meta = append(meta, dimStyle.Render("· "+age.String()+" ago"))
+	}
+	if j.Note != "" {
+		meta = append(meta, dimStyle.Render("· "+j.Note))
+	}
+	if len(j.Sources) > 0 {
+		source := fmt.Sprintf("source %s:%d", shortPath(j.Sources[0].File), j.Sources[0].Line)
+		if len(j.Sources) > 1 {
+			source += fmt.Sprintf(" (+%d)", len(j.Sources)-1)
+		}
+		meta = append(meta, dimStyle.Render("· "+source))
+	}
+	lines = append(lines, wrapLines("  "+strings.Join(meta, " "), lineWidth)...)
+
+	scrollMeta := dimStyle.Render(fmt.Sprintf("%d turns", countUserVisibleTurns(j)))
+	if m.viewport.TotalLineCount() > m.viewport.Height && m.viewport.Height > 0 {
+		visibleEnd := m.viewport.YOffset + m.viewport.Height
+		if visibleEnd > m.viewport.TotalLineCount() {
+			visibleEnd = m.viewport.TotalLineCount()
+		}
+		scrollMeta += dimStyle.Render(fmt.Sprintf("  ·  %d-%d/%d", m.viewport.YOffset+1, visibleEnd, m.viewport.TotalLineCount()))
+	}
+	if m.attachedFocus == 0 {
+		lines = append(lines, wrapLines(accentStyle.Render("▸ transcript")+"  "+scrollMeta, lineWidth)...)
+	} else {
+		lines = append(lines, wrapLines(dimStyle.Render("transcript")+"  "+scrollMeta+"  "+accentStyle.Render("▸ composer"), lineWidth)...)
+	}
+	return lines
+}
+
+func (m *model) attachedExecFooterLines(j cockpit.Job, panelHeight, innerHeight, lineWidth int) []string {
+	isLive := j.Status != cockpit.StatusCompleted &&
+		j.Status != cockpit.StatusFailed &&
+		j.Status != cockpit.StatusBlocked
+	turnInFlight := j.Status == cockpit.StatusRunning
+
+	composerWidth := m.attachedExecInputWidth()
+	m.attachedInput.SetWidth(composerWidth)
+	border := colorDim
+	if m.attachedFocus == 1 && isLive && !turnInFlight {
+		border = colorAccent
+	}
+
+	var footerLines []string
+	if isLive {
+		maxInputHeight := innerHeight - 6
+		switch {
+		case panelHeight <= 10:
+			maxInputHeight = 2
+		case panelHeight <= 13 && maxInputHeight > 3:
+			maxInputHeight = 3
+		case maxInputHeight > 5:
+			maxInputHeight = 5
+		}
+		if maxInputHeight < 2 {
+			maxInputHeight = 2
+		}
+		m.attachedInput.SetHeight(maxInputHeight)
+		composer := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(0, 1).
+			Render(m.attachedInput.View())
+		label := accentStyle.Render("message")
+		if turnInFlight {
+			label = dimStyle.Render("message  ·  waiting for reply")
+		}
+		footerLines = append(footerLines, wrapLines(label, lineWidth)...)
+		footerLines = append(footerLines, strings.Split(composer, "\n")...)
+		return footerLines
+	}
+
+	return append(footerLines, wrapLines(dimStyle.Render("conversation ended"), lineWidth)...)
+}
+
+func (m *model) attachedExecViewportDims(j cockpit.Job) (contentWidth, viewportHeight int, separator bool) {
+	width, panelHeight := m.attachedExecDims()
+	lineWidth := maxInt(24, width-2)
+	contentWidth = maxInt(24, width-4)
+	headerLines := m.attachedExecHeaderLines(j, lineWidth)
+	footerLines := m.attachedExecFooterLines(j, panelHeight, panelHeight, lineWidth)
+
+	viewportHeight = panelHeight - len(headerLines) - len(footerLines)
+	if len(footerLines) > 0 && viewportHeight > 4 {
+		separator = true
+		viewportHeight--
+	}
+	if viewportHeight < 3 {
+		separator = false
+		viewportHeight = panelHeight - len(headerLines) - len(footerLines)
+	}
+	if viewportHeight < 3 {
+		viewportHeight = 3
+	}
+	return contentWidth, viewportHeight, separator
 }
 
 func (m *model) attachedPanelHeights(j cockpit.Job, panelHeight, headerLines int) (innerHeight, footerLines, viewportHeight int) {
@@ -86,14 +229,18 @@ func (m model) renderAgentAttached() string {
 	if !ok {
 		return titleStyle.Render("Attached") + "\n\n  " + warnStyle.Render("job gone")
 	}
+	if j.Runner != cockpit.RunnerTmux {
+		return m.renderAttachedExecChat(j)
+	}
+	return m.renderAttachedTmux(j)
+}
 
+func (m model) renderAttachedTmux(j cockpit.Job) string {
 	// A live job is one the user can still send turns to. Completed /
 	// failed / blocked conversations are dead — only scrollback + delete.
 	isLive := j.Status != cockpit.StatusCompleted &&
 		j.Status != cockpit.StatusFailed &&
 		j.Status != cockpit.StatusBlocked
-	turnInFlight := j.Status == cockpit.StatusRunning
-	isTmux := j.Runner == cockpit.RunnerTmux
 
 	railWidth, chatWidth, panelHeight := m.attachedLayoutDims()
 	lineWidth := maxInt(1, chatWidth-4)
@@ -101,12 +248,8 @@ func (m model) renderAgentAttached() string {
 	rail := m.renderAttachedRail(railWidth, panelHeight)
 
 	var lines []string
-	titleLabel := "Chat: "
-	if isTmux {
-		titleLabel = "Session: "
-	}
 	statusText, statusStyle := jobOperatorStatus(j)
-	header := titleStyle.Render(titleLabel) + j.PresetID + "  " + statusStyle.Render(statusText)
+	header := titleStyle.Render("Session: ") + j.PresetID + "  " + statusStyle.Render(statusText)
 	header += dimStyle.Render("  " + describeExecutor(j.Executor))
 	lines = append(lines, wrapLines(header, lineWidth)...)
 
@@ -120,9 +263,7 @@ func (m model) renderAgentAttached() string {
 	if j.Note != "" {
 		meta = append(meta, dimStyle.Render("· "+j.Note))
 	}
-	if isTmux {
-		meta = append(meta, dimStyle.Render("· "+tmuxWindowState(j)))
-	}
+	meta = append(meta, dimStyle.Render("· "+tmuxWindowState(j)))
 	lines = append(lines, wrapLines(strings.Join(meta, " "), lineWidth)...)
 
 	if len(j.Sources) > 0 {
@@ -134,12 +275,8 @@ func (m model) renderAgentAttached() string {
 	}
 
 	turnCount := countUserVisibleTurns(j)
-	sectionLabel := "transcript"
-	sectionMeta := fmt.Sprintf("%d turns", turnCount)
-	if isTmux {
-		sectionLabel = "log"
-		sectionMeta = "tmux session log"
-	}
+	sectionLabel := "log"
+	sectionMeta := "tmux session log"
 	if panelHeight > 8 {
 		lines = append(lines, "")
 	}
@@ -152,27 +289,10 @@ func (m model) renderAgentAttached() string {
 	innerHeight := panelHeight
 	m.attachedInput.SetWidth(m.attachedInputWidth())
 	var footerLines []string
-	if !isTmux && isLive {
-		maxInputHeight := innerHeight - len(lines) - 2 // input label + at least one viewport row
-		if maxInputHeight < 1 {
-			maxInputHeight = 1
-		}
-		inputLabel := accentStyle.Render("  message")
-		switch {
-		case turnInFlight:
-			inputLabel = dimStyle.Render("  message")
-		}
-		m.attachedInput.SetHeight(maxInputHeight)
-		footerLines = append(footerLines, truncate(inputLabel, lineWidth))
-		footerLines = append(footerLines, strings.Split(m.attachedInput.View(), "\n")...)
-	} else if isTmux {
-		if isLive {
-			footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux session"), lineWidth))
-		} else {
-			footerLines = append(footerLines, truncate(dimStyle.Render("  tmux session ended"), lineWidth))
-		}
+	if isLive {
+		footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux session"), lineWidth))
 	} else {
-		footerLines = append(footerLines, truncate(dimStyle.Render("  conversation ended"), lineWidth))
+		footerLines = append(footerLines, truncate(dimStyle.Render("  tmux session ended"), lineWidth))
 	}
 	h := innerHeight - len(lines) - len(footerLines)
 	if h < 1 {
@@ -186,6 +306,28 @@ func (m model) renderAgentAttached() string {
 
 	chat := panelStyle.Width(chatWidth).Height(panelHeight).Render(strings.Join(lines, "\n"))
 	return lipgloss.JoinHorizontal(lipgloss.Top, rail, "  ", chat)
+}
+
+func (m model) renderAttachedExecChat(j cockpit.Job) string {
+	width, panelHeight := m.attachedExecDims()
+	lineWidth := maxInt(24, width-2)
+	contentWidth, viewportHeight, separator := m.attachedExecViewportDims(j)
+	lines := m.attachedExecHeaderLines(j, lineWidth)
+	footerLines := m.attachedExecFooterLines(j, panelHeight, panelHeight, lineWidth)
+
+	followBottom := m.viewport.AtBottom()
+	m.viewport.Width = contentWidth
+	m.viewport.Height = viewportHeight
+	if followBottom {
+		m.viewport.GotoBottom()
+	}
+	viewportLines := strings.Split(m.viewport.View(), "\n")
+	lines = append(lines, capLines(viewportLines, viewportHeight)...)
+	if separator {
+		lines = append(lines, "")
+	}
+	lines = append(lines, footerLines...)
+	return strings.Join(capLines(lines, panelHeight), "\n")
 }
 
 func renderTmuxLogConversation(j cockpit.Job, width int) string {

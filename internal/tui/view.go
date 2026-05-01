@@ -784,6 +784,9 @@ func (m model) renderFooter() string {
 		add("enter", "open")
 		add("d", "dump")
 		add("a", "agent")
+		add("e", "edit")
+		add("f", "pin")
+		add("c/C", "cleanup")
 	case pageProject:
 		add("↑/↓", "scroll")
 		add("e", "edit")
@@ -838,13 +841,14 @@ func (m model) renderFooter() string {
 			if m.attachedFocus == 1 {
 				add("enter", "send")
 				add("esc", "leave input")
+				add("alt+enter", "newline")
+				add("pgup/pgdn", "scroll")
 				inInput = true
 			} else {
 				add("tab/i", "type")
 				add("s", "send Esc")
 				add("S", "send Ctrl+C")
 				add("c", "send continue")
-				add("ctrl+g", "tmux -> sb")
 			}
 		case modeAgentManage:
 			if m.agentManageEditing {
@@ -855,6 +859,9 @@ func (m model) renderFooter() string {
 				add("tab", "focus")
 				add("enter", "edit")
 				add("n", "new")
+				add("d", "delete")
+				add("D", "duplicate")
+				add("[/]", "switch kind")
 			}
 		default:
 			add("↑/↓", "nav")
@@ -969,11 +976,11 @@ func (m model) helpLines() []string {
 			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
 			{"ctrl+g", "Live tmux session: jump back to the shared sb main window"},
 			{"ctrl+r", "Take over eligible Foreman tmux job and relaunch it in attended mode (confirm)"},
-			{"R", "Start waiting job now, or open the selected session"},
+			{"R", "Reopen the selected job in New Run with its prior settings prefilled"},
 			{"j/k", "Scroll transcript/log in attached view"},
 			{"wheel", "List nav / transcript scroll"},
 			{"a", "Accept reviewed result (confirm)"},
-			{"r", "Retry selected job with same setup/runtime"},
+			{"r", "Retry selected job immediately with the same setup/runtime"},
 			{"K", "Skip queued/reviewed job (confirm)"},
 			{"C", "Skip current item and the rest of its queued run sequence (confirm)"},
 			{"s", "Interrupt the current turn; keep the session available to re-enter"},

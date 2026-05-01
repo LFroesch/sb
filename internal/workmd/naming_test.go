@@ -112,6 +112,45 @@ shipping metadata refresh
 	}
 }
 
+func TestDiscoverSkipsBlacklistedScanRootPaths(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "work")
+	mustMkdirAll(t, filepath.Join(root, "keep"))
+	mustMkdirAll(t, filepath.Join(root, "archive"))
+	mustWriteFile(t, filepath.Join(root, "keep", "WORK.md"), "# WORK - keep\nactive project\n")
+	mustWriteFile(t, filepath.Join(root, "archive", "WORK.md"), "# WORK - archive\nold project\n")
+
+	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, &config.Config{
+		LabelMaxDepth:     2,
+		ScanBlacklistDirs: []string{"archive"},
+	})
+	names := projectNames(projects)
+	assertContains(t, names, "keep")
+	assertNotContains(t, names, "archive")
+}
+
+func TestDiscoverSkipsBlacklistedIdeaDirFiles(t *testing.T) {
+	tmp := t.TempDir()
+	scanRoot := filepath.Join(tmp, "scan")
+	ideas := filepath.Join(tmp, "ideas")
+	mustMkdirAll(t, scanRoot)
+	mustMkdirAll(t, ideas)
+	mustWriteFile(t, filepath.Join(ideas, "keep.md"), "# keep\nship this\n")
+	mustWriteFile(t, filepath.Join(ideas, "ignore.md"), "# ignore\nskip this\n")
+
+	projects := Discover([]config.ScanRoot{{Name: "scan", Path: scanRoot}}, nil, []string{ideas}, &config.Config{
+		LabelMaxDepth:         2,
+		ScanBlacklistNames:    []string{"ignore.md"},
+		ScanBlacklistSuffixes: []string{".bak"},
+	})
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(projects))
+	}
+	if projects[0].Name != "keep" {
+		t.Fatalf("expected keep, got %q", projects[0].Name)
+	}
+}
+
 func projectNames(projects []Project) []string {
 	names := make([]string, 0, len(projects))
 	for _, p := range projects {
@@ -128,6 +167,15 @@ func assertContains(t *testing.T, values []string, want string) {
 		}
 	}
 	t.Fatalf("expected %q in %v", want, values)
+}
+
+func assertNotContains(t *testing.T, values []string, want string) {
+	t.Helper()
+	for _, v := range values {
+		if v == want {
+			t.Fatalf("did not expect %q in %v", want, values)
+		}
+	}
 }
 
 func mustMkdirAll(t *testing.T, path string) {

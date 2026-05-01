@@ -16,7 +16,10 @@ import (
 )
 
 type stubCockpitClient struct {
-	jobs map[cockpit.JobID]cockpit.Job
+	jobs        map[cockpit.JobID]cockpit.Job
+	retryResult cockpit.Job
+	retryErr    error
+	retryCalls  *int
 }
 
 func (s stubCockpitClient) ListJobs() []cockpit.Job {
@@ -65,7 +68,13 @@ func (s stubCockpitClient) DeleteJob(cockpit.JobID) error { return nil }
 func (s stubCockpitClient) ApproveJob(cockpit.JobID, string) error { return nil }
 
 func (s stubCockpitClient) RetryJob(cockpit.JobID, []cockpit.LaunchPreset) (cockpit.Job, error) {
-	return cockpit.Job{}, nil
+	if s.retryCalls != nil {
+		*s.retryCalls = *s.retryCalls + 1
+	}
+	if s.retryErr != nil {
+		return cockpit.Job{}, s.retryErr
+	}
+	return s.retryResult, nil
 }
 
 func (s stubCockpitClient) TakeOverJob(id cockpit.JobID, _ []cockpit.LaunchPreset) (cockpit.Job, error) {
@@ -364,7 +373,7 @@ func TestRenderAgentJobsHeaderShowsForemanPool(t *testing.T) {
 		{Status: cockpit.StatusQueued, WaitForForeman: true, ForemanManaged: true, EligibilityReason: "foreman concurrency cap (3/3)"},
 	}
 	out := strings.Join(renderAgentJobsHeader(jobs, "all", cockpit.ForemanState{Enabled: true}, 200), "\n")
-	for _, want := range []string{"3 parked", "3 eligible", "1 deferred", "1/3 active"} {
+	for _, want := range []string{"All", "filter", "foreman", "ON"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("renderAgentJobsHeader missing %q:\n%s", want, out)
 		}
@@ -481,6 +490,9 @@ func TestRenderAgentLaunchShowsReviewComposer(t *testing.T) {
 	if !strings.Contains(out, "New Run") {
 		t.Fatalf("renderAgentLaunch missing New Run title: %q", out)
 	}
+	if !strings.Contains(out, "[Start now]") {
+		t.Fatalf("renderAgentLaunch missing start-now header badge: %q", out)
+	}
 	if !strings.Contains(out, "Review Run") {
 		t.Fatalf("renderAgentLaunch missing Review Run panel: %q", out)
 	}
@@ -492,6 +504,23 @@ func TestRenderAgentLaunchShowsReviewComposer(t *testing.T) {
 	}
 	if !strings.Contains(out, "Source Preview") {
 		t.Fatalf("renderAgentLaunch missing source preview: %q", out)
+	}
+}
+
+func TestRenderAgentLaunchShowsForemanQueueBadgeInHeader(t *testing.T) {
+	m := newModel(nil)
+	m.width = 120
+	m.height = 40
+	m.mode = modeAgentLaunch
+	m.launchQueueOnly = true
+	m.launchRepo = "/tmp/demo"
+	m.launchFocus = m.launchReviewFocus()
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if !strings.Contains(out, "[Foreman queue]") {
+		t.Fatalf("renderAgentLaunch missing Foreman queue header badge: %q", out)
 	}
 }
 
@@ -801,6 +830,155 @@ func TestAgentAttachedViewFitsShortTerminal(t *testing.T) {
 	out := m.View()
 	if got := renderedLineCount(out); got > m.height {
 		t.Fatalf("agent attached rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
+	}
+}
+
+func TestAgentAttachedExecViewFitsShortTerminal(t *testing.T) {
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "ollama-qwen",
+		Status:    cockpit.StatusIdle,
+		CreatedAt: now.Add(-2 * time.Minute),
+		Note:      "compact layout",
+		Sources: []cockpit.SourceTask{{
+			File: "/tmp/demo/WORK.md",
+			Line: 12,
+		}},
+		Turns: []cockpit.Turn{
+			{Role: cockpit.TurnUser, Content: "first"},
+			{Role: cockpit.TurnAssistant, Content: "second"},
+		},
+	}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 72
+	m.height = 12
+	m.cfg = &config.Config{}
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.attachedTurns = append([]cockpit.Turn(nil), job.Turns...)
+	m.refreshAttachedViewport(true)
+
+	assertViewFitsHeight(t, m)
+}
+
+func TestRenderAgentAttachedExecChatKeepsBottomVisibleAfterRefresh(t *testing.T) {
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "ollama-qwen",
+		Status:    cockpit.StatusIdle,
+		CreatedAt: now.Add(-2 * time.Minute),
+		Note:      "narrow layout repro",
+		Turns: []cockpit.Turn{
+			{Role: cockpit.TurnUser, Content: "show me the full reply"},
+			{Role: cockpit.TurnAssistant, Content: strings.Join([]string{
+				"line 01", "line 02", "line 03", "line 04", "line 05",
+				"line 06", "line 07", "line 08", "line 09", "line 10",
+				"line 11", "line 12", "line 13", "line 14", "BOTTOM MARKER",
+			}, "\n")},
+		},
+	}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 72
+	m.height = 14
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.attachedTurns = append([]cockpit.Turn(nil), job.Turns...)
+	m.refreshAttachedViewport(true)
+
+	out := m.renderAgentAttached()
+	if !strings.Contains(out, "BOTTOM MARKER") {
+		t.Fatalf("renderAgentAttached() lost transcript bottom after refresh:\n%s", out)
+	}
+}
+
+func TestRefreshAttachedViewportKeepsExecScrollOffsetStable(t *testing.T) {
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "ollama-qwen",
+		Status:    cockpit.StatusIdle,
+		CreatedAt: now.Add(-2 * time.Minute),
+		Turns: []cockpit.Turn{
+			{Role: cockpit.TurnUser, Content: "show me the full reply"},
+			{Role: cockpit.TurnAssistant, Content: strings.Join([]string{
+				"line 01", "line 02", "line 03", "line 04", "line 05",
+				"line 06", "line 07", "line 08", "line 09", "line 10",
+				"line 11", "line 12", "line 13", "line 14", "line 15",
+			}, "\n")},
+		},
+	}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 72
+	m.height = 14
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.attachedTurns = append([]cockpit.Turn(nil), job.Turns...)
+	m.refreshAttachedViewport(true)
+
+	m.viewport.LineUp(2)
+	wantOffset := m.viewport.YOffset
+	if wantOffset == 0 {
+		t.Fatalf("expected viewport to scroll up from bottom; offset stayed 0")
+	}
+
+	m.refreshAttachedViewport(false)
+	if got := m.viewport.YOffset; got != wantOffset {
+		t.Fatalf("refreshAttachedViewport(false) offset = %d, want %d", got, wantOffset)
+	}
+}
+
+func TestRefreshAttachedViewportDoesNotForceBottomJustBecauseInputIsFocused(t *testing.T) {
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "ollama-qwen",
+		Status:    cockpit.StatusIdle,
+		CreatedAt: now.Add(-2 * time.Minute),
+		Turns: []cockpit.Turn{
+			{Role: cockpit.TurnUser, Content: "show me the full reply"},
+			{Role: cockpit.TurnAssistant, Content: strings.Join([]string{
+				"line 01", "line 02", "line 03", "line 04", "line 05",
+				"line 06", "line 07", "line 08", "line 09", "line 10",
+				"line 11", "line 12", "line 13", "line 14", "line 15",
+			}, "\n")},
+		},
+	}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 72
+	m.height = 14
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.attachedTurns = append([]cockpit.Turn(nil), job.Turns...)
+	m.refreshAttachedViewport(true)
+
+	m.attachedFocus = 1
+	m.viewport.LineUp(2)
+	wantOffset := m.viewport.YOffset
+	if wantOffset == 0 {
+		t.Fatalf("expected viewport to scroll up from bottom; offset stayed 0")
+	}
+
+	m.refreshAttachedViewport(false)
+	if got := m.viewport.YOffset; got != wantOffset {
+		t.Fatalf("focused refresh forced bottom/changed offset: got %d want %d", got, wantOffset)
 	}
 }
 

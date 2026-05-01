@@ -156,9 +156,9 @@ type LaunchPreset struct {
 	Permissions string `json:"permissions,omitempty"` // "read-only"|"scoped-write"|"wide-open"
 
 	// Library refs — source of truth on disk.
-	PromptID     string `json:"prompt_id,omitempty"`
-	HookBundleID string `json:"hook_bundle_id,omitempty"`
-	EngineID     string `json:"engine_id,omitempty"`
+	PromptID      string   `json:"prompt_id,omitempty"`
+	HookBundleIDs []string `json:"hook_bundle_ids,omitempty"`
+	EngineID      string   `json:"engine_id,omitempty"`
 
 	// Runtime fields populated by LoadPresets from the libraries. Saved
 	// files have these zeroed; downstream consumers (TUI, manager, hooks

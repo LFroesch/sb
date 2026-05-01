@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Target names a special routing destination — a "catch-all" or "ideas bucket"
@@ -73,8 +75,31 @@ type Config struct {
 	IdeasTarget    *Target                   `json:"ideas_target,omitempty"`    // optional ideas bucket
 
 	// Agent cockpit (V0.5+)
-	CockpitDaemon     *bool  `json:"cockpit_daemon,omitempty"`      // true = dial sb-foreman over unix socket (default); false = in-proc
-	CockpitForemanBin string `json:"cockpit_foreman_bin,omitempty"` // override path to sb-foreman; empty = auto-detect on PATH
+	CockpitDaemon       *bool                `json:"cockpit_daemon,omitempty"`        // true = dial sb-foreman over unix socket (default); false = in-proc
+	CockpitForemanBin   string               `json:"cockpit_foreman_bin,omitempty"`   // override path to sb-foreman; empty = auto-detect on PATH
+	DefaultPresetID     string               `json:"default_preset_id,omitempty"`     // preferred preset for fresh launches; falls back to seed list
+	ForemanClaudePauses []ForemanPauseWindow `json:"foreman_claude_pauses,omitempty"` // recurring windows during which Foreman should not start claude jobs (e.g. 2x usage hours)
+
+	// Project discovery / scan filters. Items are matched case-insensitively.
+	// Names match basenames; suffixes match file extensions (".log" or "log");
+	// dirs match any path segment; substrings match anywhere in the full path.
+	ScanBlacklistNames      []string `json:"scan_blacklist_names,omitempty"`
+	ScanBlacklistSuffixes   []string `json:"scan_blacklist_suffixes,omitempty"`
+	ScanBlacklistDirs       []string `json:"scan_blacklist_dirs,omitempty"`
+	ScanBlacklistSubstrings []string `json:"scan_blacklist_substrings,omitempty"`
+}
+
+// ForemanPauseWindow is a recurring local-time window during which the
+// Foreman scheduler should refuse to start jobs whose engine type matches
+// (engines empty = all engines). Days are lowercased English weekday
+// names ("mon","tue",…); empty Days = every day. Start/End are "HH:MM"
+// 24h local. End may be earlier than Start to express overnight windows.
+type ForemanPauseWindow struct {
+	Days    []string `json:"days,omitempty"`
+	Start   string   `json:"start"`
+	End     string   `json:"end"`
+	Engines []string `json:"engines,omitempty"` // e.g. ["claude"] — defaults to all engines
+	Note    string   `json:"note,omitempty"`
 }
 
 // UseCockpitDaemon reports whether sb should dial the foreman daemon.
@@ -117,6 +142,144 @@ func expandHome(p string) string {
 		return filepath.Join(os.Getenv("HOME"), p[2:])
 	}
 	return p
+}
+
+// IsScanPathBlocked reports whether path should be skipped by project
+// discovery / scanning. Matches are case-insensitive. The scanner walks
+// directory trees, so callers may pass either dir or file paths. A nil
+// or empty config returns false (no block).
+func (c *Config) IsScanPathBlocked(path string) bool {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return false
+	}
+	lower := strings.ToLower(path)
+	base := strings.ToLower(filepath.Base(strings.TrimRight(path, string(filepath.Separator))))
+	for _, n := range c.ScanBlacklistNames {
+		if n = strings.ToLower(strings.TrimSpace(n)); n != "" && base == n {
+			return true
+		}
+	}
+	for _, suf := range c.ScanBlacklistSuffixes {
+		suf = strings.ToLower(strings.TrimSpace(suf))
+		if suf == "" {
+			continue
+		}
+		if !strings.HasPrefix(suf, ".") {
+			suf = "." + suf
+		}
+		if strings.HasSuffix(base, suf) {
+			return true
+		}
+	}
+	parts := strings.Split(filepath.ToSlash(lower), "/")
+	for _, d := range c.ScanBlacklistDirs {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" {
+			continue
+		}
+		for _, p := range parts {
+			if p == d {
+				return true
+			}
+		}
+	}
+	for _, s := range c.ScanBlacklistSubstrings {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s != "" && strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// ForemanEngineBlockedAt reports whether a Foreman pause window is
+// active for the given engine type at the given local time. Empty
+// engines list on a window means "all engines". An empty/zero engine
+// argument matches windows with no engine restriction only.
+func (c *Config) ForemanEngineBlockedAt(engine string, now time.Time) (bool, string) {
+	if c == nil || len(c.ForemanClaudePauses) == 0 {
+		return false, ""
+	}
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	weekday := strings.ToLower(now.Weekday().String()[:3])
+	hm := now.Hour()*60 + now.Minute()
+	for _, w := range c.ForemanClaudePauses {
+		if !engineMatchesWindow(engine, w.Engines) {
+			continue
+		}
+		if !dayMatchesWindow(weekday, w.Days) {
+			continue
+		}
+		start, ok1 := parseHM(w.Start)
+		end, ok2 := parseHM(w.End)
+		if !ok1 || !ok2 {
+			continue
+		}
+		if windowContains(start, end, hm) {
+			note := strings.TrimSpace(w.Note)
+			if note == "" {
+				note = "foreman pause window " + w.Start + "-" + w.End
+			}
+			return true, note
+		}
+	}
+	return false, ""
+}
+
+func engineMatchesWindow(engine string, engines []string) bool {
+	if len(engines) == 0 {
+		return true
+	}
+	for _, e := range engines {
+		if strings.EqualFold(strings.TrimSpace(e), engine) {
+			return true
+		}
+	}
+	return false
+}
+
+func dayMatchesWindow(weekday string, days []string) bool {
+	if len(days) == 0 {
+		return true
+	}
+	for _, d := range days {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if len(d) > 3 {
+			d = d[:3]
+		}
+		if d == weekday {
+			return true
+		}
+	}
+	return false
+}
+
+func parseHM(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return 0, false
+	}
+	h, err := strconv.Atoi(parts[0])
+	if err != nil || h < 0 || h > 23 {
+		return 0, false
+	}
+	mn, err := strconv.Atoi(parts[1])
+	if err != nil || mn < 0 || mn > 59 {
+		return 0, false
+	}
+	return h*60 + mn, true
+}
+
+func windowContains(start, end, now int) bool {
+	if start == end {
+		return false
+	}
+	if start < end {
+		return now >= start && now < end
+	}
+	// Overnight window (e.g. 22:00-06:00).
+	return now >= start || now < end
 }
 
 // ExpandedScanRoots returns ScanRoots with ~ expanded.

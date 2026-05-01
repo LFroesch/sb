@@ -123,9 +123,13 @@ func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg 
 				continue
 			}
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				if line != "" {
-					addOrReplace(line, dr)
+				if line == "" {
+					continue
 				}
+				if cfg.IsScanPathBlocked(line) {
+					continue
+				}
+				addOrReplace(line, dr)
 			}
 		}
 	}
@@ -136,7 +140,12 @@ func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg 
 			Name: filepath.Base(strings.TrimRight(dir, string(filepath.Separator))),
 			Path: dir,
 			Flat: true,
-		}, addOrReplace)
+		}, func(path string, root discoverRoot) {
+			if cfg.IsScanPathBlocked(path) {
+				return
+			}
+			addOrReplace(path, root)
+		})
 	}
 
 	resolveProjectNames(projects, cfg)

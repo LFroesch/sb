@@ -134,9 +134,9 @@ func mouseWheelDelta(msg tea.MouseMsg) int {
 	}
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		return -3
+		return -1
 	case tea.MouseButtonWheelDown:
-		return 3
+		return 1
 	default:
 		return 0
 	}
@@ -577,10 +577,17 @@ func (m model) handleMouseWheel(delta int) tea.Model {
 			}
 			return m
 		case modeNormal:
-			if delta > 0 {
-				m.viewport.LineDown(delta)
-			} else {
-				m.viewport.LineUp(-delta)
+			prevCursor := m.cursor
+			if delta > 0 && m.cursor < len(m.projects)-1 {
+				m.cursor++
+			} else if delta < 0 && m.cursor > 0 {
+				m.cursor--
+			}
+			// Update right-panel viewport when cursor changes
+			if m.cursor != prevCursor && m.cursor < len(m.projects) {
+				rightW := m.rightPanelWidth()
+				m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+				m.viewport.GotoTop()
 			}
 			return m
 		}

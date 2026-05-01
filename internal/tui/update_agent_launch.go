@@ -2,12 +2,14 @@ package tui
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/LFroesch/sb/internal/cockpit"
+	"github.com/LFroesch/sb/internal/config"
 )
 
 func (m *model) resetAgentLaunch() {
@@ -18,10 +20,12 @@ func (m *model) resetAgentLaunch() {
 	m.launchBrief.SetHeight(6)
 	m.launchBrief.Blur()
 	m.launchFocus = 0
-	m.launchPresetIdx = defaultPresetIndex(m.cockpitPresets)
+	m.launchPresetIdx = defaultPresetIndexWithConfig(m.cockpitPresets, m.cfg)
 	m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 	m.launchPromptIdx = -1
-	m.launchHookBundleIdx = -1
+	m.launchHookCursor = -1
+	m.launchHookOverride = false
+	m.launchHookSelected = map[string]bool{}
 	m.launchPermsIdx = 0
 	m.launchReviewOffset = 0
 	m.launchQueueOnly = false
@@ -88,6 +92,18 @@ func launchPermsValue(idx int) string {
 	return ""
 }
 
+func launchPermsIndex(value string) int {
+	switch strings.TrimSpace(value) {
+	case "read-only":
+		return 1
+	case "scoped-write":
+		return 2
+	case "wide-open":
+		return 3
+	}
+	return 0
+}
+
 func (m *model) normalizeLaunchFocus() {
 	max := m.launchFocusCount() - 1
 	if m.launchFocus > max {
@@ -99,6 +115,59 @@ func (m *model) moveLaunchFocusToNote() tea.Cmd {
 	m.launchFocus = m.launchNoteFocus()
 	m.launchBrief.Focus()
 	return m.launchBrief.Cursor.BlinkCmd()
+}
+
+func (m *model) prepareRetryLaunch(j cockpit.Job) tea.Cmd {
+	m.resetAgentLaunch()
+	m.page = pageAgent
+	m.mode = modeAgentLaunch
+	m.launchSources = slices.Clone(j.Sources)
+	m.launchRepo = strings.TrimSpace(j.Repo)
+	if m.launchRepo == "" {
+		m.launchRepo = m.defaultLaunchRepo()
+	}
+	m.launchBrief.SetValue(j.Freeform)
+	m.launchQueueOnly = j.ForemanManaged
+
+	for i, p := range m.cockpitPresets {
+		if p.ID == j.PresetID {
+			m.launchPresetIdx = i
+			break
+		}
+	}
+	m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+	for i, p := range m.cockpitProviders {
+		if sameExecutor(p.Executor, j.Executor) {
+			m.launchProviderIdx = i
+			break
+		}
+	}
+
+	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
+		preset := m.cockpitPresets[m.launchPresetIdx]
+		m.launchPermsIdx = launchPermsIndex(j.Permissions)
+		if j.Permissions == "" || j.Permissions == preset.Permissions {
+			m.launchPermsIdx = 0
+		}
+	}
+
+	return m.moveLaunchFocusToNote()
+}
+
+func (m model) retryJobNow(id cockpit.JobID) (tea.Model, tea.Cmd) {
+	job, err := m.cockpitClient.RetryJob(id, m.cockpitPresets)
+	if err != nil {
+		m.statusMsg = "retry: " + err.Error()
+		m.statusExpiry = time.Now().Add(3 * time.Second)
+		return m, nil
+	}
+	m.statusMsg = "retried " + job.PresetID
+	m.statusExpiry = time.Now().Add(2 * time.Second)
+	if job.WaitForForeman {
+		m.mode = modeAgentList
+		return m, tea.Batch(cockpitRefreshCmd(m.cockpitClient), cockpitForemanRefreshCmd(m.cockpitClient))
+	}
+	return m.openAgentJob(job.ID, true)
 }
 
 func (m *model) syncLaunchRepoToVisibleChoice() {
@@ -116,9 +185,21 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Custom-repo path entry consumes keys until esc or enter.
 	if m.launchRepoEditing {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+[":
+			// Cancel custom-path entry: drop editing flag, clear the
+			// input buffer so a re-entry starts blank, and snap the repo
+			// selection off the sentinel back to the default repo so the
+			// user can clearly see the cancel landed.
 			m.launchRepoEditing = false
 			m.launchRepoCustom.Blur()
+			m.launchRepoCustom.SetValue("")
+			if strings.TrimSpace(m.launchRepo) == repoSentinelCustom {
+				if def := strings.TrimSpace(m.defaultLaunchRepo()); def != "" {
+					m.launchRepo = def
+				} else {
+					m.launchRepo = ""
+				}
+			}
 			return m, nil
 		case "enter":
 			path := strings.TrimSpace(m.launchRepoCustom.Value())
@@ -193,8 +274,17 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.moveLaunchFocusToNote()
 		}
+		if m.launchFocus == launchFocusHooks {
+			m.toggleLaunchHookAtCursor()
+			return m, nil
+		}
 		if m.launchFocus != m.launchNoteFocus() {
 			return m.doLaunch()
+		}
+	case " ", "space", "x":
+		if m.launchFocus == launchFocusHooks {
+			m.toggleLaunchHookAtCursor()
+			return m, nil
 		}
 	case "ctrl+t":
 		m.launchQueueOnly = !m.launchQueueOnly
@@ -243,7 +333,9 @@ func (m *model) launchListMove(delta int) {
 			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 			// Reset overrides when role changes — fresh start on a new role.
 			m.launchPromptIdx = -1
-			m.launchHookBundleIdx = -1
+			m.launchHookCursor = -1
+			m.launchHookOverride = false
+			m.launchHookSelected = map[string]bool{}
 			m.launchPermsIdx = 0
 		}
 	case launchFocusEngine:
@@ -259,9 +351,9 @@ func (m *model) launchListMove(delta int) {
 			m.launchPromptIdx = next
 		}
 	case launchFocusHooks:
-		next := m.launchHookBundleIdx + delta
+		next := m.launchHookCursor + delta
 		if next >= -1 && next < len(m.cockpitHookBundles) {
-			m.launchHookBundleIdx = next
+			m.launchHookCursor = next
 		}
 	case launchFocusPerms:
 		next := m.launchPermsIdx + delta
@@ -288,6 +380,27 @@ func (m *model) launchListMove(delta int) {
 	}
 }
 
+// toggleLaunchHookAtCursor flips the hook bundle under the cursor, or
+// resets to "(role default)" if the cursor sits on the sentinel row. The
+// override flag tracks whether to honour the user's selection (even an
+// empty one — meaning "no hooks") versus inheriting from the role.
+func (m *model) toggleLaunchHookAtCursor() {
+	if m.launchHookCursor < 0 {
+		m.launchHookOverride = false
+		m.launchHookSelected = map[string]bool{}
+		return
+	}
+	if m.launchHookCursor >= len(m.cockpitHookBundles) {
+		return
+	}
+	if m.launchHookSelected == nil {
+		m.launchHookSelected = map[string]bool{}
+	}
+	id := m.cockpitHookBundles[m.launchHookCursor].ID
+	m.launchHookSelected[id] = !m.launchHookSelected[id]
+	m.launchHookOverride = true
+}
+
 // effectiveLaunchPreset folds the per-launch overrides into a one-off
 // LaunchPreset. The role provides defaults; Prompt/Hooks/Perms tabs swap
 // individual fields without persisting anything.
@@ -298,15 +411,26 @@ func (m model) effectiveLaunchPreset() cockpit.LaunchPreset {
 		preset.PromptID = p.ID
 		preset.SystemPrompt = p.Body
 	}
-	if m.launchHookBundleIdx >= 0 && m.launchHookBundleIdx < len(m.cockpitHookBundles) {
-		b := m.cockpitHookBundles[m.launchHookBundleIdx]
-		preset.HookBundleID = b.ID
-		preset.Hooks = cockpit.HookSpec{
-			Prompt:    b.Prompt,
-			PreShell:  b.PreShell,
-			PostShell: b.PostShell,
-			Iteration: b.Iteration,
+	if m.launchHookOverride {
+		var ids []string
+		merged := cockpit.HookSpec{}
+		for _, b := range m.cockpitHookBundles {
+			if !m.launchHookSelected[b.ID] {
+				continue
+			}
+			ids = append(ids, b.ID)
+			merged.Prompt = append(merged.Prompt, b.Prompt...)
+			merged.PreShell = append(merged.PreShell, b.PreShell...)
+			merged.PostShell = append(merged.PostShell, b.PostShell...)
+			if merged.Iteration.Mode == "" && b.Iteration.Mode != "" && b.Iteration.Mode != cockpit.IterationOneShot {
+				merged.Iteration = b.Iteration
+			}
 		}
+		if merged.Iteration.Mode == "" {
+			merged.Iteration.Mode = cockpit.IterationOneShot
+		}
+		preset.HookBundleIDs = ids
+		preset.Hooks = merged
 	}
 	if v := launchPermsValue(m.launchPermsIdx); v != "" {
 		preset.Permissions = v
@@ -442,7 +566,19 @@ func defaultProviderIndex(presets []cockpit.LaunchPreset, presetIdx int, provide
 	return 0
 }
 
-func defaultPresetIndex(presets []cockpit.LaunchPreset) int {
+// defaultPresetIndexWithConfig honours config.DefaultPresetID first
+// (so users can pin their own pick), then falls back to the seed
+// preference order.
+func defaultPresetIndexWithConfig(presets []cockpit.LaunchPreset, cfg *config.Config) int {
+	if cfg != nil {
+		if want := strings.TrimSpace(cfg.DefaultPresetID); want != "" {
+			for i, p := range presets {
+				if strings.EqualFold(p.ID, want) {
+					return i
+				}
+			}
+		}
+	}
 	preferred := []string{"senior-dev", "scaffold", "bug-fixer"}
 	for _, want := range preferred {
 		for i, p := range presets {
@@ -450,9 +586,6 @@ func defaultPresetIndex(presets []cockpit.LaunchPreset) int {
 				return i
 			}
 		}
-	}
-	if len(presets) == 0 {
-		return 0
 	}
 	return 0
 }

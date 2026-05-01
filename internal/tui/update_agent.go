@@ -265,8 +265,7 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc", "q":
-		m.page = pageDashboard
-		return m, nil
+		return m.switchTopNavPage(pageDashboard)
 	case "f":
 		m.agentFilter = nextAgentFilter(m.agentFilter, 1)
 		m.agentCursor = 0
@@ -385,18 +384,14 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		if m.agentCursor < len(jobs) {
 			j := jobs[m.agentCursor]
-			if j.Status == cockpit.StatusQueued {
-				job, err := m.cockpitClient.StartJob(j.ID)
-				if err != nil {
-					m.statusMsg = "start: " + err.Error()
-					m.statusExpiry = time.Now().Add(3 * time.Second)
-					return m, nil
-				}
-				m.statusMsg = "started " + job.PresetID
-				m.statusExpiry = time.Now().Add(2 * time.Second)
-				return m.openAgentJob(job.ID, true)
-			}
-			return m.openAgentJob(j.ID, true)
+			cmd := m.prepareRetryLaunch(j)
+			m.statusMsg = "retry setup loaded from " + j.PresetID
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+			return m, cmd
+		}
+	case "r":
+		if m.agentCursor < len(jobs) {
+			return m.retryJobNow(jobs[m.agentCursor].ID)
 		}
 	case "ctrl+r":
 		if m.agentCursor < len(jobs) {

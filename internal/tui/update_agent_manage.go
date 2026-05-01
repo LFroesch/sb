@@ -124,6 +124,23 @@ func canonicalizeProviderProfile(p cockpit.ProviderProfile) cockpit.ProviderProf
 	return p
 }
 
+// parseHookBundleIDs splits the comma-separated text the user types in
+// the manage editor into a clean ID slice. Empty input → nil slice (so
+// the JSON field is omitted entirely instead of stored as []).
+func parseHookBundleIDs(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if id := strings.TrimSpace(p); id != "" {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func canonicalizeLaunchPreset(p cockpit.LaunchPreset) cockpit.LaunchPreset {
 	p.Name = strings.TrimSpace(p.Name)
 	p.ID = strings.TrimSpace(p.ID)
@@ -265,12 +282,6 @@ func (m model) enumOptionsForFieldKey(key string) []string {
 		var ids []string
 		for _, p := range m.cockpitPrompts {
 			ids = append(ids, p.ID)
-		}
-		return ids
-	case "hook_bundle_id":
-		var ids []string
-		for _, h := range m.cockpitHookBundles {
-			ids = append(ids, h.ID)
 		}
 		return ids
 	case "engine_id":
@@ -471,7 +482,7 @@ func (m model) agentManageFieldValue(idx, field int) string {
 	case "prompt_id":
 		return p.PromptID
 	case "hook_bundle_id":
-		return p.HookBundleID
+		return strings.Join(p.HookBundleIDs, ", ")
 	case "engine_id":
 		return p.EngineID
 	}
@@ -609,7 +620,7 @@ func (m *model) setAgentManageFieldValue(idx, field int, raw string) error {
 	case "prompt_id":
 		p.PromptID = value
 	case "hook_bundle_id":
-		p.HookBundleID = value
+		p.HookBundleIDs = parseHookBundleIDs(value)
 	case "engine_id":
 		p.EngineID = value
 	}
