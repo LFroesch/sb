@@ -841,11 +841,13 @@ func (m model) renderFooter() string {
 			if m.attachedFocus == 1 {
 				add("enter", "send")
 				add("esc", "leave input")
+				add("ctrl+c", "back to jobs")
 				add("alt+enter", "newline")
 				add("pgup/pgdn", "scroll")
 				inInput = true
 			} else {
 				add("tab/i", "type")
+				add("ctrl+c", "back to jobs")
 				add("s", "send Esc")
 				add("S", "send Ctrl+C")
 				add("c", "send continue")
@@ -971,13 +973,14 @@ func (m model) helpLines() []string {
 			{"space", "Toggle task in picker"},
 			{"b", "Picker: back to file list"},
 			{"tab", "New run: cycle template → runtime → repo → note → review · Attached exec-chat: swap transcript ↔ input"},
-			{"enter", "Launch · open selected job (tmux attach if live, log review if finished, chat for exec jobs) · send when typing"},
+			{"enter", "Launch · open selected job (tmux attach if live, activity/review if finished, chat for exec jobs) · send when typing"},
 			{"alt+enter", "Launch from note"},
 			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
 			{"ctrl+g", "Live tmux session: jump back to the shared sb main window"},
+			{"ctrl+c", "Attached view: return to the jobs list"},
 			{"ctrl+r", "Take over eligible Foreman tmux job and relaunch it in attended mode (confirm)"},
 			{"R", "Reopen the selected job in New Run with its prior settings prefilled"},
-			{"j/k", "Scroll transcript/log in attached view"},
+			{"j/k", "Scroll transcript/activity in attached view"},
 			{"wheel", "List nav / transcript scroll"},
 			{"a", "Accept reviewed result (confirm)"},
 			{"r", "Retry selected job immediately with the same setup/runtime"},

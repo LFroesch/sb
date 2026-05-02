@@ -133,6 +133,84 @@ func TestPrepareRetryLaunchPrefillsComposerFromJob(t *testing.T) {
 	}
 }
 
+func TestPrepareRetryLaunchLeavesEngineAtRoleDefaultWhenExecutorMatchesPreset(t *testing.T) {
+	m := newModel(nil)
+	m.cockpitPresets = []cockpit.LaunchPreset{
+		{ID: "senior-dev", Name: "Senior dev", Permissions: "scoped-write", Executor: cockpit.ExecutorSpec{Type: "codex", Model: "gpt-5"}},
+	}
+	m.cockpitProviders = []cockpit.ProviderProfile{
+		{ID: "codex-gpt5", Name: "Codex GPT-5", Executor: cockpit.ExecutorSpec{Type: "codex", Model: "gpt-5"}},
+	}
+
+	job := cockpit.Job{
+		PresetID:    "senior-dev",
+		Repo:        "/tmp/demo",
+		Executor:    cockpit.ExecutorSpec{Type: "codex", Model: "gpt-5"},
+		Permissions: "scoped-write",
+	}
+
+	m.prepareRetryLaunch(job)
+
+	if m.launchProviderIdx != -1 {
+		t.Fatalf("launchProviderIdx = %d, want -1 for role default", m.launchProviderIdx)
+	}
+}
+
+func TestUpdateAgentLaunchEditKeyAllowsTypedEngineDefault(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentLaunch
+	m.launchFocus = launchFocusEngine
+	m.launchRepo = "/tmp/demo"
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev", Executor: cockpit.ExecutorSpec{Type: "claude"}}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex", Executor: cockpit.ExecutorSpec{Type: "codex"}}}
+	m.launchProviderIdx = 0
+
+	got, cmd := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	next := got.(model)
+	if !next.launchSelectEditing {
+		t.Fatalf("launchSelectEditing = false, want true")
+	}
+	if cmd == nil {
+		t.Fatalf("edit key should return input blink cmd")
+	}
+
+	next.launchSelectInput.SetValue("")
+	got, _ = next.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyEnter})
+	next = got.(model)
+	if next.launchProviderIdx != -1 {
+		t.Fatalf("launchProviderIdx = %d, want -1 after blank typed engine selection", next.launchProviderIdx)
+	}
+	if next.launchSelectEditing {
+		t.Fatalf("launchSelectEditing = true, want false after apply")
+	}
+}
+
+func TestUpdateAgentLaunchEditKeyAllowsTypedPromptNone(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentLaunch
+	m.launchFocus = launchFocusPrompt
+	m.launchRepo = "/tmp/demo"
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitPrompts = []cockpit.PromptTemplate{{ID: "bug-fixer", Name: "Bug fixer", Body: "fix bugs"}}
+	m.launchPromptIdx = 0
+
+	got, cmd := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	next := got.(model)
+	if !next.launchSelectEditing {
+		t.Fatalf("launchSelectEditing = false, want true")
+	}
+	if cmd == nil {
+		t.Fatalf("edit key should return input blink cmd")
+	}
+
+	next.launchSelectInput.SetValue("")
+	got, _ = next.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyEnter})
+	next = got.(model)
+	if next.launchPromptIdx != launchPromptNone {
+		t.Fatalf("launchPromptIdx = %d, want %d for typed blank prompt", next.launchPromptIdx, launchPromptNone)
+	}
+}
+
 func TestUpdateAgentListLowercaseRRetriesSelectedJob(t *testing.T) {
 	m := newModel(nil)
 	m.page = pageAgent
@@ -167,6 +245,60 @@ func TestUpdateAgentListLowercaseRRetriesSelectedJob(t *testing.T) {
 	}
 	if next.statusMsg != "retried senior-dev" {
 		t.Fatalf("statusMsg = %q, want retry confirmation", next.statusMsg)
+	}
+}
+
+func TestUpdateCtrlCLeavesAttachedTranscriptForAgentList(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.attachedJobID = "job-1"
+	m.cockpitClient = stubCockpitClient{
+		jobs: map[cockpit.JobID]cockpit.Job{
+			"job-1": {ID: "job-1", Runner: cockpit.RunnerTmux, Status: cockpit.StatusRunning},
+		},
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	next := got.(model)
+	if next.page != pageAgent {
+		t.Fatalf("page = %v, want pageAgent", next.page)
+	}
+	if next.mode != modeAgentList {
+		t.Fatalf("mode = %v, want modeAgentList", next.mode)
+	}
+	if next.attachedFocus != 0 {
+		t.Fatalf("attachedFocus = %d, want 0", next.attachedFocus)
+	}
+}
+
+func TestUpdateCtrlCLeavesAttachedInputForAgentList(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.attachedJobID = "job-1"
+	m.attachedFocus = 1
+	m.attachedInput.Focus()
+	m.attachedInput.SetValue("draft follow-up")
+	m.cockpitClient = stubCockpitClient{
+		jobs: map[cockpit.JobID]cockpit.Job{
+			"job-1": {ID: "job-1", Runner: cockpit.RunnerExec, Status: cockpit.StatusIdle},
+		},
+	}
+
+	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	next := got.(model)
+	if next.page != pageAgent {
+		t.Fatalf("page = %v, want pageAgent", next.page)
+	}
+	if next.mode != modeAgentList {
+		t.Fatalf("mode = %v, want modeAgentList", next.mode)
+	}
+	if next.attachedFocus != 0 {
+		t.Fatalf("attachedFocus = %d, want 0", next.attachedFocus)
+	}
+	if next.attachedInput.Focused() {
+		t.Fatalf("attached input should be blurred after ctrl+c")
 	}
 }
 
@@ -397,6 +529,178 @@ func TestUpdateAgentManageCyclesPresetPromptAndRefreshesSelection(t *testing.T) 
 	}
 	if got := next.cockpitPresets[next.agentManageCursor].SystemPrompt; got != "B" {
 		t.Fatalf("cycled preset system prompt = %q, want B", got)
+	}
+}
+
+func TestUpdateAgentManageCyclesPresetPromptToNone(t *testing.T) {
+	dir := t.TempDir()
+	prompt := cockpit.PromptTemplate{ID: "senior-dev", Name: "Senior dev", Body: "A"}
+	provider := cockpit.ProviderProfile{ID: "codex", Name: "Codex", Executor: cockpit.ExecutorSpec{Type: "codex"}}
+	preset := cockpit.LaunchPreset{
+		ID:          "senior-dev",
+		Name:        "Senior dev",
+		PromptID:    "senior-dev",
+		EngineID:    "codex",
+		LaunchMode:  cockpit.LaunchModeSingleJob,
+		Permissions: "scoped-write",
+	}
+	if err := cockpit.SavePrompt(dir, prompt); err != nil {
+		t.Fatalf("SavePrompt(prompt): %v", err)
+	}
+	if err := cockpit.SaveProvider(dir, provider); err != nil {
+		t.Fatalf("SaveProvider(provider): %v", err)
+	}
+	if err := cockpit.SavePreset(dir, preset); err != nil {
+		t.Fatalf("SavePreset(preset): %v", err)
+	}
+
+	m := newModel(nil)
+	m.cockpitPaths = cockpit.Paths{PresetsDir: dir, ProvidersDir: dir, PromptsDir: dir, HooksDir: dir}
+	m.cockpitPrompts = []cockpit.PromptTemplate{prompt}
+	m.cockpitProviders = []cockpit.ProviderProfile{provider}
+	resolved, err := cockpit.ResolvePreset(preset, m.cockpitPrompts, nil, m.cockpitProviders)
+	if err != nil {
+		t.Fatalf("ResolvePreset(preset): %v", err)
+	}
+	m.cockpitPresets = []cockpit.LaunchPreset{resolved}
+	m.mode = modeAgentManage
+	m.agentManageKind = "preset"
+	m.agentManageFocus = 1
+	m.agentManageCursor = 0
+	for i, spec := range m.agentManageFieldSpecs() {
+		if spec.Key == "prompt_id" {
+			m.agentManageField = i
+			break
+		}
+	}
+
+	got, _ := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
+	next := got.(model)
+
+	if got := next.cockpitPresets[next.agentManageCursor].PromptID; got != "" {
+		t.Fatalf("cycled preset prompt_id = %q, want empty", got)
+	}
+	if got := next.cockpitPresets[next.agentManageCursor].SystemPrompt; got != "" {
+		t.Fatalf("cycled preset system prompt = %q, want empty", got)
+	}
+}
+
+func TestUpdateAgentManageEditKeyOpensSelectorForPresetEngineField(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentManage
+	m.agentManageKind = "preset"
+	m.agentManageFocus = 1
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex", Executor: cockpit.ExecutorSpec{Type: "codex"}}}
+	m.cockpitPresets = []cockpit.LaunchPreset{{
+		ID:          "senior-dev",
+		Name:        "Senior dev",
+		EngineID:    "codex",
+		LaunchMode:  cockpit.LaunchModeSingleJob,
+		Permissions: "scoped-write",
+	}}
+	for i, spec := range m.agentManageFieldSpecs() {
+		if spec.Key == "engine_id" {
+			m.agentManageField = i
+			break
+		}
+	}
+
+	got, cmd := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	next := got.(model)
+
+	if !next.agentManageSelectEditing {
+		t.Fatalf("agentManageSelectEditing = false, want true")
+	}
+	if next.agentManageEditing {
+		t.Fatalf("agentManageEditing = true, want false")
+	}
+	if got := next.agentManageSelectInput.Value(); got != "codex" {
+		t.Fatalf("selector value = %q, want codex", got)
+	}
+	if cmd == nil {
+		t.Fatalf("edit key should return selector blink cmd")
+	}
+}
+
+func TestUpdateAgentManageHookBundleFieldUsesSelectorAndStoresMultipleIDs(t *testing.T) {
+	dir := t.TempDir()
+	bundleA := cockpit.HookBundle{ID: "diff-stat", Name: "Diff stat"}
+	bundleB := cockpit.HookBundle{ID: "git-status", Name: "Git status"}
+	preset := cockpit.LaunchPreset{
+		ID:          "senior-dev",
+		Name:        "Senior dev",
+		LaunchMode:  cockpit.LaunchModeSingleJob,
+		Permissions: "scoped-write",
+	}
+	if err := cockpit.SaveHookBundle(dir, bundleA); err != nil {
+		t.Fatalf("SaveHookBundle(bundleA): %v", err)
+	}
+	if err := cockpit.SaveHookBundle(dir, bundleB); err != nil {
+		t.Fatalf("SaveHookBundle(bundleB): %v", err)
+	}
+	if err := cockpit.SavePreset(dir, preset); err != nil {
+		t.Fatalf("SavePreset(preset): %v", err)
+	}
+
+	m := newModel(nil)
+	m.mode = modeAgentManage
+	m.cockpitPaths = cockpit.Paths{PresetsDir: dir, HooksDir: dir}
+	m.cockpitHookBundles = []cockpit.HookBundle{bundleA, bundleB}
+	m.cockpitPresets = []cockpit.LaunchPreset{preset}
+	m.agentManageKind = "preset"
+	m.agentManageFocus = 1
+	for i, spec := range m.agentManageFieldSpecs() {
+		if spec.Key == "hook_bundle_id" {
+			m.agentManageField = i
+			break
+		}
+	}
+
+	got, cmd := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	next := got.(model)
+	if !next.agentManageSelectEditing {
+		t.Fatalf("agentManageSelectEditing = false, want true")
+	}
+	if next.agentManageEditing {
+		t.Fatalf("agentManageEditing = true, want false")
+	}
+	if cmd == nil {
+		t.Fatalf("selector edit should return cursor blink cmd")
+	}
+
+	next.agentManageSelectInput.SetValue("Diff stat, Git status")
+	got, _ = next.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
+	next = got.(model)
+	if next.agentManageSelectEditing {
+		t.Fatalf("agentManageSelectEditing = true, want false after apply")
+	}
+	gotPreset := next.cockpitPresets[next.agentManageCursor]
+	if len(gotPreset.HookBundleIDs) != 2 || gotPreset.HookBundleIDs[0] != "diff-stat" || gotPreset.HookBundleIDs[1] != "git-status" {
+		t.Fatalf("HookBundleIDs = %#v, want diff-stat + git-status", gotPreset.HookBundleIDs)
+	}
+}
+
+func TestBeginAgentManageEditSeedsEmptyHookJSONWithArray(t *testing.T) {
+	m := newModel(nil)
+	m.cockpitHookBundles = []cockpit.HookBundle{{ID: "hooks", Name: "Hooks"}}
+	m.agentManageKind = "hookbundle"
+	m.agentManageCursor = 0
+	for i, spec := range m.agentManageFieldSpecs() {
+		if spec.Key == "prompt" {
+			m.agentManageField = i
+			break
+		}
+	}
+
+	cmd := m.beginAgentManageEdit()
+	if !m.agentManageEditing {
+		t.Fatalf("agentManageEditing = false, want true")
+	}
+	if got := m.agentManageEditor.Value(); got != "[]" {
+		t.Fatalf("editor value = %q, want [] seed for empty hook arrays", got)
+	}
+	if cmd == nil {
+		t.Fatalf("beginAgentManageEdit should return blink cmd")
 	}
 }
 

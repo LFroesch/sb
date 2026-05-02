@@ -29,6 +29,9 @@ func (m *model) resetAgentLaunch() {
 	m.launchPermsIdx = 0
 	m.launchReviewOffset = 0
 	m.launchQueueOnly = false
+	m.launchSelectEditing = false
+	m.launchSelectInput.Blur()
+	m.launchSelectInput.SetValue("")
 }
 
 // Focus tab layout:
@@ -79,6 +82,11 @@ func (m model) launchReviewFocus() int {
 }
 
 var launchPermsLabels = []string{"(role)", "read-only", "scoped-write", "wide-open"}
+
+const (
+	launchPromptRoleDefault = -1
+	launchPromptNone        = -2
+)
 
 func launchPermsValue(idx int) string {
 	switch idx {
@@ -135,12 +143,20 @@ func (m *model) prepareRetryLaunch(j cockpit.Job) tea.Cmd {
 			break
 		}
 	}
-	m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
-	for i, p := range m.cockpitProviders {
-		if sameExecutor(p.Executor, j.Executor) {
-			m.launchProviderIdx = i
-			break
+	m.launchProviderIdx = -1
+	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
+		preset := m.cockpitPresets[m.launchPresetIdx]
+		if !sameExecutor(preset.Executor, j.Executor) {
+			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+			for i, p := range m.cockpitProviders {
+				if sameExecutor(p.Executor, j.Executor) {
+					m.launchProviderIdx = i
+					break
+				}
+			}
 		}
+	} else {
+		m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 	}
 
 	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
@@ -152,6 +168,144 @@ func (m *model) prepareRetryLaunch(j cockpit.Job) tea.Cmd {
 	}
 
 	return m.moveLaunchFocusToNote()
+}
+
+func normalizeLaunchLookup(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+func exactOrUniqueMatch(raw string, count int, idAt func(int) string, nameAt func(int) string) int {
+	q := normalizeLaunchLookup(raw)
+	if q == "" {
+		return -1
+	}
+	for i := 0; i < count; i++ {
+		if normalizeLaunchLookup(idAt(i)) == q {
+			return i
+		}
+	}
+	for i := 0; i < count; i++ {
+		if normalizeLaunchLookup(nameAt(i)) == q {
+			return i
+		}
+	}
+	match := -1
+	for i := 0; i < count; i++ {
+		if strings.Contains(normalizeLaunchLookup(idAt(i)), q) || strings.Contains(normalizeLaunchLookup(nameAt(i)), q) {
+			if match >= 0 {
+				return -2
+			}
+			match = i
+		}
+	}
+	return match
+}
+
+func (m model) currentLaunchSelectValue() string {
+	switch m.launchFocus {
+	case launchFocusRole:
+		if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
+			return m.cockpitPresets[m.launchPresetIdx].ID
+		}
+	case launchFocusEngine:
+		if m.launchProviderIdx >= 0 && m.launchProviderIdx < len(m.cockpitProviders) {
+			return m.cockpitProviders[m.launchProviderIdx].ID
+		}
+	case launchFocusPrompt:
+		switch m.launchPromptIdx {
+		case launchPromptRoleDefault:
+			return "default"
+		case launchPromptNone:
+			return ""
+		default:
+			if m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts) {
+				return m.cockpitPrompts[m.launchPromptIdx].ID
+			}
+		}
+	}
+	return ""
+}
+
+func (m *model) beginLaunchSelectionEdit() tea.Cmd {
+	switch m.launchFocus {
+	case launchFocusRole:
+		m.launchSelectInput.Placeholder = "type role id/name"
+	case launchFocusEngine:
+		m.launchSelectInput.Placeholder = "blank = role default, or type engine id/name"
+	case launchFocusPrompt:
+		m.launchSelectInput.Placeholder = "blank = none, 'default' = role default, or type prompt id/name"
+	default:
+		return nil
+	}
+	m.launchSelectEditing = true
+	m.launchSelectInput.SetValue(m.currentLaunchSelectValue())
+	m.launchSelectInput.Width = maxInt(20, m.width-14)
+	m.launchSelectInput.Focus()
+	return m.launchSelectInput.Cursor.BlinkCmd()
+}
+
+func (m *model) applyLaunchSelectionEdit() error {
+	raw := strings.TrimSpace(m.launchSelectInput.Value())
+	switch m.launchFocus {
+	case launchFocusRole:
+		idx := exactOrUniqueMatch(raw, len(m.cockpitPresets),
+			func(i int) string { return m.cockpitPresets[i].ID },
+			func(i int) string { return m.cockpitPresets[i].Name })
+		switch idx {
+		case -1:
+			return os.ErrInvalid
+		case -2:
+			return os.ErrExist
+		default:
+			m.launchPresetIdx = idx
+			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+			m.launchPromptIdx = launchPromptRoleDefault
+			m.launchHookCursor = -1
+			m.launchHookOverride = false
+			m.launchHookSelected = map[string]bool{}
+			m.launchPermsIdx = 0
+			return nil
+		}
+	case launchFocusEngine:
+		if raw == "" || normalizeLaunchLookup(raw) == "default" || normalizeLaunchLookup(raw) == "role" {
+			m.launchProviderIdx = -1
+			return nil
+		}
+		idx := exactOrUniqueMatch(raw, len(m.cockpitProviders),
+			func(i int) string { return m.cockpitProviders[i].ID },
+			func(i int) string { return m.cockpitProviders[i].Name })
+		switch idx {
+		case -1:
+			return os.ErrInvalid
+		case -2:
+			return os.ErrExist
+		default:
+			m.launchProviderIdx = idx
+			return nil
+		}
+	case launchFocusPrompt:
+		switch normalizeLaunchLookup(raw) {
+		case "":
+			m.launchPromptIdx = launchPromptNone
+			return nil
+		case "default", "role":
+			m.launchPromptIdx = launchPromptRoleDefault
+			return nil
+		}
+		idx := exactOrUniqueMatch(raw, len(m.cockpitPrompts),
+			func(i int) string { return m.cockpitPrompts[i].ID },
+			func(i int) string { return m.cockpitPrompts[i].Name })
+		switch idx {
+		case -1:
+			return os.ErrInvalid
+		case -2:
+			return os.ErrExist
+		default:
+			m.launchPromptIdx = idx
+			return nil
+		}
+	}
+	return nil
 }
 
 func (m model) retryJobNow(id cockpit.JobID) (tea.Model, tea.Cmd) {
@@ -182,6 +336,38 @@ func (m *model) syncLaunchRepoToVisibleChoice() {
 }
 
 func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.launchSelectEditing {
+		switch msg.String() {
+		case "esc", "ctrl+[":
+			m.launchSelectEditing = false
+			m.launchSelectInput.Blur()
+			m.launchSelectInput.SetValue("")
+			return m, nil
+		case "enter":
+			if err := m.applyLaunchSelectionEdit(); err != nil {
+				switch err {
+				case os.ErrInvalid:
+					m.statusMsg = "no matching selection"
+				case os.ErrExist:
+					m.statusMsg = "selection is ambiguous"
+				default:
+					m.statusMsg = "select: " + err.Error()
+				}
+				m.statusExpiry = time.Now().Add(3 * time.Second)
+				return m, nil
+			}
+			m.launchSelectEditing = false
+			m.launchSelectInput.Blur()
+			m.launchSelectInput.SetValue("")
+			m.statusMsg = "selection updated"
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.launchSelectInput, cmd = m.launchSelectInput.Update(msg)
+		return m, cmd
+	}
+
 	// Custom-repo path entry consumes keys until esc or enter.
 	if m.launchRepoEditing {
 		switch msg.String() {
@@ -286,6 +472,10 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.toggleLaunchHookAtCursor()
 			return m, nil
 		}
+	case "e":
+		if cmd := m.beginLaunchSelectionEdit(); cmd != nil {
+			return m, cmd
+		}
 	case "ctrl+t":
 		m.launchQueueOnly = !m.launchQueueOnly
 		if m.launchQueueOnly {
@@ -332,22 +522,21 @@ func (m *model) launchListMove(delta int) {
 			m.launchPresetIdx = next
 			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 			// Reset overrides when role changes — fresh start on a new role.
-			m.launchPromptIdx = -1
+			m.launchPromptIdx = launchPromptRoleDefault
 			m.launchHookCursor = -1
 			m.launchHookOverride = false
 			m.launchHookSelected = map[string]bool{}
 			m.launchPermsIdx = 0
 		}
 	case launchFocusEngine:
-		choices := providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 		next := m.launchProviderIdx + delta
-		if next >= 0 && next < len(choices) {
+		if next >= -1 && next < len(m.cockpitProviders) {
 			m.launchProviderIdx = next
 		}
 	case launchFocusPrompt:
 		next := m.launchPromptIdx + delta
-		// -1 represents "(role default)"; allow it as the leftmost option.
-		if next >= -1 && next < len(m.cockpitPrompts) {
+		// -2 = "(none)", -1 = "(role default)".
+		if next >= launchPromptNone && next < len(m.cockpitPrompts) {
 			m.launchPromptIdx = next
 		}
 	case launchFocusHooks:
@@ -406,7 +595,11 @@ func (m *model) toggleLaunchHookAtCursor() {
 // individual fields without persisting anything.
 func (m model) effectiveLaunchPreset() cockpit.LaunchPreset {
 	preset := m.cockpitPresets[m.launchPresetIdx]
-	if m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts) {
+	switch {
+	case m.launchPromptIdx == launchPromptNone:
+		preset.PromptID = ""
+		preset.SystemPrompt = ""
+	case m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts):
 		p := m.cockpitPrompts[m.launchPromptIdx]
 		preset.PromptID = p.ID
 		preset.SystemPrompt = p.Body

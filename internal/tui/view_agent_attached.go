@@ -274,25 +274,30 @@ func (m model) renderAttachedTmux(j cockpit.Job) string {
 		lines = append(lines, wrapLines(dimStyle.Render(preview), lineWidth)...)
 	}
 
+	if reviewLines := m.renderPeekReviewSummary(j, lineWidth); len(reviewLines) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, reviewLines...)
+	}
+
 	turnCount := countUserVisibleTurns(j)
-	sectionLabel := "log"
-	sectionMeta := "tmux session log"
+	sectionLabel := "activity"
+	sectionMeta := strings.Join([]string{fmt.Sprintf("%d turns", turnCount), tmuxActivitySourceLabel(j)}, "  ·  ")
 	if panelHeight > 8 {
 		lines = append(lines, "")
 	}
 	if m.attachedFocus == 0 {
 		lines = append(lines, wrapLines(accentStyle.Render("  ▸ "+sectionLabel)+dimStyle.Render("  "+sectionMeta), lineWidth)...)
 	} else {
-		lines = append(lines, wrapLines(dimStyle.Render(fmt.Sprintf("  %s · %d turns", sectionLabel, turnCount))+"  "+accentStyle.Render("▸ input"), lineWidth)...)
+		lines = append(lines, wrapLines(dimStyle.Render("  "+sectionLabel+"  "+sectionMeta)+"  "+accentStyle.Render("▸ input"), lineWidth)...)
 	}
 
 	innerHeight := panelHeight
 	m.attachedInput.SetWidth(m.attachedInputWidth())
 	var footerLines []string
 	if isLive {
-		footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux session"), lineWidth))
+		footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux window"), lineWidth))
 	} else {
-		footerLines = append(footerLines, truncate(dimStyle.Render("  tmux session ended"), lineWidth))
+		footerLines = append(footerLines, truncate(dimStyle.Render("  session ended"), lineWidth))
 	}
 	h := innerHeight - len(lines) - len(footerLines)
 	if h < 1 {
@@ -344,6 +349,16 @@ func renderTmuxLogConversation(j cockpit.Job, width int) string {
 		parts = append(parts, wrapText(line, width))
 	}
 	return strings.Join(parts, "\n")
+}
+
+func tmuxActivitySourceLabel(j cockpit.Job) string {
+	if j.TmuxTarget != "" {
+		return "live pane snapshot"
+	}
+	if j.LogPath != "" {
+		return "captured output"
+	}
+	return "no capture yet"
 }
 
 func (m model) attachedConversationText(j cockpit.Job, width int) string {

@@ -125,7 +125,13 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Input mode: type freely; only a tiny key set is intercepted.
 	if m.attachedFocus == 1 {
 		switch msg.String() {
-		case "esc", "tab":
+		case "esc", "tab", "ctrl+c":
+			if msg.String() == "ctrl+c" {
+				m.mode = modeAgentList
+				m.attachedFocus = 0
+				m.attachedInput.Blur()
+				return m, nil
+			}
 			m.attachedFocus = 0
 			m.attachedInput.Blur()
 			return m, nil
@@ -173,8 +179,9 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Transcript-focus: shortcuts + scroll.
 	switch msg.String() {
-	case "esc", "q":
+	case "esc", "q", "ctrl+c":
 		m.mode = modeAgentList
+		m.attachedFocus = 0
 		m.attachedInput.Blur()
 		return m, nil
 	case "x":

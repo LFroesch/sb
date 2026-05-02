@@ -477,7 +477,7 @@ func renderManageFieldList(m model, width, visible int) []string {
 
 	var lines []string
 	header := fmt.Sprintf("  step %d/%d: %s", groupIdx+1, len(groups), groupName)
-	hint := dimStyle.Render("   tab ▸ next group · enter to edit/cycle · a to ")
+	hint := dimStyle.Render("   tab ▸ next group · enter quick action · e detailed edit/select · a to ")
 	if m.agentManageAdvanced {
 		hint += dimStyle.Render("hide advanced")
 	} else {
@@ -498,14 +498,27 @@ func renderManageFieldList(m model, width, visible int) []string {
 			prefix = accentStyle.Render("▸ ")
 		}
 		value := strings.ReplaceAll(m.agentManageFieldValue(m.agentManageCursor, i), "\n", "  ")
-		valueStyled := textStyle.Render(truncate(value, width-22))
+		displayValue := value
+		if strings.TrimSpace(displayValue) == "" {
+			displayValue = "(empty)"
+		}
+		valueStyled := textStyle.Render(truncate(displayValue, width-22))
 		if strings.TrimSpace(value) == "" {
 			valueStyled = dimStyle.Render("(empty)")
 		}
 		if opts := m.enumOptionsForFieldKey(spec.Key); len(opts) > 0 {
-			valueStyled = primaryStyle.Render(truncate(value, width-22))
+			if strings.TrimSpace(value) == "" {
+				displayValue = "(none)"
+			}
+			valueStyled = primaryStyle.Render(truncate(displayValue, width-22))
 		}
 		lines = append(lines, prefix+dimStyle.Render(spec.Label+": ")+valueStyled)
+	}
+	if m.agentManageField >= 0 && m.agentManageField < len(specs) {
+		spec := specs[m.agentManageField]
+		if strings.TrimSpace(spec.Help) != "" {
+			lines = append(lines, "", dimStyle.Render("  "+spec.Help))
+		}
 	}
 	if !m.agentManageAdvanced && groupName != "Hooks" && groupName != "Advanced" {
 		lines = append(lines, "", dimStyle.Render("  advanced fields hidden — press a to show"))
@@ -645,10 +658,7 @@ func (m model) agentPeekHeaderLines(j cockpit.Job, bodyWidth int) []string {
 	}
 
 	lines = append(lines, "")
-	divider := "── output "
-	if j.Runner == cockpit.RunnerTmux {
-		divider = "── session log "
-	}
+	divider := "── latest activity "
 	fillW := bodyWidth - len(divider)
 	if fillW < 4 {
 		fillW = 4

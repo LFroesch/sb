@@ -160,64 +160,68 @@ type model struct {
 	helpScroll int
 
 	// Agent cockpit
-	cockpitClient      cockpit.Client
-	cockpitPresets     []cockpit.LaunchPreset
-	cockpitProviders   []cockpit.ProviderProfile
-	cockpitPrompts     []cockpit.PromptTemplate
-	cockpitHookBundles []cockpit.HookBundle
-	cockpitPaths       cockpit.Paths
-	cockpitJobs        []cockpit.Job
-	cockpitEvents      <-chan cockpit.Event
-	cockpitForeman     cockpit.ForemanState
-	cockpitErr         string
-	cockpitMode        string // "daemon" | "in-proc"
-	cockpitDetachQuit  bool
-	agentFilter        string // "all" | "live" | "running" | "attention" | "done"
-	agentCursor        int
-	agentDetailOffset  int // pgup/pgdn scroll offset for the right-pane job detail
-	pickerFile         string
-	pickerProject      string
-	pickerRepo         string
-	pickerItems        []cockpit.PickerItem
-	pickerSelected     map[int]bool
+	cockpitClient       cockpit.Client
+	cockpitPresets      []cockpit.LaunchPreset
+	cockpitProviders    []cockpit.ProviderProfile
+	cockpitPrompts      []cockpit.PromptTemplate
+	cockpitHookBundles  []cockpit.HookBundle
+	cockpitPaths        cockpit.Paths
+	cockpitJobs         []cockpit.Job
+	cockpitEvents       <-chan cockpit.Event
+	cockpitForeman      cockpit.ForemanState
+	cockpitErr          string
+	cockpitMode         string // "daemon" | "in-proc"
+	cockpitDetachQuit   bool
+	agentFilter         string // "all" | "live" | "running" | "attention" | "done"
+	agentCursor         int
+	agentDetailOffset   int // pgup/pgdn scroll offset for the right-pane job detail
+	pickerFile          string
+	pickerProject       string
+	pickerRepo          string
+	pickerItems         []cockpit.PickerItem
+	pickerSelected      map[int]bool
 	launchSources       []cockpit.SourceTask
 	launchRepo          string
 	launchPresetIdx     int
-	launchProviderIdx   int  // index into m.cockpitProviders
-	launchPromptIdx     int  // -1 = use role default, else index into m.cockpitPrompts
+	launchProviderIdx   int             // -1 = use role default, else index into m.cockpitProviders
+	launchPromptIdx     int             // -1 = role default, -2 = none, else index into m.cockpitPrompts
 	launchHookCursor    int             // cursor row in hook step: -1 = "(role default)", else index into m.cockpitHookBundles
 	launchHookOverride  bool            // false = inherit role's hooks; true = use launchHookSelected (which may be empty = no hooks)
 	launchHookSelected  map[string]bool // bundle ID → selected; only meaningful when launchHookOverride
-	launchPermsIdx      int  // 0 = role default, 1=read-only, 2=scoped-write, 3=wide-open
+	launchPermsIdx      int             // 0 = role default, 1=read-only, 2=scoped-write, 3=wide-open
 	launchBrief         textarea.Model
 	launchFocus         int // 0=role 1=engine 2=prompt 3=hooks 4=perms [5=repo] note review
 	launchReviewOffset  int
 	launchQueueOnly     bool
 	launchRepoCustom    textinput.Model // active when typing a custom repo path
 	launchRepoEditing   bool            // true while launchRepoCustom is focused
-	attachedJobID      cockpit.JobID
-	attachedInput      textarea.Model
-	attachedFocus      int    // 0=transcript (shortcuts + scroll), 1=input (typing)
-	transcriptBuf      string // live assistant output for the in-flight turn
-	attachedTurns      []cockpit.Turn
+	launchSelectInput   textinput.Model // active when typing a role/engine/prompt selection
+	launchSelectEditing bool            // true while launchSelectInput is focused
+	attachedJobID       cockpit.JobID
+	attachedInput       textarea.Model
+	attachedFocus       int    // 0=transcript (shortcuts + scroll), 1=input (typing)
+	transcriptBuf       string // live assistant output for the in-flight turn
+	attachedTurns       []cockpit.Turn
 
 	// Agent confirmation state: when active, next y/n answers the prompt.
-	agentConfirmActive      bool
-	agentConfirmKind        string
-	agentConfirmTarget      cockpit.JobID
-	agentManageKind         string // "preset" | "provider"
-	agentManageFocus        int    // 0=list 1=fields
-	agentManageCursor       int
-	agentManageField        int
-	agentManageGroup        int  // index into agentManageGroupOrder()
-	agentManageAdvanced     bool // reveals Hooks + Advanced groups
-	agentManageWizard       bool // n-just-pressed, auto-advance groups on save
-	agentManageListOffset   int
-	agentManageDetailOffset int
-	agentManageEditing      bool
-	agentManageEditor       textarea.Model
-	agentManageConfirm      string // "delete" | ""
-	agentManageConfirmID    string // id of item pending deletion
+	agentConfirmActive       bool
+	agentConfirmKind         string
+	agentConfirmTarget       cockpit.JobID
+	agentManageKind          string // "preset" | "provider"
+	agentManageFocus         int    // 0=list 1=fields
+	agentManageCursor        int
+	agentManageField         int
+	agentManageGroup         int  // index into agentManageGroupOrder()
+	agentManageAdvanced      bool // reveals Hooks + Advanced groups
+	agentManageWizard        bool // n-just-pressed, auto-advance groups on save
+	agentManageListOffset    int
+	agentManageDetailOffset  int
+	agentManageEditing       bool
+	agentManageEditor        textarea.Model
+	agentManageSelectEditing bool
+	agentManageSelectInput   textinput.Model
+	agentManageConfirm       string // "delete" | ""
+	agentManageConfirmID     string // id of item pending deletion
 }
 
 func newModel(cfg *config.Config) model {
@@ -255,6 +259,11 @@ func newModel(cfg *config.Config) model {
 	launchRepoCustom.CharLimit = 1024
 	launchRepoCustom.Width = 60
 
+	launchSelectInput := textinput.New()
+	launchSelectInput.Placeholder = "type exact or partial id/name"
+	launchSelectInput.CharLimit = 256
+	launchSelectInput.Width = 60
+
 	attachedInput := textarea.New()
 	attachedInput.Placeholder = "send to agent…"
 	attachedInput.SetWidth(80)
@@ -267,6 +276,11 @@ func newModel(cfg *config.Config) model {
 	manageEditor.SetHeight(8)
 	manageEditor.CharLimit = 0
 
+	manageSelect := textinput.New()
+	manageSelect.Placeholder = "type value"
+	manageSelect.Width = 60
+	manageSelect.CharLimit = 1024
+
 	vp := viewport.New(80, 20)
 
 	sp := spinner.New()
@@ -274,22 +288,24 @@ func newModel(cfg *config.Config) model {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C6CCA"))
 
 	return model{
-		loading:           true,
-		cfg:               cfg,
-		dumpArea:          dump,
-		dumpClarifyArea:   clarify,
-		chainFeedback:     chainFB,
-		launchBrief:       launchBrief,
-		launchRepoCustom:  launchRepoCustom,
-		attachedInput:     attachedInput,
-		agentManageKind:   "preset",
-		agentManageEditor: manageEditor,
-		editArea:          edit,
-		viewport:          vp,
-		spinner:           sp,
-		selectedProjects:  make(map[string]bool),
-		pickerSelected:    make(map[int]bool),
-		favorites:         loadFavorites(),
+		loading:                true,
+		cfg:                    cfg,
+		dumpArea:               dump,
+		dumpClarifyArea:        clarify,
+		chainFeedback:          chainFB,
+		launchBrief:            launchBrief,
+		launchRepoCustom:       launchRepoCustom,
+		launchSelectInput:      launchSelectInput,
+		attachedInput:          attachedInput,
+		agentManageKind:        "preset",
+		agentManageEditor:      manageEditor,
+		agentManageSelectInput: manageSelect,
+		editArea:               edit,
+		viewport:               vp,
+		spinner:                sp,
+		selectedProjects:       make(map[string]bool),
+		pickerSelected:         make(map[int]bool),
+		favorites:              loadFavorites(),
 	}
 }
 

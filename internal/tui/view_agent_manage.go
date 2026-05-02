@@ -60,10 +60,22 @@ func (m model) renderAgentManage() string {
 
 	specs := m.agentManageFieldSpecs()
 	var detail []string
-	if m.agentManageEditing && m.agentManageField >= 0 && m.agentManageField < len(specs) {
+	if m.agentManageSelectEditing && m.agentManageField >= 0 && m.agentManageField < len(specs) {
+		spec := specs[m.agentManageField]
+		detail = append(detail, panelHeaderStyle.Render("  Select: "+spec.Label))
+		detail = append(detail, dimStyle.Render("  "+spec.Group))
+		if strings.TrimSpace(spec.Help) != "" {
+			detail = append(detail, dimStyle.Render("  "+spec.Help))
+		}
+		detail = append(detail, "")
+		detail = append(detail, "  "+m.agentManageSelectInput.View())
+	} else if m.agentManageEditing && m.agentManageField >= 0 && m.agentManageField < len(specs) {
 		spec := specs[m.agentManageField]
 		detail = append(detail, panelHeaderStyle.Render("  Editing: "+spec.Label))
 		detail = append(detail, dimStyle.Render("  "+spec.Group))
+		if strings.TrimSpace(spec.Help) != "" {
+			detail = append(detail, dimStyle.Render("  "+spec.Help))
+		}
 		detail = append(detail, "")
 		editorLines := strings.Split(m.agentManageEditor.View(), "\n")
 		detail = append(detail, editorLines...)

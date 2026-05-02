@@ -286,6 +286,23 @@ func TestRenderAgentPeekShowsTaskLine(t *testing.T) {
 	}
 }
 
+func TestRenderAgentPeekUsesLatestActivityLabel(t *testing.T) {
+	m := newModel(nil)
+	out := m.renderAgentPeek(cockpit.Job{
+		ID:        "job-123456",
+		PresetID:  "senior-dev",
+		Runner:    cockpit.RunnerTmux,
+		CreatedAt: time.Now().Add(-2 * time.Minute),
+		LogPath:   filepath.Join(t.TempDir(), "tmux.log"),
+	}, 80, 20, 0)
+	if !strings.Contains(out, "latest activity") {
+		t.Fatalf("renderAgentPeek missing latest activity label: %q", out)
+	}
+	if strings.Contains(out, "session log") {
+		t.Fatalf("renderAgentPeek kept old session log copy: %q", out)
+	}
+}
+
 func TestJobTaskTextPrefersRawFreeformOverComposedBrief(t *testing.T) {
 	j := cockpit.Job{
 		Brief:    "system prompt\n\n### hook\n\ncontext\n\nfix the real thing\n",
@@ -652,6 +669,48 @@ func TestRenderAgentAttachedShowsMessageLabel(t *testing.T) {
 	out := m.renderAgentAttached()
 	if !strings.Contains(out, "message") {
 		t.Fatalf("renderAgentAttached missing message label: %q", out)
+	}
+}
+
+func TestRenderAgentAttachedTmuxUsesActivityCopy(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tmux.log")
+	if err := os.WriteFile(logPath, []byte("draft\rfinal line\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "senior-dev",
+		Runner:    cockpit.RunnerTmux,
+		Status:    cockpit.StatusNeedsReview,
+		CreatedAt: now.Add(-2 * time.Minute),
+		LogPath:   logPath,
+		Sources: []cockpit.SourceTask{{
+			Text: "ship it",
+		}},
+	}
+
+	m := newModel(nil)
+	m.width = 120
+	m.height = 40
+	m.mode = modeAgentAttached
+	m.attachedJobID = job.ID
+	m.attachedFocus = 0
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.refreshAttachedViewport(true)
+
+	out := m.renderAgentAttached()
+	if !strings.Contains(out, "activity") {
+		t.Fatalf("renderAgentAttached missing activity label: %q", out)
+	}
+	if !strings.Contains(out, "captured output") {
+		t.Fatalf("renderAgentAttached missing capture source label: %q", out)
+	}
+	if strings.Contains(out, "session log") {
+		t.Fatalf("renderAgentAttached kept old session log copy: %q", out)
 	}
 }
 

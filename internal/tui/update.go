@@ -293,8 +293,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// ctrl+c always quits regardless of mode
 		if msg.String() == "ctrl+c" {
+			if m.page == pageAgent && m.mode == modeAgentAttached {
+				return m.updateAgent(msg)
+			}
 			return m, m.quitCmd()
 		}
 

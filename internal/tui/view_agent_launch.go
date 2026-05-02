@@ -8,7 +8,6 @@ import (
 )
 
 func (m model) renderAgentLaunch() string {
-	providers := providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 	contentHeight := m.agentContentHeight()
 	lineWidth := maxInt(20, m.width-4)
 
@@ -16,10 +15,7 @@ func (m model) renderAgentLaunch() string {
 	if m.launchPresetIdx < len(m.cockpitPresets) {
 		presetLabel = m.cockpitPresets[m.launchPresetIdx].Name
 	}
-	providerLabel := "(none)"
-	if m.launchProviderIdx < len(providers) {
-		providerLabel = providers[m.launchProviderIdx]
-	}
+	providerLabel := m.launchProviderLabel()
 
 	tab := func(name string, focus int) string {
 		if m.launchFocus == focus {
@@ -70,7 +66,11 @@ func (m model) renderAgentLaunch() string {
 		visibleRows = 1
 	}
 	rowsReserved := 3
-	if m.launchHasRepoStep() && m.launchFocus == 2 && m.launchRepoEditing {
+	if m.launchSelectEditing {
+		rowsReserved += 3
+		m.launchSelectInput.Width = maxInt(1, m.width-14)
+	}
+	if m.launchHasRepoStep() && m.launchFocus == m.launchRepoFocus() && m.launchRepoEditing {
 		rowsReserved += 3
 		m.launchRepoCustom.Width = maxInt(1, m.width-14)
 	}
@@ -81,7 +81,11 @@ func (m model) renderAgentLaunch() string {
 
 	switch {
 	case m.launchFocus == launchFocusRole:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Role"), dimStyle.Render("  reusable run behavior and defaults"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Choose Role"), dimStyle.Render("  reusable run behavior and defaults · e to type one"), "")
+		if m.launchSelectEditing {
+			lines = append(lines, dimStyle.Render("  type role id/name · enter to select · esc to cancel"))
+			lines = append(lines, "  "+m.launchSelectInput.View(), "")
+		}
 		var options []string
 		for i, p := range m.cockpitPresets {
 			prefix := "  "
@@ -92,26 +96,37 @@ func (m model) renderAgentLaunch() string {
 		}
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchPresetIdx, listRows), listRows)...)
 	case m.launchFocus == launchFocusEngine:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Engine"), dimStyle.Render("  concrete CLI / model to run"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Choose Engine"), dimStyle.Render("  concrete CLI / model to run · e to type one or blank back to role default"), "")
+		if m.launchSelectEditing {
+			lines = append(lines, dimStyle.Render("  type engine id/name · blank = role default · enter to select · esc to cancel"))
+			lines = append(lines, "  "+m.launchSelectInput.View(), "")
+		}
 		var options []string
-		for i := range providers {
+		options = append(options, launchOverrideOption("(role default)", m.launchProviderIdx == -1))
+		for i, provider := range m.cockpitProviders {
 			prefix := "  "
-			name := providers[i]
+			name := provider.Name
 			if i == m.launchProviderIdx {
 				prefix = accentStyle.Render("▸ ")
 				name = accentStyle.Bold(true).Render(name)
 			}
 			options = append(options, prefix+name)
 		}
-		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchProviderIdx, listRows), listRows)...)
+		cursor := m.launchProviderIdx + 1
+		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusPrompt:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Prompt"), dimStyle.Render("  override the role's system prompt for this run"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Choose Prompt"), dimStyle.Render("  override the role's system prompt for this run · e to type one"), "")
+		if m.launchSelectEditing {
+			lines = append(lines, dimStyle.Render("  type prompt id/name · blank = none · 'default' = role default"))
+			lines = append(lines, "  "+m.launchSelectInput.View(), "")
+		}
 		var options []string
-		options = append(options, launchOverrideOption("(role default)", m.launchPromptIdx == -1))
+		options = append(options, launchOverrideOption("(role default)", m.launchPromptIdx == launchPromptRoleDefault))
+		options = append(options, launchOverrideOption("(none)", m.launchPromptIdx == launchPromptNone))
 		for i, p := range m.cockpitPrompts {
 			options = append(options, launchOverrideOption(p.Name, m.launchPromptIdx == i))
 		}
-		cursor := m.launchPromptIdx + 1
+		cursor := m.launchPromptIdx + 2
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusHooks:
 		lines = append(lines, panelHeaderStyle.Render("  Choose Hook Bundles"), dimStyle.Render("  space/enter toggles · multiple bundles compose · (role default) clears overrides"), "")
@@ -206,7 +221,10 @@ func (m model) renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel 
 		dimStyle.Render(fmt.Sprintf("  %d sources", len(m.launchSources)))
 	// Only surface override tags when active — keeps the line short on
 	// narrow terminals when the role's defaults are good enough.
-	if m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts) {
+	switch {
+	case m.launchPromptIdx == launchPromptNone:
+		summary += dimStyle.Render("  prompt=") + accentStyle.Render("(none)")
+	case m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts):
 		summary += dimStyle.Render("  prompt=") + accentStyle.Render(m.cockpitPrompts[m.launchPromptIdx].Name)
 	}
 	if m.launchHookOverride {
@@ -228,6 +246,16 @@ func (m model) renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel 
 	lines = append(lines, wrapLines(summary, maxInt(20, m.width-4))...)
 	lines = append(lines, "")
 	return lines
+}
+
+func (m model) launchProviderLabel() string {
+	if m.launchProviderIdx >= 0 && m.launchProviderIdx < len(m.cockpitProviders) {
+		return m.cockpitProviders[m.launchProviderIdx].Name
+	}
+	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
+		return "(role default: " + describeExecutor(m.cockpitPresets[m.launchPresetIdx].Executor) + ")"
+	}
+	return "(none)"
 }
 
 func launchOverrideOption(label string, selected bool) string {

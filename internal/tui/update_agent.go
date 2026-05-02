@@ -142,6 +142,7 @@ type agentManageFieldSpec struct {
 	Group     string
 	Multiline bool
 	Height    int
+	Help      string
 }
 
 // orderAgentJobs sorts the operator-facing cockpit order:
@@ -201,7 +202,7 @@ func (m model) handleAgentMouseWheel(delta int) tea.Model {
 			m.viewport.LineUp(-delta)
 		}
 	case modeAgentManage:
-		if m.agentManageEditing {
+		if m.agentManageEditing || m.agentManageSelectEditing {
 			return m
 		}
 		if m.agentManageFocus == 0 {

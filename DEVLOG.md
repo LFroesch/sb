@@ -2,6 +2,51 @@
 
 ## DevLog
 
+### 2026-05-01 — Cockpit right pane now frames tmux output as activity/review instead of a brittle session-log surface
+- Reworked the Agent list peek and tmux attached view in [`internal/tui/view_agent.go`](internal/tui/view_agent.go) and [`internal/tui/view_agent_attached.go`](internal/tui/view_agent_attached.go) so the right-side pane no longer presents itself as a `session log`. The compact detail pane now labels that area as `latest activity`, and tmux attached sessions show cleaner `activity` metadata (`turns`, `live pane snapshot` vs `captured output`) plus the existing review summary when relevant.
+- Added focused wording/layout regressions in [`internal/tui/view_agent_test.go`](internal/tui/view_agent_test.go) to keep the tmux surfaces on the new activity-first copy and avoid drifting back to the old `session log` framing.
+- Updated [`WORK.md`](WORK.md) to drop the stale backlog item about polishing tmux redraw weirdness in the old session-log pane, since the product direction is now to de-emphasize that surface instead of keep chasing it.
+- Why: tmux redraw cleanup can still improve the sanitized capture, but presenting the cockpit as a literal log viewer kept making the right pane feel noisy and brittle. This shifts the UI toward operator context first, with output as supporting activity instead of the whole identity of the pane.
+
+### 2026-05-01 — Added a standalone UX review note instead of forcing a rewrite
+- Added [`UX_REVIEW_2026-05-01.md`](UX_REVIEW_2026-05-01.md) as a written review artifact covering the current friction in the Agents/Foreman surface: too much hidden mode/focus state, a launch flow that still feels like a control matrix, Agent Setup still exposing too much internal structure, high keybind load, and runner-specific interaction differences leaking into the user experience.
+- Updated [`WORK.md`](WORK.md) to track the concrete follow-up: review the note and decide which UX cuts are actually worth doing before another broad rewrite plan.
+- Why: the previous implementation direction was too opinionated and too rewrite-heavy for the current state of the product. A narrower review note is a better handoff for deciding tomorrow which changes are real improvements versus speculative cleanup.
+
+### 2026-05-01 — `Ctrl+C` in attached agent views now returns to the jobs list
+- Changed attached-session key handling in [`internal/tui/update.go`](internal/tui/update.go) and [`internal/tui/update_agent_attached.go`](internal/tui/update_agent_attached.go) so `Ctrl+C` no longer quits the whole app when you are inside an attached Agent session. For both tmux-log review and exec-chat attached views, `Ctrl+C` now backs out to the Agents jobs list; hard interrupt remains on uppercase `S`.
+- Updated the in-app footer/help copy in [`internal/tui/view.go`](internal/tui/view.go), the user-facing behavior notes in [`README.md`](README.md), and cleared the matching polish note from [`WORK.md`](WORK.md).
+- Added focused regressions in [`internal/tui/update_agent_test.go`](internal/tui/update_agent_test.go) covering both transcript-focus and input-focus attached sessions. `env GOCACHE=/tmp/go-build-sb go test ./internal/tui -run 'TestUpdateCtrlCLeavesAttached|TestUpdateAgentListLowercaseRRetriesSelectedJob'` passes.
+- Why: quitting the whole dashboard from an attached session was the wrong default once `S` already existed as the explicit "send real Ctrl+C to the job" action.
+
+### 2026-05-01 — README now explains how to author custom role/prompt/hook/engine JSON
+- Expanded [`README.md`](README.md) with a concrete "build your own stack" section for Agent Setup power users: the four library directories (`prompts`, `hooks`, `providers`, `presets`), minimal JSON examples for each, and the key composition rules around `prompt_id`, ordered `hook_bundle_ids`, `engine_id`, permissions, and launch modes.
+- Updated [`WORK.md`](WORK.md) to drop the old vague "config explanation for ai to help build your own presets etc" backlog item now that the persisted schema and authoring loop are documented in the main README.
+- Why: the UI had become much more capable, but the docs still stopped at naming roles vs engines. This fills the gap for humans or external agents that need to author valid JSON directly instead of reverse-engineering the Go structs.
+
+### 2026-05-01 — Multi-account work narrowed into a decision doc
+- Added [`MULTI_ACCOUNT_OVERHAUL.md`](MULTI_ACCOUNT_OVERHAUL.md) to capture the current Claude/Codex multi-account design thinking before implementation: upstream auth-file reality, the simpler global saved-login swap model, the more advanced per-session isolated-account model, and the recommendation to start with the smaller saved-login CLI surface if this moves forward.
+- Updated [`WORK.md`](WORK.md) to replace the vague multi-account note with an explicit pointer to that design doc so the backlog reflects that this needs a product decision before code.
+- Why: the requirement shifted during discussion from "broad multi-account support" toward "keep everything shared, only swap the login", and then surfaced the separate question of whether simultaneous multi-account tmux sessions should exist. Writing the tradeoffs down is more useful than coding the wrong model.
+
+### 2026-05-01 — Agent Setup hook/preset editing now matches the actual data model better
+- Reworked the Agent Setup edit path in [`internal/tui/update_agent_manage.go`](internal/tui/update_agent_manage.go), [`internal/tui/view_agent_manage.go`](internal/tui/view_agent_manage.go), and [`internal/tui/view_agent.go`](internal/tui/view_agent.go): field specs now carry per-field guidance, select-style fields use a dedicated one-line selector instead of the generic textarea, and the UI now shows the selected field's intent instead of treating every field like the same blob editor.
+- Fixed the worst preset mismatch there: `hook_bundle_id` is stored as a multi-value list, so the UI now edits it as comma-separated bundle ids/names via the selector path instead of pretending it is a single-value cycle. Prompt/engine refs keep the same typed id/name lookup behavior, and hook/prompt JSON fields now seed empty edits with `[]`.
+- Added focused regressions in [`internal/tui/update_agent_test.go`](internal/tui/update_agent_test.go) covering the new hook-bundle selector flow and the empty-hook-array seed behavior. `env GOCACHE=/tmp/go-build-sb go test ./internal/tui -run 'Test(UpdateAgentManage|BeginAgentManageEdit|EndAgentManageEdit|SetAgentManageFieldValue)'` passes.
+- Why: the persistence layer already supported multi-hook presets and JSON hook arrays, but the old Agent Setup interaction flattened that into generic cycle/edit behavior. This pass makes the edit surface line up with what the data actually means.
+
+### 2026-05-01 — New Run selector overrides now have explicit default/none states + typed lookup
+- Reworked the New Run composer selection model in [`internal/tui/update_agent_launch.go`](internal/tui/update_agent_launch.go) and [`internal/tui/view_agent_launch.go`](internal/tui/view_agent_launch.go): Engine now has a real `(role default)` state, Prompt now has both `(role default)` and `(none)`, retry-prefill keeps Engine on role-default when the job did not actually override it, and `e` on Role/Engine/Prompt opens a typed selector instead of forcing pure `j/k` stepping.
+- Mirrored the empty-ref cleanup in Agent Setup by letting `hook_bundle_id` cycle through an explicit empty option too in [`internal/tui/update_agent_manage.go`](internal/tui/update_agent_manage.go), so the launch composer and setup wizard stop disagreeing about what "clear this ref" means.
+- Added focused regressions in [`internal/tui/update_agent_test.go`](internal/tui/update_agent_test.go) for retry-prefill role-default behavior plus typed Engine/Prompt selection. `env GOCACHE=/tmp/go-build-sb go test ./internal/tui -run 'Test(PrepareRetryLaunch|UpdateAgentLaunch|EndAgentManageEdit|SetAgentManageFieldValue|UpdateAgentManage)'` passes.
+- Why: the original "blank option / typable?" bug was really the same UX gap in two places. The New Run composer needed explicit override semantics, and Agent Setup needed the same empty-ref behavior so editing and launching did not feel like two incompatible systems.
+
+### 2026-05-01 — Agent Setup preset refs can now be cleared or typed manually
+- Adjusted Agent Setup field behavior in [`internal/tui/update_agent_manage.go`](internal/tui/update_agent_manage.go) so catalog-backed preset refs (`prompt_id`, `engine_id`) cycle through an explicit empty option on `enter`, while `e` always opens the text editor for manual entry instead of forcing cycle-only interaction.
+- Updated the field-list rendering in [`internal/tui/view_agent.go`](internal/tui/view_agent.go) so empty enum-backed refs render as `(none)` and the inline hint now explains the split between cycle and edit.
+- Added focused regressions in [`internal/tui/update_agent_test.go`](internal/tui/update_agent_test.go) covering both the new empty-cycle path and the new `e`-to-edit path. `go test ./internal/tui` passes with `GOCACHE=/tmp/go-build-sb`; `go test ./...` still hits the existing unrelated `internal/statusbar` failure around `TestRenderTmuxBlockShowsResetMarkerWhenAvailable`.
+- Why: the manage/create preset flow still had a real paper cut where some reference fields could only be stepped through and could not be cleared or manually typed cleanly, which made Agent Setup feel incomplete right where new presets are authored.
+
 ### 2026-05-01 — Ollama no longer gets dead `SB_STATUS` prompt instructions
 - Stopped appending the `Supervisor Protocol` / `SB_STATUS:*` prompt block for `ollama` launches in [`internal/cockpit/hooks.go`](internal/cockpit/hooks.go), while preserving the marker path for Claude/Codex where the tmux supervisor actually consumes it.
 - Fixed queued-job prompt composition order in [`internal/cockpit/manager.go`](internal/cockpit/manager.go) so provider overrides are applied before the prompt is built; a Claude-flavored preset launched with an Ollama engine override now gets the correct Ollama-specific prompt shape.
