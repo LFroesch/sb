@@ -144,7 +144,7 @@ func TestComposeBrief_Order(t *testing.T) {
 		},
 	}
 	sources := []SourceTask{{Text: "do thing"}}
-	out := ComposeBrief(preset, sources, "extra freeform", false)
+	out := ComposeBrief(preset, sources, "extra freeform", false, ExecutorSpec{Type: "claude"})
 	// Simple order check: persona, then BEFORE, then Tasks/do thing, then extra, then AFTER.
 	wantSeq := []string{"persona", "BEFORE", "do thing", "extra freeform", "AFTER"}
 	last := -1
@@ -162,9 +162,20 @@ func TestComposeBrief_Order(t *testing.T) {
 
 func TestComposeBrief_OmitsForemanProtocolBlock(t *testing.T) {
 	preset := LaunchPreset{}
-	out := ComposeBrief(preset, nil, "", true)
+	out := ComposeBrief(preset, nil, "", true, ExecutorSpec{Type: "claude"})
 	if strings.Contains(out, "FOREMAN PROTOCOL") {
 		t.Fatalf("foreman protocol block should be gone; perms enum drives unattended behaviour now:\n%s", out)
+	}
+}
+
+func TestComposeBrief_OmitsSupervisorProtocolForOllama(t *testing.T) {
+	preset := LaunchPreset{SystemPrompt: "Keep it short."}
+	out := ComposeBrief(preset, nil, "", false, ExecutorSpec{Type: "ollama"})
+	if strings.Contains(out, SupervisorWaitingHumanMarker) || strings.Contains(out, SupervisorReadyReviewMarker) {
+		t.Fatalf("ollama brief should not include supervisor markers:\n%s", out)
+	}
+	if strings.Contains(out, "### Supervisor Protocol") {
+		t.Fatalf("ollama brief should not include supervisor protocol block:\n%s", out)
 	}
 }
 

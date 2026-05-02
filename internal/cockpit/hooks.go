@@ -15,6 +15,10 @@ const (
 	SupervisorQuietPeriod        = 10 * time.Second
 )
 
+func includeSupervisorProtocol(spec ExecutorSpec) bool {
+	return !strings.EqualFold(strings.TrimSpace(spec.Type), "ollama")
+}
+
 // ComposeBrief builds the final prompt string handed to the executor.
 // Ordering (top → bottom):
 //
@@ -27,7 +31,7 @@ const (
 // human-readable markdown. File-kind hooks that fail to read are
 // rendered as an inline `(hook failed: <err>)` note — we'd rather the
 // executor see something than silently drop context.
-func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string, foremanManaged bool) string {
+func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string, foremanManaged bool, executor ExecutorSpec) string {
 	var sb strings.Builder
 	if s := strings.TrimSpace(preset.SystemPrompt); s != "" {
 		sb.WriteString(s)
@@ -85,13 +89,15 @@ func ComposeBrief(preset LaunchPreset, sources []SourceTask, freeform string, fo
 
 	_ = foremanManaged
 
-	sb.WriteString("### Supervisor Protocol\n\n")
-	sb.WriteString("When you need the operator to respond in the terminal, print exactly `")
-	sb.WriteString(SupervisorWaitingHumanMarker)
-	sb.WriteString("` on its own line and then stop.\n")
-	sb.WriteString("When the task is done and ready for review, print exactly `")
-	sb.WriteString(SupervisorReadyReviewMarker)
-	sb.WriteString("` on its own line and then stop.\n\n")
+	if includeSupervisorProtocol(executor) {
+		sb.WriteString("### Supervisor Protocol\n\n")
+		sb.WriteString("When you need the operator to respond in the terminal, print exactly `")
+		sb.WriteString(SupervisorWaitingHumanMarker)
+		sb.WriteString("` on its own line and then stop.\n")
+		sb.WriteString("When the task is done and ready for review, print exactly `")
+		sb.WriteString(SupervisorReadyReviewMarker)
+		sb.WriteString("` on its own line and then stop.\n\n")
+	}
 
 	return strings.TrimRight(sb.String(), "\n") + "\n"
 }

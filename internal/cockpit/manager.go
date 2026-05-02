@@ -209,16 +209,16 @@ func (m *Manager) launchQueuedSequence(req LaunchRequest) (Job, error) {
 }
 
 func (m *Manager) createQueuedJob(req LaunchRequest, sources []SourceTask, campaignID CampaignID, queueIndex, queueTotal int) (Job, error) {
-	brief := ComposeBrief(req.Preset, sources, req.Freeform, req.QueueOnly)
+	executor := req.Preset.Executor
+	if req.Provider != nil {
+		executor = *req.Provider
+	}
+	brief := ComposeBrief(req.Preset, sources, req.Freeform, req.QueueOnly, executor)
 	if extra := strings.TrimSpace(req.PromptAdd); extra != "" {
 		brief = strings.TrimRight(brief, "\n") + "\n\n" + extra + "\n"
 	}
 	task := SummarizeTask(sources, req.Freeform)
 	repoStatusAtLaunch := gitStatusSnapshot(req.Repo)
-	executor := req.Preset.Executor
-	if req.Provider != nil {
-		executor = *req.Provider
-	}
 	runner := resolveRunner(executor)
 	j := Job{
 		CampaignID:         campaignID,

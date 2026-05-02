@@ -474,6 +474,44 @@ func TestLaunchJobStoresTaskSummarySeparatelyFromPrompt(t *testing.T) {
 	}
 }
 
+func TestCreateQueuedJob_OmitsSupervisorProtocolWhenProviderOverrideIsOllama(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
+		Socket:       filepath.Join(dir, "state", "foreman.sock"),
+		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
+		LogFile:      filepath.Join(dir, "state", "foreman.log"),
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	job, err := mgr.createQueuedJob(LaunchRequest{
+		Repo: dir,
+		Preset: LaunchPreset{
+			ID:           "senior-dev",
+			Name:         "Senior dev",
+			SystemPrompt: "You are concise.",
+			Executor:     ExecutorSpec{Type: "claude"},
+		},
+		Provider: &ExecutorSpec{Type: "ollama", Model: "qwen2.5:7b"},
+		Freeform: "include a regression test",
+	}, []SourceTask{{File: filepath.Join(dir, "WORK.md"), Line: 1, Text: "fix the bug"}}, "", 0, 1)
+	if err != nil {
+		t.Fatalf("createQueuedJob: %v", err)
+	}
+	if strings.Contains(job.Prompt, SupervisorWaitingHumanMarker) || strings.Contains(job.Prompt, SupervisorReadyReviewMarker) {
+		t.Fatalf("provider override to ollama should omit supervisor markers:\n%s", job.Prompt)
+	}
+}
+
 func TestStopJobMarksTurnStoppedAndReturnsIdle(t *testing.T) {
 	dir := t.TempDir()
 	paths := Paths{

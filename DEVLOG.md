@@ -2,6 +2,12 @@
 
 ## DevLog
 
+### 2026-05-01 — Ollama no longer gets dead `SB_STATUS` prompt instructions
+- Stopped appending the `Supervisor Protocol` / `SB_STATUS:*` prompt block for `ollama` launches in [`internal/cockpit/hooks.go`](internal/cockpit/hooks.go), while preserving the marker path for Claude/Codex where the tmux supervisor actually consumes it.
+- Fixed queued-job prompt composition order in [`internal/cockpit/manager.go`](internal/cockpit/manager.go) so provider overrides are applied before the prompt is built; a Claude-flavored preset launched with an Ollama engine override now gets the correct Ollama-specific prompt shape.
+- Added focused regressions in [`internal/cockpit/presets_test.go`](internal/cockpit/presets_test.go) and [`internal/cockpit/manager_test.go`](internal/cockpit/manager_test.go) covering both direct Ollama briefs and the provider-override case.
+- Why: Ollama runs use the exec/replay path and never consume `SB_STATUS`, so the marker instructions were pure prompt pollution for the weakest local model path.
+
 ### 2026-05-01 — Discovery blacklist now applies during WORK.md scanning + config surfaced
 - Wired `workmd.Discover` through `Config.IsScanPathBlocked()` so recursive scan roots and flat idea dirs both skip blacklisted paths before they are loaded into the dashboard/index/routing context. Added focused regression coverage for both code paths. Files: [`internal/workmd/workmd.go`](internal/workmd/workmd.go), [`internal/workmd/naming_test.go`](internal/workmd/naming_test.go).
 - Documented the newer config surface in [`README.md`](README.md): `default_preset_id`, recurring `foreman_claude_pauses`, and the path-based discovery blacklist fields, including the common Claude 2x-style pause window example.
