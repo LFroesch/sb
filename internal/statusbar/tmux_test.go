@@ -25,7 +25,7 @@ func TestRenderTmuxBlockShowsResetMarkerWhenAvailable(t *testing.T) {
 	if !strings.Contains(out, " @3pm") {
 		t.Fatalf("renderTmuxBlock 5h reset marker missing: %q", out)
 	}
-	if !strings.Contains(out, "7d ") {
+	if !strings.Contains(out, "7d:") {
 		t.Fatalf("renderTmuxBlock missing seven-day segment: %q", out)
 	}
 	if !strings.Contains(out, " @5/5") {

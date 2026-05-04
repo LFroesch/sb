@@ -192,17 +192,17 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "i":
 		j, ok := m.cockpitClient.GetJob(m.attachedJobID)
 		if ok && j.Runner == cockpit.RunnerTmux {
-			m.statusMsg = "tmux jobs attach natively while live; this panel is for log/review"
+			m.statusMsg = "live tmux runs stay native; this panel is for output and review"
 			m.statusExpiry = time.Now().Add(3 * time.Second)
 			return m, nil
 		}
 		if !ok || j.Status == cockpit.StatusCompleted || j.Status == cockpit.StatusFailed || j.Status == cockpit.StatusBlocked {
-			m.statusMsg = "job is finished — no follow-up turns"
+			m.statusMsg = "run is finished — no follow-up turns"
 			m.statusExpiry = time.Now().Add(2 * time.Second)
 			return m, nil
 		}
 		if j.Status == cockpit.StatusRunning {
-			m.statusMsg = "turn in flight — wait for it to finish"
+			m.statusMsg = "response in flight — wait for it to finish"
 			m.statusExpiry = time.Now().Add(2 * time.Second)
 			return m, nil
 		}

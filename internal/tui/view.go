@@ -831,8 +831,13 @@ func (m model) renderFooter() string {
 			add("enter", "continue")
 		case modeAgentLaunch:
 			add("tab", "focus")
-			add("enter", "launch")
-			add("alt+enter", "launch from note")
+			if m.launchFocus == m.launchReviewFocus() {
+				add("enter", "launch")
+			} else {
+				add("enter", "continue")
+			}
+			add("alt+enter", "launch")
+			add("a", "toggle advanced")
 			add("ctrl+t", "toggle Foreman")
 			if m.launchFocus == m.launchNoteFocus() {
 				inInput = true
@@ -853,8 +858,36 @@ func (m model) renderFooter() string {
 				add("c", "send continue")
 			}
 		case modeAgentManage:
-			if m.agentManageEditing {
+			if m.agentManageHookEditing {
+				if m.agentManageEditing {
+					if spec, ok := m.agentManageHookCurrentFieldSpec(); ok && !spec.Multiline {
+						add("enter", "save field")
+					}
+					add("ctrl+s", "save field")
+					add("esc", "cancel field")
+					inInput = true
+				} else if m.agentManageSelectEditing {
+					add("enter", "save field")
+					add("esc", "cancel field")
+					inInput = true
+				} else {
+					add("tab", "focus")
+					add("enter", "edit / open")
+					add("a", "add row")
+					add("d", "delete row")
+					add("D", "duplicate row")
+					add("[/]", "move row")
+					add("ctrl+s", "save bundle")
+				}
+			} else if m.agentManageEditing {
+				if spec, ok := m.currentAgentManageFieldSpec(); ok && !spec.Multiline {
+					add("enter", "save")
+				}
 				add("ctrl+s", "save")
+				add("esc", "cancel")
+				inInput = true
+			} else if m.agentManageSelectEditing {
+				add("enter", "save")
 				add("esc", "cancel")
 				inInput = true
 			} else {
@@ -966,15 +999,16 @@ func (m model) helpLines() []string {
 		}},
 		{"Agents", []struct{ key, desc string }{
 			{"n", "New run (pick a task file or skip task lines)"},
-			{"m", "Open advanced Agent Setup (templates/runtimes; edit/add/duplicate/delete)"},
+			{"m", "Open Advanced Setup (roles, prompts, hooks, engines)"},
 			{"F", "List: toggle Foreman on/off"},
 			{"ctrl+t", "New run: toggle immediate launch vs send to Foreman"},
 			{"f / tab", "List: cycle job filters"},
 			{"space", "Toggle task in picker"},
 			{"b", "Picker: back to file list"},
-			{"tab", "New run: cycle template → runtime → repo → note → review · Attached exec-chat: swap transcript ↔ input"},
-			{"enter", "Launch · open selected job (tmux attach if live, activity/review if finished, chat for exec jobs) · send when typing"},
-			{"alt+enter", "Launch from note"},
+			{"tab", "New run: cycle role → engine → repo → note → review (advanced overrides optional) · Advanced Setup: cycle item/field focus, then groups · Attached exec-chat: swap transcript ↔ input"},
+			{"enter", "New run: continue, note → review, then launch from review · Advanced Setup: open/save overlay editor · open selected job · send when typing"},
+			{"alt+enter", "Launch directly from note"},
+			{"a", "New run: show/hide prompt, hook, and permission overrides"},
 			{"i", "List: attach/focus selected job (tmux attach while live) · Attached exec-chat: focus input"},
 			{"ctrl+g", "Live tmux session: jump back to the shared sb main window"},
 			{"ctrl+c", "Attached view: return to the jobs list"},

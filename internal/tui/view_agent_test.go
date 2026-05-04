@@ -471,11 +471,11 @@ func TestRenderAgentManageUsesLibraryLanguage(t *testing.T) {
 	}}
 
 	out := m.renderAgentManage()
-	if !strings.Contains(out, "Agent Setup") {
-		t.Fatalf("renderAgentManage missing Agent Setup title: %q", out)
+	if !strings.Contains(out, "Advanced Setup") {
+		t.Fatalf("renderAgentManage missing Advanced Setup title: %q", out)
 	}
-	if !strings.Contains(out, "Templates") {
-		t.Fatalf("renderAgentManage missing Templates label: %q", out)
+	if !strings.Contains(out, "Roles") {
+		t.Fatalf("renderAgentManage missing Roles label: %q", out)
 	}
 	if !strings.Contains(out, "Editable Fields") {
 		t.Fatalf("renderAgentManage missing grouped field section: %q", out)
@@ -804,6 +804,56 @@ func TestAgentManageEditingViewFitsShortTerminal(t *testing.T) {
 	m.agentManageEditor.SetHeight(8)
 	m.agentManageEditor.SetValue(strings.Repeat("prompt line\n", 20))
 	assertViewFitsHeight(t, m)
+}
+
+func TestRenderAgentManageSelectOverlayShowsChoices(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentManage
+	m.width = 100
+	m.height = 30
+	m.agentManageKind = "preset"
+	m.agentManageSelectEditing = true
+	m.agentManageField = 3
+	m.cockpitPrompts = []cockpit.PromptTemplate{
+		{ID: "senior-dev", Name: "Senior dev"},
+		{ID: "bug-fixer", Name: "Bug fixer"},
+	}
+	m.agentManageSelectInput.SetValue("senior-dev")
+
+	out := xansi.Strip(m.renderAgentManage())
+	if !strings.Contains(out, "Edit Prompt") {
+		t.Fatalf("renderAgentManage missing overlay title: %q", out)
+	}
+	if !strings.Contains(out, "Choices") {
+		t.Fatalf("renderAgentManage missing choices section: %q", out)
+	}
+	if !strings.Contains(out, "bug-fixer") {
+		t.Fatalf("renderAgentManage missing prompt choice list: %q", out)
+	}
+}
+
+func TestRenderAgentManageHookOverlayShowsStructuredEditor(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentManage
+	m.width = 100
+	m.height = 24
+	m.agentManageKind = "hookbundle"
+	m.agentManageHookEditing = true
+	m.agentManageHookArrayKey = "pre_shell"
+	m.agentManageShellDraft = []cockpit.ShellHook{{Name: "Git status", Cmd: "git status --short"}}
+
+	out := xansi.Strip(m.renderAgentManage())
+	if !strings.Contains(out, "hook editor") {
+		t.Fatalf("renderAgentManage missing hook editor title: %q", out)
+	}
+	if !strings.Contains(out, "Git status") {
+		t.Fatalf("renderAgentManage missing hook row label: %q", out)
+	}
+	if !strings.Contains(out, "Command") {
+		t.Fatalf("renderAgentManage missing structured field list: %q", out)
+	}
 }
 
 func TestAgentPickerKeepsCursorVisibleOnShortTerminal(t *testing.T) {

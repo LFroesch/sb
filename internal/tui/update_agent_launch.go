@@ -27,6 +27,7 @@ func (m *model) resetAgentLaunch() {
 	m.launchHookOverride = false
 	m.launchHookSelected = map[string]bool{}
 	m.launchPermsIdx = 0
+	m.launchShowAdvanced = false
 	m.launchReviewOffset = 0
 	m.launchQueueOnly = false
 	m.launchSelectEditing = false
@@ -60,11 +61,7 @@ func (m model) launchRepoFocus() int {
 }
 
 func (m model) launchFocusCount() int {
-	// 5 override tabs + (repo) + note + review
-	if m.launchHasRepoStep() {
-		return 8
-	}
-	return 7
+	return len(m.launchVisibleFocuses())
 }
 
 func (m model) launchNoteFocus() int {
@@ -113,10 +110,55 @@ func launchPermsIndex(value string) int {
 }
 
 func (m *model) normalizeLaunchFocus() {
-	max := m.launchFocusCount() - 1
-	if m.launchFocus > max {
-		m.launchFocus = max
+	visible := m.launchVisibleFocuses()
+	if len(visible) == 0 {
+		m.launchFocus = launchFocusRole
+		return
 	}
+	for _, focus := range visible {
+		if m.launchFocus == focus {
+			return
+		}
+	}
+	m.launchFocus = visible[0]
+}
+
+func (m model) launchOverridesActive() bool {
+	promptOverride := m.launchPromptIdx == launchPromptNone ||
+		(m.launchPromptIdx >= 0 && m.launchPromptIdx < len(m.cockpitPrompts))
+	return promptOverride || m.launchHookOverride || m.launchPermsIdx != 0
+}
+
+func (m model) launchAdvancedVisible() bool {
+	return m.launchShowAdvanced || m.launchOverridesActive()
+}
+
+func (m model) launchVisibleFocuses() []int {
+	focuses := []int{launchFocusRole, launchFocusEngine}
+	if m.launchAdvancedVisible() {
+		focuses = append(focuses, launchFocusPrompt, launchFocusHooks, launchFocusPerms)
+	}
+	if m.launchHasRepoStep() {
+		focuses = append(focuses, m.launchRepoFocus())
+	}
+	focuses = append(focuses, m.launchNoteFocus(), m.launchReviewFocus())
+	return focuses
+}
+
+func (m *model) cycleLaunchFocus(delta int) {
+	visible := m.launchVisibleFocuses()
+	if len(visible) == 0 {
+		return
+	}
+	current := 0
+	for i, focus := range visible {
+		if focus == m.launchFocus {
+			current = i
+			break
+		}
+	}
+	next := (current + delta + len(visible)) % len(visible)
+	m.launchFocus = visible[next]
 }
 
 func (m *model) moveLaunchFocusToNote() tea.Cmd {
@@ -136,6 +178,11 @@ func (m *model) prepareRetryLaunch(j cockpit.Job) tea.Cmd {
 	}
 	m.launchBrief.SetValue(j.Freeform)
 	m.launchQueueOnly = j.ForemanManaged
+	m.launchShowAdvanced = strings.TrimSpace(j.Prompt) != "" ||
+		j.Permissions != "" ||
+		len(j.Hooks.Prompt) > 0 ||
+		len(j.Hooks.PreShell) > 0 ||
+		len(j.Hooks.PostShell) > 0
 
 	for i, p := range m.cockpitPresets {
 		if p.ID == j.PresetID {
@@ -422,7 +469,7 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab":
 		m.normalizeLaunchFocus()
-		m.launchFocus = (m.launchFocus + 1) % m.launchFocusCount()
+		m.cycleLaunchFocus(+1)
 		if m.launchFocus == m.launchNoteFocus() {
 			m.launchBrief.Focus()
 			return m, m.launchBrief.Cursor.BlinkCmd()
@@ -431,7 +478,7 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "shift+tab":
 		m.normalizeLaunchFocus()
-		m.launchFocus = (m.launchFocus + m.launchFocusCount() - 1) % m.launchFocusCount()
+		m.cycleLaunchFocus(-1)
 		if m.launchFocus == m.launchNoteFocus() {
 			m.launchBrief.Focus()
 			return m, m.launchBrief.Cursor.BlinkCmd()
@@ -444,8 +491,8 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// protocol but we accept it when it does land.
 		return m.doLaunch()
 	case "enter":
-		// Enter launches from the preset/provider pickers. When the brief
-		// textarea has focus, enter inserts a newline (handled below).
+		// Enter advances the guided path. The Review step is the only place
+		// where plain Enter actually launches.
 		// On the Repo tab, enter confirms the repo choice and advances to
 		// the note editor; if the "(custom path...)" sentinel is selected,
 		// it first opens the inline path editor.
@@ -464,14 +511,38 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.toggleLaunchHookAtCursor()
 			return m, nil
 		}
-		if m.launchFocus != m.launchNoteFocus() {
+		if m.launchFocus == m.launchReviewFocus() {
 			return m.doLaunch()
+		}
+		if m.launchFocus == m.launchNoteFocus() {
+			m.launchBrief.Blur()
+			m.launchFocus = m.launchReviewFocus()
+			return m, nil
+		}
+		if m.launchFocus != m.launchNoteFocus() {
+			m.cycleLaunchFocus(+1)
+			if m.launchFocus == m.launchNoteFocus() {
+				m.launchBrief.Focus()
+				return m, m.launchBrief.Cursor.BlinkCmd()
+			}
+			return m, nil
 		}
 	case " ", "space", "x":
 		if m.launchFocus == launchFocusHooks {
 			m.toggleLaunchHookAtCursor()
 			return m, nil
 		}
+	case "a":
+		m.launchShowAdvanced = !m.launchShowAdvanced
+		if !m.launchShowAdvanced && !m.launchOverridesActive() {
+			m.normalizeLaunchFocus()
+			if m.launchFocus == m.launchNoteFocus() {
+				m.launchBrief.Focus()
+				return m, m.launchBrief.Cursor.BlinkCmd()
+			}
+			m.launchBrief.Blur()
+		}
+		return m, nil
 	case "e":
 		if cmd := m.beginLaunchSelectionEdit(); cmd != nil {
 			return m, cmd

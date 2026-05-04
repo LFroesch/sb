@@ -191,6 +191,7 @@ type model struct {
 	launchPermsIdx      int             // 0 = role default, 1=read-only, 2=scoped-write, 3=wide-open
 	launchBrief         textarea.Model
 	launchFocus         int // 0=role 1=engine 2=prompt 3=hooks 4=perms [5=repo] note review
+	launchShowAdvanced  bool
 	launchReviewOffset  int
 	launchQueueOnly     bool
 	launchRepoCustom    textinput.Model // active when typing a custom repo path
@@ -216,6 +217,13 @@ type model struct {
 	agentManageWizard        bool // n-just-pressed, auto-advance groups on save
 	agentManageListOffset    int
 	agentManageDetailOffset  int
+	agentManageHookEditing   bool
+	agentManageHookFocus     int
+	agentManageHookCursor    int
+	agentManageHookField     int
+	agentManageHookArrayKey  string
+	agentManagePromptDraft   []cockpit.PromptHook
+	agentManageShellDraft    []cockpit.ShellHook
 	agentManageEditing       bool
 	agentManageEditor        textarea.Model
 	agentManageSelectEditing bool

@@ -23,16 +23,16 @@ func (m model) renderAgentLaunch() string {
 		}
 		return dimStyle.Render("  " + name)
 	}
-	subtabs := tab("Role", launchFocusRole) + dimStyle.Render("  ·  ") +
-		tab("Engine", launchFocusEngine) + dimStyle.Render("  ·  ") +
-		tab("Prompt", launchFocusPrompt) + dimStyle.Render("  ·  ") +
-		tab("Hooks", launchFocusHooks) + dimStyle.Render("  ·  ") +
-		tab("Perms", launchFocusPerms)
-	if m.launchHasRepoStep() {
-		subtabs += dimStyle.Render("  ·  ") + tab("Repo", m.launchRepoFocus())
+	var tabs []string
+	tabs = append(tabs, tab("Role", launchFocusRole), tab("Engine", launchFocusEngine))
+	if m.launchAdvancedVisible() {
+		tabs = append(tabs, tab("Prompt", launchFocusPrompt), tab("Hooks", launchFocusHooks), tab("Perms", launchFocusPerms))
 	}
-	subtabs += dimStyle.Render("  ·  ") + tab("Note", m.launchNoteFocus()) +
-		dimStyle.Render("  ·  ") + tab("Review", m.launchReviewFocus())
+	if m.launchHasRepoStep() {
+		tabs = append(tabs, tab("Repo", m.launchRepoFocus()))
+	}
+	tabs = append(tabs, tab("Note", m.launchNoteFocus()), tab("Review", m.launchReviewFocus()))
+	subtabs := strings.Join(tabs, dimStyle.Render("  ·  "))
 
 	lines := m.renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel)
 	queueMode := "start now"
@@ -81,7 +81,7 @@ func (m model) renderAgentLaunch() string {
 
 	switch {
 	case m.launchFocus == launchFocusRole:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Role"), dimStyle.Render("  reusable run behavior and defaults · e to type one"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Step 1 · Choose Role"), dimStyle.Render("  reusable run behavior and defaults · enter continues · e types a match"), "")
 		if m.launchSelectEditing {
 			lines = append(lines, dimStyle.Render("  type role id/name · enter to select · esc to cancel"))
 			lines = append(lines, "  "+m.launchSelectInput.View(), "")
@@ -96,7 +96,7 @@ func (m model) renderAgentLaunch() string {
 		}
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchPresetIdx, listRows), listRows)...)
 	case m.launchFocus == launchFocusEngine:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Engine"), dimStyle.Render("  concrete CLI / model to run · e to type one or blank back to role default"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Step 2 · Choose Engine"), dimStyle.Render("  concrete CLI / model to run · enter continues · e types one"), "")
 		if m.launchSelectEditing {
 			lines = append(lines, dimStyle.Render("  type engine id/name · blank = role default · enter to select · esc to cancel"))
 			lines = append(lines, "  "+m.launchSelectInput.View(), "")
@@ -115,7 +115,7 @@ func (m model) renderAgentLaunch() string {
 		cursor := m.launchProviderIdx + 1
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusPrompt:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Prompt"), dimStyle.Render("  override the role's system prompt for this run · e to type one"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Advanced · Prompt Override"), dimStyle.Render("  per-run system prompt override · e to type one"), "")
 		if m.launchSelectEditing {
 			lines = append(lines, dimStyle.Render("  type prompt id/name · blank = none · 'default' = role default"))
 			lines = append(lines, "  "+m.launchSelectInput.View(), "")
@@ -129,7 +129,7 @@ func (m model) renderAgentLaunch() string {
 		cursor := m.launchPromptIdx + 2
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusHooks:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Hook Bundles"), dimStyle.Render("  space/enter toggles · multiple bundles compose · (role default) clears overrides"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Advanced · Hook Bundles"), dimStyle.Render("  space/enter toggles · multiple bundles compose · (role default) clears overrides"), "")
 		var options []string
 		options = append(options, launchHookRow("(role default)", !m.launchHookOverride, m.launchHookCursor == -1, false))
 		for i, b := range m.cockpitHookBundles {
@@ -139,14 +139,14 @@ func (m model) renderAgentLaunch() string {
 		cursor := m.launchHookCursor + 1
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), cursor, listRows), listRows)...)
 	case m.launchFocus == launchFocusPerms:
-		lines = append(lines, panelHeaderStyle.Render("  Choose Permissions"), dimStyle.Render("  override the role's permission level for this run"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Advanced · Permissions"), dimStyle.Render("  per-run permission override"), "")
 		var options []string
 		for i, label := range launchPermsLabels {
 			options = append(options, launchOverrideOption(label, m.launchPermsIdx == i))
 		}
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchPermsIdx, listRows), listRows)...)
 	case m.launchHasRepoStep() && m.launchFocus == m.launchRepoFocus():
-		lines = append(lines, panelHeaderStyle.Render("  Choose Repo"))
+		lines = append(lines, panelHeaderStyle.Render("  Step 3 · Choose Repo"))
 		if m.launchRepoEditing {
 			lines = append(lines, "")
 		} else {
@@ -195,7 +195,7 @@ func (m model) renderAgentLaunch() string {
 			briefH = 1
 		}
 		m.launchBrief.SetHeight(briefH)
-		lines = append(lines, panelHeaderStyle.Render("  Note"), dimStyle.Render("  optional note for this specific run"))
+		lines = append(lines, panelHeaderStyle.Render("  Step 4 · Note"), dimStyle.Render("  optional run note · enter to review · alt+enter launches now"), "")
 		lines = append(lines, m.launchBrief.View())
 	case m.launchFocus == m.launchReviewFocus():
 		lines = append(lines, scrollWindow(launchReviewLines(m), m.launchReviewOffset, visibleRows)...)
@@ -213,7 +213,22 @@ func (m model) renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel 
 		title += "   " + dimStyle.Render("[Start now]")
 	}
 	lines = append(lines, title+"   "+subtabs, "")
-	lines = append(lines, "")
+	if m.width >= 48 {
+		flowHint := dimStyle.Render("  path: role -> engine")
+		if m.launchHasRepoStep() {
+			flowHint += dimStyle.Render(" -> repo")
+		}
+		flowHint += dimStyle.Render(" -> note -> review")
+		if m.launchAdvancedVisible() {
+			flowHint += dimStyle.Render("  ·  ")
+			flowHint += accentStyle.Render("advanced overrides visible")
+			flowHint += dimStyle.Render(" (a to hide)")
+		} else {
+			flowHint += dimStyle.Render("  ·  advanced overrides hidden (a to show)")
+		}
+		lines = append(lines, wrapLines(flowHint, maxInt(20, m.width-4))...)
+		lines = append(lines, "")
+	}
 
 	summary := dimStyle.Render("  role=") + textStyle.Render(presetLabel) +
 		dimStyle.Render("  engine=") + textStyle.Render(providerLabel) +
@@ -294,8 +309,11 @@ func launchHookRow(label string, selected, atCursor, showCheckbox bool) string {
 
 func launchRepoPathLabel(path string) string {
 	path = strings.TrimSpace(path)
-	if path == "" || path == repoSentinelCustom {
+	if path == "" {
 		return path
+	}
+	if path == repoSentinelCustom {
+		return "(custom path…)"
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -324,16 +342,16 @@ func (m model) launchReviewVisibleRows() int {
 		}
 		return dimStyle.Render("  " + name)
 	}
-	subtabs := tab("Role", launchFocusRole) + dimStyle.Render("  ·  ") +
-		tab("Engine", launchFocusEngine) + dimStyle.Render("  ·  ") +
-		tab("Prompt", launchFocusPrompt) + dimStyle.Render("  ·  ") +
-		tab("Hooks", launchFocusHooks) + dimStyle.Render("  ·  ") +
-		tab("Perms", launchFocusPerms)
-	if m.launchHasRepoStep() {
-		subtabs += dimStyle.Render("  ·  ") + tab("Repo", m.launchRepoFocus())
+	var tabs []string
+	tabs = append(tabs, tab("Role", launchFocusRole), tab("Engine", launchFocusEngine))
+	if m.launchAdvancedVisible() {
+		tabs = append(tabs, tab("Prompt", launchFocusPrompt), tab("Hooks", launchFocusHooks), tab("Perms", launchFocusPerms))
 	}
-	subtabs += dimStyle.Render("  ·  ") + tab("Note", m.launchNoteFocus()) +
-		dimStyle.Render("  ·  ") + tab("Review", m.launchReviewFocus())
+	if m.launchHasRepoStep() {
+		tabs = append(tabs, tab("Repo", m.launchRepoFocus()))
+	}
+	tabs = append(tabs, tab("Note", m.launchNoteFocus()), tab("Review", m.launchReviewFocus()))
+	subtabs := strings.Join(tabs, dimStyle.Render("  ·  "))
 
 	lines := m.renderAgentLaunchPrefixLines(subtabs, presetLabel, providerLabel)
 	queueLines := 2

@@ -78,6 +78,33 @@ func TestUpdateAgentLaunchNoteAllowsUppercaseF(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentLaunchEnterFromNoteAdvancesToReview(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentLaunch
+	m.launchSources = []cockpit.SourceTask{{Text: "keep draft state"}}
+	m.launchFocus = m.launchNoteFocus()
+	m.launchRepo = "/tmp/demo"
+	m.launchBrief.SetValue("tighten the launcher")
+	m.launchBrief.Focus()
+
+	got, cmd := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyEnter})
+	next := got.(model)
+
+	if next.launchFocus != next.launchReviewFocus() {
+		t.Fatalf("launchFocus = %d, want review focus %d", next.launchFocus, next.launchReviewFocus())
+	}
+	if next.launchBrief.Value() != "tighten the launcher" {
+		t.Fatalf("launchBrief = %q, want preserved note", next.launchBrief.Value())
+	}
+	if next.launchBrief.Focused() {
+		t.Fatalf("launchBrief should blur after advancing to review")
+	}
+	if cmd != nil {
+		t.Fatalf("enter from note should not return a command")
+	}
+}
+
 func TestPrepareRetryLaunchPrefillsComposerFromJob(t *testing.T) {
 	m := newModel(nil)
 	m.page = pageAgent
@@ -475,7 +502,7 @@ func TestEndAgentManageEditUpdatesPresetPromptAfterReload(t *testing.T) {
 	}
 }
 
-func TestUpdateAgentManageCyclesPresetPromptAndRefreshesSelection(t *testing.T) {
+func TestUpdateAgentManageEnterOpensPromptSelectorOverlay(t *testing.T) {
 	dir := t.TempDir()
 	promptA := cockpit.PromptTemplate{ID: "senior-dev", Name: "Senior dev", Body: "A"}
 	promptB := cockpit.PromptTemplate{ID: "bug-fixer", Name: "Bug fixer", Body: "B"}
@@ -524,15 +551,15 @@ func TestUpdateAgentManageCyclesPresetPromptAndRefreshesSelection(t *testing.T) 
 	got, _ := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
 	next := got.(model)
 
-	if got := next.cockpitPresets[next.agentManageCursor].PromptID; got != "bug-fixer" {
-		t.Fatalf("cycled preset prompt_id = %q, want bug-fixer", got)
+	if !next.agentManageSelectEditing {
+		t.Fatalf("agentManageSelectEditing = false, want true")
 	}
-	if got := next.cockpitPresets[next.agentManageCursor].SystemPrompt; got != "B" {
-		t.Fatalf("cycled preset system prompt = %q, want B", got)
+	if got := next.agentManageSelectInput.Value(); got != "senior-dev" {
+		t.Fatalf("selector value = %q, want existing prompt id", got)
 	}
 }
 
-func TestUpdateAgentManageCyclesPresetPromptToNone(t *testing.T) {
+func TestUpdateAgentManagePromptSelectorClearsPromptOnBlank(t *testing.T) {
 	dir := t.TempDir()
 	prompt := cockpit.PromptTemplate{ID: "senior-dev", Name: "Senior dev", Body: "A"}
 	provider := cockpit.ProviderProfile{ID: "codex", Name: "Codex", Executor: cockpit.ExecutorSpec{Type: "codex"}}
@@ -574,14 +601,24 @@ func TestUpdateAgentManageCyclesPresetPromptToNone(t *testing.T) {
 		}
 	}
 
-	got, _ := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
+	got, cmd := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
 	next := got.(model)
+	if !next.agentManageSelectEditing {
+		t.Fatalf("agentManageSelectEditing = false, want true")
+	}
+	if cmd == nil {
+		t.Fatalf("enter should open selector overlay")
+	}
+
+	next.agentManageSelectInput.SetValue("")
+	got, _ = next.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
+	next = got.(model)
 
 	if got := next.cockpitPresets[next.agentManageCursor].PromptID; got != "" {
-		t.Fatalf("cycled preset prompt_id = %q, want empty", got)
+		t.Fatalf("prompt_id = %q, want empty", got)
 	}
 	if got := next.cockpitPresets[next.agentManageCursor].SystemPrompt; got != "" {
-		t.Fatalf("cycled preset system prompt = %q, want empty", got)
+		t.Fatalf("system prompt = %q, want empty", got)
 	}
 }
 
@@ -701,6 +738,133 @@ func TestBeginAgentManageEditSeedsEmptyHookJSONWithArray(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatalf("beginAgentManageEdit should return blink cmd")
+	}
+}
+
+func TestUpdateAgentManageOpensStructuredHookOverlay(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentManage
+	m.agentManageKind = "hookbundle"
+	m.agentManageFocus = 1
+	m.cockpitHookBundles = []cockpit.HookBundle{{ID: "hooks", Name: "Hooks"}}
+	for i, spec := range m.agentManageFieldSpecs() {
+		if spec.Key == "pre_shell" {
+			m.agentManageField = i
+			break
+		}
+	}
+
+	got, _ := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
+	next := got.(model)
+
+	if !next.agentManageHookEditing {
+		t.Fatalf("agentManageHookEditing = false, want true")
+	}
+	if next.agentManageHookArrayKey != "pre_shell" {
+		t.Fatalf("agentManageHookArrayKey = %q, want pre_shell", next.agentManageHookArrayKey)
+	}
+}
+
+func TestStructuredHookOverlaySavesShellHookCommand(t *testing.T) {
+	dir := t.TempDir()
+	original := cockpit.HookBundle{
+		ID:   "hooks",
+		Name: "Hooks",
+	}
+	if err := cockpit.SaveHookBundle(dir, original); err != nil {
+		t.Fatalf("SaveHookBundle(original): %v", err)
+	}
+
+	m := newModel(nil)
+	m.mode = modeAgentManage
+	m.cockpitPaths = cockpit.Paths{HooksDir: dir}
+	m.cockpitHookBundles = []cockpit.HookBundle{original}
+	m.agentManageKind = "hookbundle"
+	m.agentManageCursor = 0
+	m.agentManageHookEditing = true
+	m.agentManageHookArrayKey = "pre_shell"
+	m.addAgentManageHookRow()
+	m.agentManageHookField = 1 // cmd
+
+	cmd := m.beginAgentManageHookFieldEdit()
+	if cmd == nil {
+		t.Fatalf("beginAgentManageHookFieldEdit should return blink cmd")
+	}
+	m.agentManageEditor.SetValue("git status --short")
+	m.endAgentManageHookFieldEdit(true)
+	m.endAgentManageHookEdit(true)
+
+	if len(m.cockpitHookBundles) != 1 {
+		t.Fatalf("cockpitHookBundles len = %d, want 1", len(m.cockpitHookBundles))
+	}
+	if got := m.cockpitHookBundles[0].PreShell[0].Cmd; got != "git status --short" {
+		t.Fatalf("PreShell[0].Cmd = %q, want git status --short", got)
+	}
+}
+
+func TestStructuredHookOverlayCanReorderAndDuplicateRows(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentManage
+	m.agentManageHookEditing = true
+	m.agentManageHookArrayKey = "pre_shell"
+	m.agentManageShellDraft = []cockpit.ShellHook{
+		{Name: "First", Cmd: "first"},
+		{Name: "Second", Cmd: "second"},
+	}
+	m.agentManageHookCursor = 1
+	m.agentManageHookFocus = 0
+
+	got, _ := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	next := got.(model)
+	if next.agentManageShellDraft[0].Name != "Second" || next.agentManageHookCursor != 0 {
+		t.Fatalf("reorder up failed: %#v cursor=%d", next.agentManageShellDraft, next.agentManageHookCursor)
+	}
+
+	got, _ = next.updateAgentManage(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	next = got.(model)
+	if len(next.agentManageShellDraft) != 3 {
+		t.Fatalf("len(agentManageShellDraft) = %d, want 3", len(next.agentManageShellDraft))
+	}
+	if next.agentManageShellDraft[1].Name != "Second" {
+		t.Fatalf("duplicated row = %#v, want duplicate inserted after current row", next.agentManageShellDraft)
+	}
+}
+
+func TestUpdateAgentManageEnterSavesSingleLineEdit(t *testing.T) {
+	dir := t.TempDir()
+	original := cockpit.LaunchPreset{
+		ID:          "senior-dev",
+		Name:        "Senior dev",
+		LaunchMode:  cockpit.LaunchModeSingleJob,
+		Permissions: "scoped-write",
+	}
+	if err := cockpit.SavePreset(dir, original); err != nil {
+		t.Fatalf("SavePreset(original): %v", err)
+	}
+
+	m := newModel(nil)
+	m.mode = modeAgentManage
+	m.cockpitPaths = cockpit.Paths{PresetsDir: dir, ProvidersDir: dir, PromptsDir: dir, HooksDir: dir}
+	m.cockpitPresets = []cockpit.LaunchPreset{original}
+	m.agentManageKind = "preset"
+	m.agentManageCursor = 0
+	for i, spec := range m.agentManageFieldSpecs() {
+		if spec.Key == "name" {
+			m.agentManageField = i
+			break
+		}
+	}
+	m.agentManageEditing = true
+	m.agentManageEditor.SetValue("Senior dev trimmed")
+
+	got, _ := m.updateAgentManage(tea.KeyMsg{Type: tea.KeyEnter})
+	next := got.(model)
+
+	if next.agentManageEditing {
+		t.Fatalf("agentManageEditing = true, want false")
+	}
+	if got := next.cockpitPresets[next.agentManageCursor].Name; got != "Senior dev trimmed" {
+		t.Fatalf("selected preset name = %q, want Senior dev trimmed", got)
 	}
 }
 

@@ -82,7 +82,7 @@ func (m *model) attachedExecHeaderLines(j cockpit.Job, lineWidth int) []string {
 	statusText, statusStyle := jobOperatorStatus(j)
 
 	var lines []string
-	header := titleStyle.Render("Chat")
+	header := titleStyle.Render("Run")
 	header += dimStyle.Render("  ·  ")
 	header += primaryStyle.Bold(true).Render(j.PresetID)
 	header += dimStyle.Render("  ·  ")
@@ -166,7 +166,7 @@ func (m *model) attachedExecFooterLines(j cockpit.Job, panelHeight, innerHeight,
 		return footerLines
 	}
 
-	return append(footerLines, wrapLines(dimStyle.Render("conversation ended"), lineWidth)...)
+	return append(footerLines, wrapLines(dimStyle.Render("run ended"), lineWidth)...)
 }
 
 func (m *model) attachedExecViewportDims(j cockpit.Job) (contentWidth, viewportHeight int, separator bool) {
@@ -249,7 +249,7 @@ func (m model) renderAttachedTmux(j cockpit.Job) string {
 
 	var lines []string
 	statusText, statusStyle := jobOperatorStatus(j)
-	header := titleStyle.Render("Session: ") + j.PresetID + "  " + statusStyle.Render(statusText)
+	header := titleStyle.Render("Run: ") + j.PresetID + "  " + statusStyle.Render(statusText)
 	header += dimStyle.Render("  " + describeExecutor(j.Executor))
 	lines = append(lines, wrapLines(header, lineWidth)...)
 
@@ -295,9 +295,9 @@ func (m model) renderAttachedTmux(j cockpit.Job) string {
 	m.attachedInput.SetWidth(m.attachedInputWidth())
 	var footerLines []string
 	if isLive {
-		footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux window"), lineWidth))
+		footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux run"), lineWidth))
 	} else {
-		footerLines = append(footerLines, truncate(dimStyle.Render("  session ended"), lineWidth))
+		footerLines = append(footerLines, truncate(dimStyle.Render("  run ended"), lineWidth))
 	}
 	h := innerHeight - len(lines) - len(footerLines)
 	if h < 1 {
@@ -381,7 +381,7 @@ func (m model) attachedConversationText(j cockpit.Job, width int) string {
 func (m model) renderAttachedRail(width, height int) string {
 	jobs := m.orderedAgentJobs()
 	if len(jobs) == 0 {
-		return panelStyle.Width(width).Height(height).Render(panelHeaderStyle.Render("  Sessions"))
+		return panelStyle.Width(width).Height(height).Render(panelHeaderStyle.Render("  Runs"))
 	}
 	cursor := 0
 	for i, job := range jobs {
@@ -392,7 +392,7 @@ func (m model) renderAttachedRail(width, height int) string {
 	}
 	innerHeight := height
 	lines := []string{
-		panelHeaderStyle.Render("  Sessions"),
+		panelHeaderStyle.Render("  Runs"),
 		dimStyle.Render(fmt.Sprintf("  %d jobs · current %d/%d", len(jobs), cursor+1, len(jobs))),
 		"",
 	}

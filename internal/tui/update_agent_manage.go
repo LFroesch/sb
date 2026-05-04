@@ -82,9 +82,9 @@ func promptManageFields() []agentManageFieldSpec {
 func hookBundleManageFields() []agentManageFieldSpec {
 	return []agentManageFieldSpec{
 		{Key: "name", Label: "Name", Group: "Identity", Help: "human label shown in pickers"},
-		{Key: "prompt", Label: "Prompt hooks (JSON array)", Group: "Hooks", Multiline: true, Height: 8, Help: "JSON array of prompt hook objects; blank means none"},
-		{Key: "pre_shell", Label: "Pre-shell hooks (JSON array)", Group: "Hooks", Multiline: true, Height: 8, Help: "JSON array of shell hooks run before launch"},
-		{Key: "post_shell", Label: "Post-shell hooks (JSON array)", Group: "Hooks", Multiline: true, Height: 8, Help: "JSON array of shell hooks run after completion"},
+		{Key: "prompt", Label: "Prompt hooks", Group: "Hooks", Multiline: true, Height: 8, Help: "structured editor for prompt hook rows"},
+		{Key: "pre_shell", Label: "Pre-shell hooks", Group: "Hooks", Multiline: true, Height: 8, Help: "structured editor for shell hooks run before launch"},
+		{Key: "post_shell", Label: "Post-shell hooks", Group: "Hooks", Multiline: true, Height: 8, Help: "structured editor for shell hooks run after completion"},
 		{Key: "id", Label: "File ID (auto if empty)", Group: "Advanced", Help: "filename slug under ~/.config/sb/hooks"},
 	}
 }
@@ -270,6 +270,8 @@ func enumOptionsForFieldKey(key string) []string {
 		return []string{"read-only", "scoped-write", "wide-open"}
 	case "launch_mode":
 		return []string{cockpit.LaunchModeSingleJob, cockpit.LaunchModeTaskQueueSequence}
+	case "executor.type":
+		return []string{"claude", "codex", "ollama", "shell"}
 	}
 	return nil
 }
@@ -321,7 +323,7 @@ func cycleEnumValue(options []string, current string, delta int) string {
 
 func usesAgentManageSelectInput(spec agentManageFieldSpec) bool {
 	switch spec.Key {
-	case "launch_mode", "permissions", "prompt_id", "hook_bundle_id", "engine_id":
+	case "launch_mode", "permissions", "prompt_id", "hook_bundle_id", "engine_id", "executor.type":
 		return true
 	}
 	return false
@@ -778,6 +780,8 @@ func (m *model) beginAgentManageSelectEdit() tea.Cmd {
 		m.agentManageSelectInput.Placeholder = "single_job or task_queue_sequence"
 	case "permissions":
 		m.agentManageSelectInput.Placeholder = "read-only, scoped-write, or wide-open"
+	case "executor.type":
+		m.agentManageSelectInput.Placeholder = "claude, codex, ollama, or shell"
 	case "prompt_id":
 		m.agentManageSelectInput.Placeholder = "blank clears; type prompt id/name"
 	case "hook_bundle_id":
@@ -809,6 +813,13 @@ func (m model) resolveManagedSelectionRaw(spec agentManageFieldSpec, raw string)
 			return raw, nil
 		default:
 			return "", fmt.Errorf("permissions must be read-only, scoped-write, or wide-open")
+		}
+	case "executor.type":
+		switch raw {
+		case "claude", "codex", "ollama", "shell":
+			return raw, nil
+		default:
+			return "", fmt.Errorf("engine type must be claude, codex, ollama, or shell")
 		}
 	case "prompt_id":
 		choices := map[string]string{}
@@ -916,6 +927,431 @@ func (m *model) beginAgentManageEdit() tea.Cmd {
 	m.agentManageEditor.SetHeight(height)
 	m.agentManageEditor.Focus()
 	return m.agentManageEditor.Cursor.BlinkCmd()
+}
+
+func isHookBundleStructuredField(key string) bool {
+	switch key {
+	case "prompt", "pre_shell", "post_shell":
+		return true
+	}
+	return false
+}
+
+func promptHookManageFields() []agentManageFieldSpec {
+	return []agentManageFieldSpec{
+		{Key: "kind", Label: "Kind", Help: "literal uses Body directly; file reads Body Ref from disk"},
+		{Key: "placement", Label: "Placement", Help: "before or after the task brief"},
+		{Key: "label", Label: "Label", Help: "optional markdown heading shown before the block"},
+		{Key: "body", Label: "Body", Multiline: true, Height: 10, Help: "literal prompt-hook body"},
+		{Key: "body_ref", Label: "Body Ref", Help: "path used when kind=file"},
+	}
+}
+
+func shellHookManageFields() []agentManageFieldSpec {
+	return []agentManageFieldSpec{
+		{Key: "name", Label: "Name", Help: "short operator-facing label"},
+		{Key: "cmd", Label: "Command", Multiline: true, Height: 6, Help: "shell command to run"},
+		{Key: "cwd", Label: "Working Dir", Help: "blank = job repo"},
+		{Key: "timeout", Label: "Timeout", Help: "Go duration like 30s or 2m"},
+		{Key: "preview_cmd", Label: "Preview Cmd", Help: "optional safer preview command for review time"},
+		{Key: "preview_safe", Label: "Preview Safe", Help: "true if Cmd itself is safe to preview"},
+	}
+}
+
+func (m *model) beginAgentManageHookEdit() {
+	if m.agentManageKind != "hookbundle" || m.agentManageCursor < 0 || m.agentManageCursor >= len(m.cockpitHookBundles) {
+		return
+	}
+	spec, ok := m.currentAgentManageFieldSpec()
+	if !ok || !isHookBundleStructuredField(spec.Key) {
+		return
+	}
+	h := m.cockpitHookBundles[m.agentManageCursor]
+	m.agentManageHookEditing = true
+	m.agentManageHookFocus = 0
+	m.agentManageHookCursor = 0
+	m.agentManageHookField = 0
+	m.agentManageHookArrayKey = spec.Key
+	m.agentManagePromptDraft = append([]cockpit.PromptHook(nil), h.Prompt...)
+	switch spec.Key {
+	case "pre_shell":
+		m.agentManageShellDraft = append([]cockpit.ShellHook(nil), h.PreShell...)
+	case "post_shell":
+		m.agentManageShellDraft = append([]cockpit.ShellHook(nil), h.PostShell...)
+	default:
+		m.agentManageShellDraft = nil
+	}
+}
+
+func (m *model) endAgentManageHookEdit(save bool) {
+	if save && m.agentManageCursor >= 0 && m.agentManageCursor < len(m.cockpitHookBundles) {
+		h := m.cockpitHookBundles[m.agentManageCursor]
+		switch m.agentManageHookArrayKey {
+		case "prompt":
+			h.Prompt = append([]cockpit.PromptHook(nil), m.agentManagePromptDraft...)
+		case "pre_shell":
+			h.PreShell = append([]cockpit.ShellHook(nil), m.agentManageShellDraft...)
+		case "post_shell":
+			h.PostShell = append([]cockpit.ShellHook(nil), m.agentManageShellDraft...)
+		}
+		h = canonicalizeHookBundle(h)
+		if err := validateHookBundle(h); err != nil {
+			m.statusMsg = "save hooks: " + err.Error()
+			m.statusExpiry = time.Now().Add(4 * time.Second)
+		} else if err := cockpit.SaveHookBundle(m.cockpitPaths.HooksDir, h); err != nil {
+			m.statusMsg = "save hooks: " + err.Error()
+			m.statusExpiry = time.Now().Add(4 * time.Second)
+		} else {
+			savedID := h.ID
+			prevCursor := m.agentManageCursor
+			m.statusMsg = "saved " + h.Name
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+			m.refreshManagedSelectionAfterSave(savedID, prevCursor)
+		}
+	}
+	m.agentManageHookEditing = false
+	m.agentManageHookFocus = 0
+	m.agentManageHookCursor = 0
+	m.agentManageHookField = 0
+	m.agentManageHookArrayKey = ""
+	m.agentManagePromptDraft = nil
+	m.agentManageShellDraft = nil
+}
+
+func (m model) agentManageHookFieldSpecs() []agentManageFieldSpec {
+	if m.agentManageHookArrayKey == "prompt" {
+		return promptHookManageFields()
+	}
+	return shellHookManageFields()
+}
+
+func (m model) agentManageHookItemsCount() int {
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		return len(m.agentManagePromptDraft)
+	case "pre_shell", "post_shell":
+		return len(m.agentManageShellDraft)
+	}
+	return 0
+}
+
+func (m model) agentManageHookRowCount() int {
+	return m.agentManageHookItemsCount() + 1
+}
+
+func (m model) agentManageHookCurrentFieldSpec() (agentManageFieldSpec, bool) {
+	specs := m.agentManageHookFieldSpecs()
+	if m.agentManageHookField < 0 || m.agentManageHookField >= len(specs) {
+		return agentManageFieldSpec{}, false
+	}
+	return specs[m.agentManageHookField], true
+}
+
+func (m model) agentManageHookItemLabel(idx int) string {
+	if idx == m.agentManageHookItemsCount() {
+		return "+ add hook"
+	}
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		h := m.agentManagePromptDraft[idx]
+		label := strings.TrimSpace(h.Label)
+		if label == "" {
+			label = strings.TrimSpace(h.Kind)
+		}
+		if label == "" {
+			label = fmt.Sprintf("prompt hook %d", idx+1)
+		}
+		placement := strings.TrimSpace(h.Placement)
+		if placement == "" {
+			placement = "after"
+		}
+		return fmt.Sprintf("%d. %s · %s", idx+1, label, placement)
+	default:
+		h := m.agentManageShellDraft[idx]
+		label := strings.TrimSpace(h.Name)
+		if label == "" {
+			label = strings.TrimSpace(h.Cmd)
+		}
+		if label == "" {
+			label = fmt.Sprintf("shell hook %d", idx+1)
+		}
+		return fmt.Sprintf("%d. %s", idx+1, label)
+	}
+}
+
+func (m model) agentManageHookFieldValue(field int) string {
+	if m.agentManageHookCursor < 0 || m.agentManageHookCursor >= m.agentManageHookItemsCount() {
+		return ""
+	}
+	specs := m.agentManageHookFieldSpecs()
+	if field < 0 || field >= len(specs) {
+		return ""
+	}
+	key := specs[field].Key
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		h := m.agentManagePromptDraft[m.agentManageHookCursor]
+		switch key {
+		case "kind":
+			return h.Kind
+		case "placement":
+			return h.Placement
+		case "label":
+			return h.Label
+		case "body":
+			return h.Body
+		case "body_ref":
+			return h.BodyRef
+		}
+	default:
+		h := m.agentManageShellDraft[m.agentManageHookCursor]
+		switch key {
+		case "name":
+			return h.Name
+		case "cmd":
+			return h.Cmd
+		case "cwd":
+			return h.Cwd
+		case "timeout":
+			if h.Timeout <= 0 {
+				return ""
+			}
+			return h.Timeout.String()
+		case "preview_cmd":
+			return h.PreviewCmd
+		case "preview_safe":
+			if h.PreviewSafe {
+				return "true"
+			}
+			return "false"
+		}
+	}
+	return ""
+}
+
+func enumOptionsForHookField(arrayKey, key string) []string {
+	switch key {
+	case "kind":
+		return []string{"literal", "file"}
+	case "placement":
+		return []string{"after", "before"}
+	case "preview_safe":
+		return []string{"false", "true"}
+	}
+	return nil
+}
+
+func (m *model) setAgentManageHookFieldValue(field int, raw string) error {
+	if m.agentManageHookCursor < 0 || m.agentManageHookCursor >= m.agentManageHookItemsCount() {
+		return fmt.Errorf("invalid hook row")
+	}
+	specs := m.agentManageHookFieldSpecs()
+	if field < 0 || field >= len(specs) {
+		return fmt.Errorf("invalid hook field")
+	}
+	key := specs[field].Key
+	value := strings.TrimSpace(raw)
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		h := m.agentManagePromptDraft[m.agentManageHookCursor]
+		switch key {
+		case "kind":
+			if value == "" {
+				value = "literal"
+			}
+			if value != "literal" && value != "file" {
+				return fmt.Errorf("kind must be literal or file")
+			}
+			h.Kind = value
+		case "placement":
+			if value == "" {
+				value = "after"
+			}
+			if value != "before" && value != "after" {
+				return fmt.Errorf("placement must be before or after")
+			}
+			h.Placement = value
+		case "label":
+			h.Label = value
+		case "body":
+			h.Body = raw
+		case "body_ref":
+			h.BodyRef = value
+		}
+		m.agentManagePromptDraft[m.agentManageHookCursor] = h
+	default:
+		h := m.agentManageShellDraft[m.agentManageHookCursor]
+		switch key {
+		case "name":
+			h.Name = value
+		case "cmd":
+			h.Cmd = raw
+		case "cwd":
+			h.Cwd = value
+		case "timeout":
+			if value == "" {
+				h.Timeout = 0
+			} else {
+				d, err := time.ParseDuration(value)
+				if err != nil {
+					return fmt.Errorf("timeout: %w", err)
+				}
+				h.Timeout = d
+			}
+		case "preview_cmd":
+			h.PreviewCmd = raw
+		case "preview_safe":
+			switch value {
+			case "", "false":
+				h.PreviewSafe = false
+			case "true":
+				h.PreviewSafe = true
+			default:
+				return fmt.Errorf("preview safe must be true or false")
+			}
+		}
+		m.agentManageShellDraft[m.agentManageHookCursor] = h
+	}
+	return nil
+}
+
+func (m *model) addAgentManageHookRow() {
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		m.agentManagePromptDraft = append(m.agentManagePromptDraft, cockpit.PromptHook{Kind: "literal", Placement: "after"})
+	case "pre_shell", "post_shell":
+		m.agentManageShellDraft = append(m.agentManageShellDraft, cockpit.ShellHook{})
+	}
+	if n := m.agentManageHookItemsCount(); n > 0 {
+		m.agentManageHookCursor = n - 1
+	}
+	m.agentManageHookFocus = 1
+	m.agentManageHookField = 0
+}
+
+func (m *model) deleteAgentManageHookRow() {
+	if m.agentManageHookCursor < 0 || m.agentManageHookCursor >= m.agentManageHookItemsCount() {
+		return
+	}
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		m.agentManagePromptDraft = append(m.agentManagePromptDraft[:m.agentManageHookCursor], m.agentManagePromptDraft[m.agentManageHookCursor+1:]...)
+	default:
+		m.agentManageShellDraft = append(m.agentManageShellDraft[:m.agentManageHookCursor], m.agentManageShellDraft[m.agentManageHookCursor+1:]...)
+	}
+	if m.agentManageHookCursor >= m.agentManageHookItemsCount() {
+		m.agentManageHookCursor = m.agentManageHookItemsCount() - 1
+	}
+	if m.agentManageHookCursor < 0 {
+		m.agentManageHookCursor = 0
+		m.agentManageHookFocus = 0
+	}
+}
+
+func (m *model) duplicateAgentManageHookRow() {
+	if m.agentManageHookCursor < 0 || m.agentManageHookCursor >= m.agentManageHookItemsCount() {
+		return
+	}
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		h := m.agentManagePromptDraft[m.agentManageHookCursor]
+		m.agentManagePromptDraft = append(m.agentManagePromptDraft[:m.agentManageHookCursor+1], append([]cockpit.PromptHook{h}, m.agentManagePromptDraft[m.agentManageHookCursor+1:]...)...)
+	default:
+		h := m.agentManageShellDraft[m.agentManageHookCursor]
+		m.agentManageShellDraft = append(m.agentManageShellDraft[:m.agentManageHookCursor+1], append([]cockpit.ShellHook{h}, m.agentManageShellDraft[m.agentManageHookCursor+1:]...)...)
+	}
+	m.agentManageHookCursor++
+}
+
+func (m *model) moveAgentManageHookRow(delta int) {
+	if m.agentManageHookCursor < 0 || m.agentManageHookCursor >= m.agentManageHookItemsCount() {
+		return
+	}
+	next := m.agentManageHookCursor + delta
+	if next < 0 || next >= m.agentManageHookItemsCount() {
+		return
+	}
+	switch m.agentManageHookArrayKey {
+	case "prompt":
+		rows := m.agentManagePromptDraft
+		rows[m.agentManageHookCursor], rows[next] = rows[next], rows[m.agentManageHookCursor]
+		m.agentManagePromptDraft = rows
+	default:
+		rows := m.agentManageShellDraft
+		rows[m.agentManageHookCursor], rows[next] = rows[next], rows[m.agentManageHookCursor]
+		m.agentManageShellDraft = rows
+	}
+	m.agentManageHookCursor = next
+}
+
+func (m *model) beginAgentManageHookFieldEdit() tea.Cmd {
+	spec, ok := m.agentManageHookCurrentFieldSpec()
+	if !ok {
+		return nil
+	}
+	if len(enumOptionsForHookField(m.agentManageHookArrayKey, spec.Key)) > 0 {
+		m.agentManageSelectEditing = true
+		m.agentManageSelectInput.SetValue(m.agentManageHookFieldValue(m.agentManageHookField))
+		width, _ := m.agentManageEditorDims()
+		m.agentManageSelectInput.Width = maxInt(20, width)
+		m.agentManageSelectInput.Placeholder = "type value"
+		m.agentManageSelectInput.Focus()
+		return m.agentManageSelectInput.Cursor.BlinkCmd()
+	}
+	m.agentManageEditing = true
+	m.agentManageEditor.Reset()
+	m.agentManageEditor.SetValue(m.agentManageHookFieldValue(m.agentManageHookField))
+	width, maxHeight := m.agentManageEditorDims()
+	m.agentManageEditor.SetWidth(width)
+	height := spec.Height
+	if height < 3 {
+		height = 3
+	}
+	if height > maxHeight {
+		height = maxHeight
+	}
+	m.agentManageEditor.SetHeight(height)
+	switch spec.Key {
+	case "body":
+		m.agentManageEditor.Placeholder = "hook body..."
+	case "cmd", "preview_cmd":
+		m.agentManageEditor.Placeholder = "shell command..."
+	default:
+		m.agentManageEditor.Placeholder = "edit field value…"
+	}
+	m.agentManageEditor.Focus()
+	return m.agentManageEditor.Cursor.BlinkCmd()
+}
+
+func (m *model) endAgentManageHookFieldEdit(save bool) {
+	if save {
+		if err := m.setAgentManageHookFieldValue(m.agentManageHookField, m.agentManageEditor.Value()); err != nil {
+			m.statusMsg = "save hook field: " + err.Error()
+			m.statusExpiry = time.Now().Add(4 * time.Second)
+		}
+	}
+	m.agentManageEditing = false
+	m.agentManageEditor.Blur()
+}
+
+func (m *model) endAgentManageHookSelectEdit(save bool) {
+	if save {
+		if err := m.setAgentManageHookFieldValue(m.agentManageHookField, m.agentManageSelectInput.Value()); err != nil {
+			m.statusMsg = "save hook field: " + err.Error()
+			m.statusExpiry = time.Now().Add(4 * time.Second)
+		}
+	}
+	m.agentManageSelectEditing = false
+	m.agentManageSelectInput.Blur()
+	m.agentManageSelectInput.SetValue("")
+}
+
+func (m model) currentAgentManageFieldSpec() (agentManageFieldSpec, bool) {
+	specs := m.agentManageFieldSpecs()
+	if m.agentManageField < 0 || m.agentManageField >= len(specs) {
+		return agentManageFieldSpec{}, false
+	}
+	return specs[m.agentManageField], true
 }
 
 func (m *model) clampAgentManageOffsets() {
@@ -1219,6 +1655,108 @@ func (m *model) duplicateManagedAgentItem() error {
 }
 
 func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.agentManageHookEditing {
+		if m.agentManageSelectEditing {
+			switch msg.String() {
+			case "esc":
+				m.endAgentManageHookSelectEdit(false)
+				return m, nil
+			case "enter", "ctrl+s":
+				m.endAgentManageHookSelectEdit(true)
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.agentManageSelectInput, cmd = m.agentManageSelectInput.Update(msg)
+			return m, cmd
+		}
+		if m.agentManageEditing {
+			switch msg.String() {
+			case "esc":
+				m.endAgentManageHookFieldEdit(false)
+				return m, nil
+			case "enter":
+				if spec, ok := m.agentManageHookCurrentFieldSpec(); ok && !spec.Multiline {
+					m.endAgentManageHookFieldEdit(true)
+					return m, nil
+				}
+			case "ctrl+s":
+				m.endAgentManageHookFieldEdit(true)
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.agentManageEditor, cmd = m.agentManageEditor.Update(msg)
+			return m, cmd
+		}
+
+		switch msg.String() {
+		case "esc":
+			m.endAgentManageHookEdit(false)
+			return m, nil
+		case "ctrl+s":
+			m.endAgentManageHookEdit(true)
+			return m, nil
+		case "[":
+			if m.agentManageHookFocus == 0 {
+				m.moveAgentManageHookRow(-1)
+			}
+			return m, nil
+		case "]":
+			if m.agentManageHookFocus == 0 {
+				m.moveAgentManageHookRow(1)
+			}
+			return m, nil
+		case "tab", "shift+tab":
+			m.agentManageHookFocus = 1 - m.agentManageHookFocus
+			return m, nil
+		case "j", "down":
+			if m.agentManageHookFocus == 0 {
+				if m.agentManageHookCursor < m.agentManageHookRowCount()-1 {
+					m.agentManageHookCursor++
+				}
+			} else {
+				if m.agentManageHookField < len(m.agentManageHookFieldSpecs())-1 {
+					m.agentManageHookField++
+				}
+			}
+			return m, nil
+		case "k", "up":
+			if m.agentManageHookFocus == 0 {
+				if m.agentManageHookCursor > 0 {
+					m.agentManageHookCursor--
+				}
+			} else {
+				if m.agentManageHookField > 0 {
+					m.agentManageHookField--
+				}
+			}
+			return m, nil
+		case "a":
+			m.addAgentManageHookRow()
+			return m, nil
+		case "D":
+			m.duplicateAgentManageHookRow()
+			return m, nil
+		case "d":
+			m.deleteAgentManageHookRow()
+			return m, nil
+		case "enter", "e":
+			if m.agentManageHookFocus == 0 {
+				if m.agentManageHookCursor == m.agentManageHookItemsCount() {
+					m.addAgentManageHookRow()
+					return m, nil
+				}
+				m.agentManageHookFocus = 1
+				return m, nil
+			}
+			if m.agentManageHookItemsCount() == 0 {
+				m.addAgentManageHookRow()
+			}
+			cmd := m.beginAgentManageHookFieldEdit()
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	if m.agentManageSelectEditing {
 		switch msg.String() {
 		case "esc":
@@ -1238,6 +1776,11 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.endAgentManageEdit(false)
 			return m, nil
+		case "enter":
+			if spec, ok := m.currentAgentManageFieldSpec(); ok && !spec.Multiline {
+				m.endAgentManageEdit(true)
+				return m, nil
+			}
 		case "ctrl+s":
 			m.endAgentManageEdit(true)
 			return m, nil
@@ -1375,28 +1918,13 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		specs := m.agentManageFieldSpecs()
-		if m.agentManageField >= 0 && m.agentManageField < len(specs) {
-			spec := specs[m.agentManageField]
-			key := spec.Key
-			if key == "hook_bundle_id" {
-				cmd := m.beginAgentManageSelectEdit()
-				return m, cmd
-			}
-			if options := m.enumOptionsForFieldKey(key); len(options) > 0 {
-				current := m.agentManageFieldValue(m.agentManageCursor, m.agentManageField)
-				next := cycleEnumValue(options, current, 1)
-				if err := m.setAgentManageFieldValue(m.agentManageCursor, m.agentManageField, next); err != nil {
-					m.statusMsg = "cycle: " + err.Error()
-					m.statusExpiry = time.Now().Add(3 * time.Second)
-				} else {
-					savedID := m.agentManageItemID(m.agentManageCursor)
-					prevCursor := m.agentManageCursor
-					m.statusMsg = specs[m.agentManageField].Label + " → " + next
-					m.statusExpiry = time.Now().Add(2 * time.Second)
-					m.refreshManagedSelectionAfterSave(savedID, prevCursor)
-				}
-				return m, nil
-			}
+		if m.agentManageField >= 0 && m.agentManageField < len(specs) && isHookBundleStructuredField(specs[m.agentManageField].Key) {
+			m.beginAgentManageHookEdit()
+			return m, nil
+		}
+		if m.agentManageField >= 0 && m.agentManageField < len(specs) && usesAgentManageSelectInput(specs[m.agentManageField]) {
+			cmd := m.beginAgentManageSelectEdit()
+			return m, cmd
 		}
 		cmd := m.beginAgentManageEdit()
 		return m, cmd
@@ -1406,6 +1934,10 @@ func (m model) updateAgentManage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.agentManageEnsureGroupField()
 		}
 		specs := m.agentManageFieldSpecs()
+		if m.agentManageField >= 0 && m.agentManageField < len(specs) && isHookBundleStructuredField(specs[m.agentManageField].Key) {
+			m.beginAgentManageHookEdit()
+			return m, nil
+		}
 		if m.agentManageField >= 0 && m.agentManageField < len(specs) && usesAgentManageSelectInput(specs[m.agentManageField]) {
 			cmd := m.beginAgentManageSelectEdit()
 			return m, cmd

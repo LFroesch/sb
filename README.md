@@ -2,7 +2,7 @@
 
 Second Brain control plane. `sb` is a terminal app for managing `WORK.md`-style project backlogs, sorting brain dumps, launching/supervising coding agents against real tasks, and running unattended Foreman batches when you are away.
 
-For the intended product shape, see [docs/product-definition.md](docs/product-definition.md). For the lower-level Agent architecture, see [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md).
+This checkout does not currently ship the older internal design docs; the README below is the current user-facing source of truth for behavior and workflows.
 
 ## Quick Install
 
@@ -221,7 +221,7 @@ Scans your project .md files for lines that aren't proper list items and fixes t
 
 ### Agents (Agents tab)
 
-Launch coding agents against `- ` items from your `WORK.md` files. The core flow is: choose a task, start a run, monitor it, review the result, and accept it back into your task system. See [docs/product-definition.md](docs/product-definition.md) for the product model and [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md) for the lower-level architecture.
+Launch coding agents against `- ` items from your `WORK.md` files. The core flow is: choose a task, start a run, monitor it, review the result, and accept it back into your task system.
 
 From the dashboard, switch to the **Agents** tab:
 
@@ -229,7 +229,7 @@ From the dashboard, switch to the **Agents** tab:
    From the dashboard, `A` jumps straight into the current project's task picker.
 2. Step 1: pick a file with `enter` (or pick the freeform sentinel)
 3. Step 2 (sourced only): `space` toggles task items, `enter` continues when at least one is selected, `b` or `esc` returns to the file list with a clean selection state
-4. The new-run composer stays as small as possible. Task-backed runs cycle through **Role**, **Engine**, **Prompt**, **Hooks**, **Perms**, **Note**, and **Review** because the repo already comes from the selected task. Runs without a task source add an explicit **Repo** step where you can pick a discovered project, the cwd, or `(custom path…)` to type any absolute path. The repo list stays in a stable order while you scroll; `(custom path…)` is always row 1, but the initial cursor starts on row 2 so the normal repo remains the default and one `↑` opens the custom-path route. `↑/↓` moves within the focused list or review pane, `enter` on **Repo** confirms the selected repo and advances to **Note** (or opens the custom-path editor), `enter` on the other non-note tabs launches, and `alt+enter` launches from the note editor. On **Role**, **Engine**, and **Prompt**, `e` opens a typed selector: Engine accepts blank for `(role default)`, Prompt accepts blank for `(none)` and `default` for `(role default)`.
+4. The new-run composer defaults to the primary path: **Role**, **Engine**, optional **Repo**, **Note**, then **Review**. Runs without a task source add the explicit **Repo** step where you can pick a discovered project, the cwd, or `(custom path…)` to type any absolute path. `enter` now advances the primary path all the way through the Note step and only launches from **Review**; `alt+enter` still launches directly from the note editor. Press `a` to reveal advanced per-run overrides for **Prompt**, **Hooks**, and **Perms** when you actually need them. On **Role**, **Engine**, and **Prompt**, `e` opens a typed selector: Engine accepts blank for `(role default)`, Prompt accepts blank for `(none)` and `default` for `(role default)`.
    While the custom-path editor is open, the field is kept visible ahead of the repo list and its width stays clamped to the pane so you can still see what you are typing on shorter or narrower terminals.
    While a textarea is focused, typing `?` stays in that textarea instead of toggling help.
    Press `ctrl+t` in the composer to switch between **start now** and **send to Foreman**.
@@ -259,7 +259,7 @@ From the dashboard, switch to the **Agents** tab:
 17. `r` retries the selected job immediately with the same repo, note, and runtime override, but always as an attended immediate run rather than re-queueing it for Foreman.
 18. `R` reopens the New Run composer prefilled from the selected job so you can edit the role/runtime/repo/note before relaunching.
 19. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
-20. `m` opens **Agent Setup**, the role/engine wizard. The right pane shows one group at a time (Identity → Prompting → Suggested Engine → Iteration); `tab`/`shift+tab` cycles groups, `j/k` moves within the visible group, `enter` runs the quick action for the selected field, and `e` opens the more explicit edit/select path. Prompt/engine refs can now be typed by id/name, hook-bundle refs now accept comma-separated bundle ids/names instead of behaving like a fake single-value cycle, and empty prompt/engine/hook refs show up as explicit `(none)` values instead of disappearing. `pgup/pgdn` also jumps groups. `a` toggles the advanced groups (`Hooks` JSON, `Advanced` overrides). `ctrl+s` saves, `esc` cancels. Saved edits now refresh in place immediately, changing an item ID behaves like a rename rather than leaving the old JSON file behind as a duplicate, and preset summaries show the current prompt / hook bundle / engine refs so composition edits are visible right away. Empty JSON hook fields now seed with `[]` when you open them so creating a new bundle does not start from a blank wall.
+20. `m` opens **Advanced Setup**, the reusable roles/prompts/hooks/engines area. The base screen now stays a two-step picker: left side for the selected role/prompt/hook/engine item, right side for the current field group. `tab`/`shift+tab` moves between item focus, field focus, and groups; `j/k` moves within the visible list. `enter` or `e` opens a centered overlay editor for the selected field instead of editing inline in the cramped right pane. Prompt/engine refs can be typed by id/name, hook-bundle refs accept comma-separated bundle ids/names, enum-style fields show their valid choices in the overlay, and prompt/hook fields show example shapes there. Hook bundle `Prompt hooks`, `Pre-shell hooks`, and `Post-shell hooks` now open a structured hook editor overlay with hook rows on the left and per-hook fields on the right, so the default path no longer makes you hand-edit JSON arrays. Inside that hook editor, `a` adds a row, `d` deletes one, `D` duplicates one, and `[` / `]` reorders rows. `pgup/pgdn` still jumps groups on the base screen. `a` on the base screen toggles the advanced groups (`Hooks`, `Advanced` overrides). In overlays, single-line/select fields save on `enter`, multiline fields save on `ctrl+s`, and `esc` cancels.
    `n` creates a new role/engine and drops you into the wizard with `Name` already focused; saving each field auto-advances to the next group.
    `D` duplicates and `d` deletes the highlighted item.
    The picker, setup, list, and attached-session views share the same terminal-height budget, so local scrolling should not hide the app chrome on short terminals.
@@ -275,7 +275,7 @@ Seed **roles** currently materialise in `~/.config/sb/presets/` on first run: `s
 Seed **engines** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`.
 
 Edit any `*.json` in those dirs to customise. The on-disk schema still uses `presets` and `providers` for compatibility, even though the UI now frames them as roles and engines. Older utility roles still load if you already have them; they now sort below the core coding roles instead of crowding the top of the picker.
-From the Agents page, `m` opens in-app Agent Setup.
+From the Agents page, `m` opens in-app Advanced Setup.
 
 If you want to build your own stack outside the UI, the four library dirs are:
 
@@ -356,7 +356,7 @@ Composition rules:
 - Valid preset `permissions` values are `read-only`, `scoped-write`, and `wide-open`.
 - Valid engine `executor.type` values today are `claude`, `codex`, `ollama`, and `shell`. `shell` is still supported in code, but the main seeded engines are Claude/Codex/Ollama.
 
-The easiest authoring loop is: duplicate a seed JSON file, change the `id` first, then edit the fields you care about. `sb` uses the file id as the fallback identity, so keeping ids unique avoids confusing collisions in Agent Setup.
+The easiest authoring loop is: duplicate a seed JSON file, change the `id` first, then edit the fields you care about. `sb` uses the file id as the fallback identity, so keeping ids unique avoids confusing collisions in Advanced Setup.
 
 ### tmux status bar and scrolling
 
@@ -422,11 +422,11 @@ Agents tab:
 | `F` | List: toggle Foreman on/off |
 | `ctrl+t` | New run: toggle immediate launch vs send to Foreman |
 | `f` | List: cycle job filters |
-| `tab` | List: cycle filters · New run: cycle role → engine → repo → note → review · Agent Setup: cycle wizard groups · Attached exec-chat: swap transcript ↔ input |
+| `tab` | List: cycle filters · New run: cycle role → engine → repo → note → review (advanced overrides optional) · Advanced Setup: cycle item/field focus, then groups · Attached exec-chat: swap transcript ↔ input |
 | `space` | Toggle task in picker |
 | `i` | List: open selected job (`tmux` attach while live, input focus for exec-chat jobs) · Attached exec-chat: focus input |
 | `pgup/pgdn` | List: page the right-side peek · Attached/review: page the transcript/log |
-| `enter` | Launch (from role/engine/review tabs) · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
+| `enter` | New run: continue, note -> review, then launch from review · Advanced Setup: open/save overlay editor · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
 | `alt+enter` | Launch from note |
 | `r` | Retry the selected job immediately with the same setup |
 | `R` | Reopen the selected job in the New Run composer with its prior settings prefilled |
@@ -444,12 +444,6 @@ Agents tab:
 | `esc` | Back (or leave input focus when typing) |
 
 Full keybind reference is available in-app with `?`.
-
----
-
-## Design Docs
-
-- [docs/agent-cockpit-rfc.md](docs/agent-cockpit-rfc.md) — product direction for turning `sb` into the first cockpit UI for coding-agent orchestration, with a separable foreman/runtime layer behind it
 
 ## License
 

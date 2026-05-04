@@ -296,13 +296,13 @@ func shortPath(p string) string {
 func agentManageKindLabel(kind string) string {
 	switch kind {
 	case "provider":
-		return "Runtimes"
+		return "Engines"
 	case "prompt":
 		return "Prompts"
 	case "hookbundle":
-		return "Hook bundles"
+		return "Hook Bundles"
 	}
-	return "Templates"
+	return "Roles"
 }
 
 func agentManageKindSubtitle(kind string) string {
@@ -477,7 +477,7 @@ func renderManageFieldList(m model, width, visible int) []string {
 
 	var lines []string
 	header := fmt.Sprintf("  step %d/%d: %s", groupIdx+1, len(groups), groupName)
-	hint := dimStyle.Render("   tab ▸ next group · enter quick action · e detailed edit/select · a to ")
+	hint := dimStyle.Render("   tab ▸ next group · enter edit field · e same thing · a to ")
 	if m.agentManageAdvanced {
 		hint += dimStyle.Render("hide advanced")
 	} else {
