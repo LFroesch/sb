@@ -30,6 +30,18 @@ type projectsLoadedMsg struct {
 	projects []workmd.Project
 }
 
+type projectHydratedMsg struct {
+	project workmd.Project
+}
+
+type projectHydrationFailedMsg struct {
+	path string
+}
+
+type cachedProjectsLoadedMsg struct {
+	projects []workmd.Project
+}
+
 // --- Pages ---
 
 type page int
@@ -55,8 +67,6 @@ const (
 	modeDumpRouting      // LLM is classifying
 	modeDumpConfirm      // showing route result, waiting for y/n
 	modeCleanupWait      // LLM is cleaning up
-	modeTodoWait         // LLM is generating next todo
-	modeTodoResult       // showing next todo result
 	modeSearch           // fuzzy search across WORK.md content
 	modeDumpReview       // stepping through routed items
 	modeDumpClarify      // asking user to clarify unclear item
@@ -68,9 +78,6 @@ const (
 	modeChainCleanupSummary  // chain done — show results
 
 	modeCleanupFeedback // single-project cleanup: user typing feedback for regen
-
-	modePlanWait   // LLM generating daily plan
-	modePlanResult // showing daily plan result
 
 	modeAgentList     // agent tab: job list (default)
 	modeAgentPicker   // agent tab: pick file + tasks
@@ -129,13 +136,6 @@ type model struct {
 	// Project selection (for chain cleanup / plan)
 	selectedProjects map[string]bool // keyed by project path
 
-	// Daily plan
-	planResult string
-	planScroll int
-
-	// Todo
-	todoResult string // LLM next-todo response
-
 	// Search
 	searchQuery   string
 	searchMatches []searchMatch
@@ -144,7 +144,8 @@ type model struct {
 	spinner spinner.Model
 
 	// Loading
-	loading bool
+	loading      bool
+	hydrateQueue []string
 
 	// Status
 	statusMsg    string
@@ -251,7 +252,7 @@ func newModel(cfg *config.Config) model {
 	clarify.CharLimit = 500
 
 	chainFB := textarea.New()
-	chainFB.Placeholder = "what needs fixing? (e.g. 'don't merge Updates + Features')"
+	chainFB.Placeholder = "what needs fixing? (e.g. 'move that future item to backlog')"
 	chainFB.SetWidth(80)
 	chainFB.SetHeight(3)
 	chainFB.CharLimit = 500
@@ -326,44 +327,14 @@ func (m model) Init() tea.Cmd {
 	if m.cockpitEvents != nil {
 		cmds = append(cmds, cockpitWatchCmd(m.cockpitEvents))
 	}
-	cmds = append(cmds, func() tea.Msg {
-		projects := workmd.Discover(
-			m.cfg.ExpandedScanRoots(),
-			m.cfg.FilePatterns,
-			m.cfg.ExpandedIdeaDirs(),
-			m.cfg,
-		)
-		// Best-effort: regenerate the routing-context index. Failure here
-		// (e.g. read-only $HOME) shouldn't block startup.
-		var targets []workmd.SpecialTarget
-		if t := m.cfg.CatchallTarget; t != nil {
-			targets = append(targets, workmd.SpecialTarget{
-				Name: t.Name, Path: t.Path, Description: "catch-all for general notes",
-			})
-		}
-		if t := m.cfg.IdeasTarget; t != nil {
-			targets = append(targets, workmd.SpecialTarget{
-				Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
-			})
-		}
-		_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets, workmd.IndexOptions{
-			ScanRoots:    m.cfg.ExpandedScanRoots(),
-			FilePatterns: m.cfg.FilePatterns,
-			IdeaDirs:     m.cfg.ExpandedIdeaDirs(),
-		})
-		return projectsLoadedMsg{projects: projects}
-	})
+	cmds = append(cmds, loadCachedProjectsCmd(m.cfg))
+	cmds = append(cmds, discoverProjectsCmd(m.cfg))
 	return tea.Batch(cmds...)
 }
 
 // --- Messages ---
 
 type tickMsg time.Time
-
-type todoResultMsg struct {
-	result string
-	err    error
-}
 
 type dumpRoutedMsg struct {
 	items []llm.RouteItem
@@ -376,11 +347,6 @@ type dumpReroutedMsg struct {
 }
 
 type cleanupDoneMsg struct {
-	result string
-	err    error
-}
-
-type planResultMsg struct {
 	result string
 	err    error
 }

@@ -24,7 +24,7 @@ func TestRenderProjectListIncludesBoundedContext(t *testing.T) {
 	}
 }
 
-func TestReconcileMissingSectionsReinjectsNonCanonicalBlocks(t *testing.T) {
+func TestReconcileMissingSectionsKeepsCanonicalOutputOnly(t *testing.T) {
 	original := `# WORK - demo
 
 ## Current Tasks
@@ -44,11 +44,8 @@ func TestReconcileMissingSectionsReinjectsNonCanonicalBlocks(t *testing.T) {
 `
 
 	got := reconcileMissingSections(original, cleaned)
-	if !strings.Contains(got, "## DevLog") {
-		t.Fatalf("missing non-canonical section: %q", got)
-	}
-	if !strings.Contains(got, "### 2026-04-27") {
-		t.Fatalf("missing section body: %q", got)
+	if strings.Contains(got, "## DevLog") {
+		t.Fatalf("unexpected non-canonical section: %q", got)
 	}
 }
 
@@ -56,7 +53,36 @@ func TestProjectNameFromContentSupportsTypedTitles(t *testing.T) {
 	if got := projectNameFromContent("# ROADMAP - toolkit\nsummary\n"); got != "toolkit" {
 		t.Fatalf("got %q", got)
 	}
-	if got := projectNameFromContent("# WORK - demo | old style\n"); got != "demo" {
+	if got := projectNameFromContent("# WORK - demo\nsummary\n"); got != "demo" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestStripMarkdownFenceHandlesCommonCodeFences(t *testing.T) {
+	raw := "```json\n[{\"text\":\"x\"}]\n```"
+	if got := stripMarkdownFence(raw); got != "[{\"text\":\"x\"}]" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExtractJSONArrayFindsArrayInsideChatter(t *testing.T) {
+	raw := "Here you go:\n```json\n[{\"text\":\"x\",\"project\":\"demo\",\"section\":\"current_tasks\"}]\n```"
+	got, err := extractJSONArray(raw)
+	if err != nil {
+		t.Fatalf("extractJSONArray: %v", err)
+	}
+	if !strings.HasPrefix(got, "[{") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExtractJSONObjectFindsObjectInsideChatter(t *testing.T) {
+	raw := "Result:\n{\"text\":\"x\",\"project\":\"demo\",\"section\":\"current_tasks\"}\nThanks"
+	got, err := extractJSONObject(raw)
+	if err != nil {
+		t.Fatalf("extractJSONObject: %v", err)
+	}
+	if !strings.HasPrefix(got, "{") || !strings.HasSuffix(got, "}") {
 		t.Fatalf("got %q", got)
 	}
 }

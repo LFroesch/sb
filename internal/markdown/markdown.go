@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // Colors — match tui-hub palette
@@ -74,12 +75,12 @@ func Render(content string, w int) string {
 
 		case strings.HasPrefix(trimmed, "- "):
 			inner := strings.TrimPrefix(trimmed, "- ")
-			b.WriteString(textStyle.PaddingLeft(4).Render("· " + renderInline(inner)))
+			b.WriteString(renderListItem("    · ", inner, w))
 			b.WriteString("\n")
 
 		case strings.HasPrefix(trimmed, "* "):
 			inner := strings.TrimPrefix(trimmed, "* ")
-			b.WriteString(textStyle.PaddingLeft(4).Render("· " + renderInline(inner)))
+			b.WriteString(renderListItem("    · ", inner, w))
 			b.WriteString("\n")
 
 		case trimmed == "":
@@ -122,6 +123,26 @@ func renderTableRow(row string, isHeader bool, _ int) string {
 		styled = append(styled, textStyle.Render(p))
 	}
 	return "  " + strings.Join(styled, dimStyle.Render(" │ "))
+}
+
+func renderListItem(prefix, inner string, width int) string {
+	if width <= 0 {
+		return textStyle.Render(prefix + renderInline(inner))
+	}
+	body := renderInline(inner)
+	bodyWidth := width - lipgloss.Width(prefix)
+	if bodyWidth < 8 {
+		bodyWidth = 8
+	}
+	wrapped := strings.Split(xansi.Wordwrap(body, bodyWidth, " "), "\n")
+	for i := range wrapped {
+		if i == 0 {
+			wrapped[i] = prefix + wrapped[i]
+			continue
+		}
+		wrapped[i] = strings.Repeat(" ", lipgloss.Width(prefix)) + wrapped[i]
+	}
+	return textStyle.Render(strings.Join(wrapped, "\n"))
 }
 
 func renderInline(s string) string {

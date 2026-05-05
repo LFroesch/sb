@@ -1,450 +1,109 @@
 # sb
 
-Second Brain control plane. `sb` is a terminal app for managing `WORK.md`-style project backlogs, sorting brain dumps, launching/supervising coding agents against real tasks, and running unattended Foreman batches when you are away.
+`sb` is a terminal control plane for task-file discovery, brain-dump routing, and agent-run supervision.
 
-This checkout does not currently ship the older internal design docs; the README below is the current user-facing source of truth for behavior and workflows.
-
-## Quick Install
-
-Supported platforms: Linux and macOS. On Windows, use WSL.
-
-Recommended (installs to `~/.local/bin`):
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LFroesch/sb/main/install.sh | bash
 ```
 
-Or download a binary from [GitHub Releases](https://github.com/LFroesch/sb/releases).
-
-Or install with Go:
+Or:
 
 ```bash
 go install github.com/LFroesch/sb@latest
+go install github.com/LFroesch/sb/cmd/foreman@latest
 ```
 
-Or build from source:
-
-```bash
-make install
-```
-
-Project structure:
-
-- `main.go` is the small CLI entrypoint and subcommand dispatch layer.
-- `internal/tui/` contains the Bubble Tea application (`tui.Run()` plus the `model`/`update`/`view` split).
-- `cmd/foreman/` contains the `sb-foreman` daemon used by the Agents workflow.
-
-Command:
+Run with:
 
 ```bash
 sb
 ```
 
+## Canonical Task File
+
+`WORK.md` is the default task filename, but any configured task-source filename is allowed if it uses the same schema:
+
+```md
+# WORK - <name>
+one-line summary
+
+## Current Phase
+single plain-text line
+
+## Current Tasks
+- active work only
+
+## Backlog / Future Features
+- not-now work
+```
+
+Rules:
+- task files are for active work only
+- no `Workflow Rules`, `Unsorted`, `Bugs + Blockers`, `Updates + Features`, or shipped-history sections
+- completed implementation history belongs in `DEVLOG.md`
+- typed H1 plus the next plain-text line is the only supported title/summary format
+
 ## Config
 
-`~/.config/sb/config.json` is created on first run:
+`~/.config/sb/config.json` controls discovery, providers, and Foreman behavior.
 
-```json
-{
-  "provider": "ollama",
-  "providers": {
-    "ollama": {
-      "type": "ollama",
-      "model": "qwen2.5:7b",
-      "base_url": "http://localhost:11434"
-    }
-  },
-  "model": "qwen2.5:7b",
-  "ollama_host": "http://localhost:11434",
-  "scan_roots": [
-    { "name": "projects", "path": "~/projects" }
-  ],
-  "file_patterns": ["WORK.md"],
-  "idea_dirs": [],
-  "label_max_depth": 2,
-  "index_path": "~/.config/sb/index.md",
-  "log_level": "info",
-  "default_preset_id": "senior-dev",
-  "foreman_claude_pauses": [
-    {
-      "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
-      "start": "05:00",
-      "end": "11:00",
-      "engines": ["claude"],
-      "note": "Claude 2x usage window"
-    }
-  ],
-  "scan_blacklist_names": [],
-  "scan_blacklist_suffixes": [],
-  "scan_blacklist_dirs": [],
-  "scan_blacklist_substrings": [],
-  "catchall_target": null,
-  "ideas_target": null
-}
-```
+Important fields:
+- `providers` and `provider`: named LLM profiles and the active profile
+- `scan_roots`: recursive task-file roots
+- `file_patterns`: allowed task-source basenames such as `WORK.md` or `ROADMAP.md`
+- `explicit_paths`: one-off task files that should behave like normal task sources
+- `idea_dirs`: flat directories of `.md` files to include directly
+- `index_path`: read-only generated discovery index
+- `catchall_target` and `ideas_target`: optional non-project routing buckets
 
-| Field | Purpose |
-|-------|---------|
-| `provider` | Active provider profile name from the `providers` map. |
-| `providers` | Named LLM profiles. Each entry supports `type`, `model`, `base_url`, `api_key`, `api_key_env`, and optional extra `headers`. |
-| `scan_roots` | Recursive discovery roots. `name` is used only when sb needs extra label context. |
-| `file_patterns` | Filenames sb treats as projects (e.g. add `ROADMAP.md`). |
-| `idea_dirs` | Flat dirs whose `.md` files are loaded directly (no recursion). |
-| `label_max_depth` | Fallback label depth: keep the last N path components when no title label is present. |
-| `index_path` | Auto-regenerated routing-context cache (see below). |
-| `log_level` | JSON log verbosity for `~/.local/share/sb/logs/sb.log` (`debug`, `info`, `warn`, `error`). |
-| `default_preset_id` | Role selected by default for new agent launches. |
-| `foreman_claude_pauses` | Recurring local-time windows when Foreman should not auto-start matching engines. Useful for Claude usage windows such as `05:00`-`11:00` Pacific. |
-| `scan_blacklist_names` | Exact basenames to skip during discovery, case-insensitive. |
-| `scan_blacklist_suffixes` | File suffixes/extensions to skip during discovery, with or without the leading dot. |
-| `scan_blacklist_dirs` | Directory names/path segments to skip anywhere in a discovered path. |
-| `scan_blacklist_substrings` | Raw substrings that block a path anywhere in the full path. |
-| `catchall_target` | `{ "name": "...", "path": "..." }` — optional bucket for general notes that don't belong to a project. |
-| `ideas_target` | Same shape — optional bucket for project-less ideas. |
+`sb` keeps discovery intentionally narrow: only configured task-like markdown should be scanned.
 
-Press `,` inside sb to open the main `sb` config directory in your editor.
+## Behavior
 
-Use `api_key_env` when possible so secrets stay out of the config file. Existing top-level `model` and `ollama_host` fields are still honored as a compatibility shim for older configs.
+### Discovery
 
-Project discovery blacklist matches are case-insensitive. `scan_blacklist_names` checks only the basename, `scan_blacklist_dirs` checks each path segment, and `scan_blacklist_substrings` checks the full path. Idea dirs use the same blacklist rules as recursive scan roots.
+- Startup renders from lightweight discovery first, then hydrates pinned files before the rest.
+- The generated `index.md` is a human inspection artifact only. It is written asynchronously and is never used as runtime state.
 
-Env overrides:
+### Brain Dump
 
-- `SB_PROVIDER` selects the active named profile.
-- `SB_MODEL`, `SB_BASE_URL`, `SB_API_KEY`, `SB_API_KEY_ENV`, and `SB_PROVIDER_TYPE` override the active profile.
-- `OLLAMA_HOST` still overrides the active profile's base URL when the provider type is `ollama`.
+- `d` opens brain dump.
+- `ctrl+d` routes the dump through the active model.
+- Project items can land only in `Current Tasks` or `Backlog / Future Features`.
+- If the model cannot confidently choose a project, it uses `CLARIFY`.
 
-Example multi-provider setup:
+### Cleanup
 
-```json
-{
-  "provider": "openai",
-  "providers": {
-    "ollama": {
-      "type": "ollama",
-      "model": "qwen2.5:7b",
-      "base_url": "http://localhost:11434"
-    },
-    "openai": {
-      "type": "openai",
-      "model": "your-openai-model",
-      "base_url": "https://api.openai.com/v1",
-      "api_key_env": "OPENAI_API_KEY"
-    },
-    "anthropic": {
-      "type": "anthropic",
-      "model": "your-anthropic-model",
-      "base_url": "https://api.anthropic.com",
-      "api_key_env": "ANTHROPIC_API_KEY"
-    }
-  }
-}
-```
+- `c` cleans the selected file.
+- `C` chain-cleans the selected files, or all files when nothing is selected.
+- Cleanup rewrites task files into the canonical schema above.
+- Review the diff, then accept or reject it.
 
-The `o` key opens project directories in your editor — set `$VISUAL` (GUI) or `$EDITOR` (terminal). Falls back to probing for cursor, code, nvim, vim, nano.
+### Agents
 
-```bash
-export EDITOR=nvim      # terminal editor
-export VISUAL=code      # GUI editor (checked first)
-```
+- `a` opens Agents.
+- `A` opens the current project directly in the task picker.
+- Task-sourced runs remove accepted bullets from the source task file on approval and append shipped details to `DEVLOG.md`.
+- `ctrl+t` in New Run toggles immediate start vs Foreman queue.
+- Claude and Codex use tmux-backed runs; exec-style engines stay in-app.
 
-The header now shows the active LLM profile and model, for example `llm=openai:gpt-4.1-mini`. If the selected provider is incomplete, sb shows a warning like `llm disabled (missing OPENAI_API_KEY)` instead of leaving the active backend ambiguous.
-
-### Project labels and descriptions
-
-Any discovered markdown file can define both its dashboard label and routing description from the top preamble:
-
-```markdown
-# WORK - sb
-Second Brain TUI for managing backlog markdown files across projects
-
-# ROADMAP - toolkit
-v1 polish and follow-up milestones
-```
-
-The typed H1 (`# WORK - ...`, `# ROADMAP - ...`, etc.) sets the label. The first meaningful plain-text line below it becomes the short description used for routing and the index. Legacy inline metadata like `# WORK - sb | description` still works, but the preferred format is typed H1 plus the next-line summary.
-
-For local Ollama use, sb keeps routing context compact: each project contributes only its label, summary, optional current phase, and at most a couple of active-task preview bullets instead of the full markdown body.
-
-If there is no usable title label, sb falls back to the shortest useful relative path within the scan root, expanding only when needed to resolve collisions.
-
-If two different roots still collide after path expansion, sb prefixes the fallback label with the root name, e.g. `work/api` and `client/api`.
-
-### Index file
-
-On every startup sb writes `~/.config/sb/index.md` — a human-readable inventory of discovered projects, summaries, phase/task hints, and the active discovery config (`scan_roots`, `file_patterns`, `idea_dirs`), plus the configured special targets. It's a **read-only artifact** for inspecting routing context. Edits get overwritten on the next startup; update the source markdown file instead.
-
-### Logging
-
-sb now logs structured JSON to `~/.local/share/sb/logs/sb.log` and rotates at roughly 5 MiB, keeping 3 backups. The old `/tmp/sb-*.log` files are no longer used.
-
----
-
-## Workflows
-
-### Brain Dump (`d`)
-
-Offload thoughts without deciding where they go. sb asks the active LLM provider to classify each item and route it to the right project's WORK.md.
-
-1. Press `d` from the dashboard
-2. Type anything — a task, idea, or note (multi-line ok)
-3. `ctrl+d` to route — the active model splits and classifies each item
-4. Step through items one by one:
-   - `y`/`enter` — accept, write to target project
-   - `n` — skip item
-   - `r` — reroute: type a hint and the model re-classifies the item
-   - `esc` — abort remaining items (already accepted ones are kept)
-5. If the model is unsure about a project, a clarify prompt appears automatically — type a hint and press `enter` to reroute, or `esc` to skip
-
-After stepping through all items, a summary shows accepted vs skipped.
-
-### Cleanup (`c` / `C`)
-
-Lightly tidy a WORK.md file via the active LLM provider — removes obvious duplicates, fixes malformed bullets/tables, and preserves your existing headers/layout unless a move is clearly correct.
-
-- `c` — clean up the currently selected/viewed project
-- `C` — chain cleanup: runs on all selected projects (use `space` to select, or all if none selected)
-
-After the model runs, you see a diff. Press `y` to accept, `n` to reject, or `f` to give feedback and regenerate.
-
-### Daily Plan (`P`)
-
-Select projects with `space`, then press `P`. The active model reads their tasks and generates a prioritized daily plan.
-
-### Next Todo (`t`)
-
-Press `t` on any project — the active model reads the WORK.md and tells you the single best thing to work on next.
-
-### Fix non-list lines (`-`)
-
-Scans your project .md files for lines that aren't proper list items and fixes them in-place. Useful after messy manual edits.
-
-### Agents (Agents tab)
-
-Launch coding agents against `- ` items from your `WORK.md` files. The core flow is: choose a task, start a run, monitor it, review the result, and accept it back into your task system.
-
-From the dashboard, switch to the **Agents** tab:
-
-1. `n` opens the picker. Row 0 is `★ New run without task source` — select it to start without attaching task lines (lands on the Repo tab so you pick where to run). Selecting any project below it goes through the normal task-picker flow.
-   From the dashboard, `A` jumps straight into the current project's task picker.
-2. Step 1: pick a file with `enter` (or pick the freeform sentinel)
-3. Step 2 (sourced only): `space` toggles task items, `enter` continues when at least one is selected, `b` or `esc` returns to the file list with a clean selection state
-4. The new-run composer defaults to the primary path: **Role**, **Engine**, optional **Repo**, **Note**, then **Review**. Runs without a task source add the explicit **Repo** step where you can pick a discovered project, the cwd, or `(custom path…)` to type any absolute path. `enter` now advances the primary path all the way through the Note step and only launches from **Review**; `alt+enter` still launches directly from the note editor. Press `a` to reveal advanced per-run overrides for **Prompt**, **Hooks**, and **Perms** when you actually need them. On **Role**, **Engine**, and **Prompt**, `e` opens a typed selector: Engine accepts blank for `(role default)`, Prompt accepts blank for `(none)` and `default` for `(role default)`.
-   While the custom-path editor is open, the field is kept visible ahead of the repo list and its width stays clamped to the pane so you can still see what you are typing on shorter or narrower terminals.
-   While a textarea is focused, typing `?` stays in that textarea instead of toggling help.
-   Press `ctrl+t` in the composer to switch between **start now** and **send to Foreman**.
-   The New Run title now also shows that mode directly as `[Start now]` or `[Foreman queue]` so it stays visible while you move between tabs.
-   On shorter terminals, the composer now stays within the visible body area instead of pushing the global header/footer off-screen; longer role/review content scrolls inside the composer.
-   Scroll positions are also clamped to the last real screenful now, so paging past the end of review/setup/detail panes should not leave you stuck "below" the visible content.
-5. New runs default to the `senior-dev` role with the `codex` engine when those profiles exist. Multi-task launches can stay bundled or become a queued run sequence, depending on the selected role.
-6. The Agents tab is the main supervision surface: the left pane shows repo/task/queue/status/role, and the right pane shows a compact operator peek with review cues plus the selected run's latest activity.
-   The list uses stable columns and compacts multiline task text to a single line so scanning multiple runs stays readable.
-   Queued runs also show explicit progress (`solo`, `1/2 active`, `2/2 next`, `1/3 review`, etc.) without forcing you into the detail pane first.
-   `pgup/pgdn` scroll that right-side peek directly from the jobs list.
-   Local control copy now stays in the footer instead of being repeated inside each body pane, so picker / new-run / attached / setup content areas stay focused on the actual run state and content.
-   That right-hand detail pane is now intentionally compact and height-bounded: task, repo/session state, review risk, queue-next context, and the most useful output tail first, rather than a full inline review transcript. On shorter terminals the peek keeps a dedicated scroll window instead of letting wrapped metadata consume the whole pane.
-7. `f` or `tab` cycles the run filters (`all/live/running/attention/foreman/done`). The list header is intentionally minimal now: it only shows the active filter plus Foreman on/off state.
-8. Claude and Codex runs use real `tmux` windows under the shared `sb-cockpit` session. Launching one auto-attaches into the native CLI instead of trying to fake it inside Bubble Tea.
-9. `enter` or `i` on a live tmux-backed run switches the client into that run's window. Use `F1`, `Ctrl+g`, `F12`, or `Ctrl+C` to jump back to the shared `sb` `main` window.
-10. Finished tmux runs open an in-app activity/review view instead of trying to act like a perfect terminal replay. The peek prefers tmux pane snapshots and falls back to captured transcript/log output only when needed.
-11. Ollama and other exec-per-turn runs now open into a fuller in-app chat surface inside `sb` instead of the smaller supervision split: full-width transcript viewport, boxed composer, stable scroll while replies stream, bottom anchoring that keeps the latest assistant lines visible on shorter terminals, gentler wheel/viewport behavior because refresh and render now share the same height math, and a more compact header/composer layout so the transcript keeps more vertical space. `pgup/pgdn` still scrolls the transcript even while the composer is focused, `[` / `]` still jumps between jobs, and `Ctrl+C` now returns from the attached view to the Agents jobs list instead of quitting `sb`.
-12. `q` from the dashboard detaches the current `tmux` client instead of tearing down the cockpit session. Relaunching `sb` reattaches to the same session, and a second `sb` reuses the same shared cockpit/foreman.
-13. `F` from the Agents list toggles **Foreman** on or off. Inside the New Run composer, `ctrl+t` toggles whether the run starts immediately or gets sent to Foreman, so the Note textarea can still accept a literal uppercase `F`. When Foreman is off, runs explicitly sent to Foreman stay parked as `waiting for Foreman`, show up in the `foreman` filter, and do not auto-start. Turning Foreman on lets eligible Foreman runs launch unattended in their own tmux sessions, while same-repo write-capable work stays serialized.
-14. Runs explicitly sent to Foreman now also get an extra `FOREMAN PROTOCOL` block appended to the composed prompt, telling the agent to iterate until complete without permission prompts unless it hits the dirty-repo plan-only case.
-    For Claude/Codex providers, `sb` also now translates the role permission policy into the actual provider CLI flags at launch time, so unattended runs do not silently fall back to the provider's default interactive approval prompts.
-15. Session controls are now literal. `Ctrl+C` inside an in-app attached session backs out to the Agents jobs list instead of quitting `sb`. `s` sends `Esc` to a tmux-backed session as a soft stop/back action; it does not put the run into a separate paused state. `S` sends `Ctrl+C` as a hard interrupt. `c` literally sends `continue`. For exec runs, `S` still cancels the in-flight turn, while `c` sends a normal follow-up turn with `continue`.
-16. `a` accepts the selected reviewed run. For sourced runs this syncs back into `WORK.md` plus `DEVLOG.md`; for runs without a task source it marks the run complete without editing task files.
-   Review surfaces preview the task removals, `DEVLOG.md` additions, changed files, diff stat, hook activity, and preexisting dirty files before you accept.
-   Accept will refuse sync-back when the target `WORK.md` or `DEVLOG.md` already has uncommitted changes.
-17. `r` retries the selected job immediately with the same repo, note, and runtime override, but always as an attended immediate run rather than re-queueing it for Foreman.
-18. `R` reopens the New Run composer prefilled from the selected job so you can edit the role/runtime/repo/note before relaunching.
-19. `K` skips the current queued item and keeps it in history. `C` skips the current item plus the rest of that queued run sequence, again preserving history.
-20. `m` opens **Advanced Setup**, the reusable roles/prompts/hooks/engines area. The base screen now stays a two-step picker: left side for the selected role/prompt/hook/engine item, right side for the current field group. `tab`/`shift+tab` moves between item focus, field focus, and groups; `j/k` moves within the visible list. `enter` or `e` opens a centered overlay editor for the selected field instead of editing inline in the cramped right pane. Prompt/engine refs can be typed by id/name, hook-bundle refs accept comma-separated bundle ids/names, enum-style fields show their valid choices in the overlay, and prompt/hook fields show example shapes there. Hook bundle `Prompt hooks`, `Pre-shell hooks`, and `Post-shell hooks` now open a structured hook editor overlay with hook rows on the left and per-hook fields on the right, so the default path no longer makes you hand-edit JSON arrays. Inside that hook editor, `a` adds a row, `d` deletes one, `D` duplicates one, and `[` / `]` reorders rows. `pgup/pgdn` still jumps groups on the base screen. `a` on the base screen toggles the advanced groups (`Hooks`, `Advanced` overrides). In overlays, single-line/select fields save on `enter`, multiline fields save on `ctrl+s`, and `esc` cancels.
-   `n` creates a new role/engine and drops you into the wizard with `Name` already focused; saving each field auto-advances to the next group.
-   `D` duplicates and `d` deletes the highlighted item.
-   The picker, setup, list, and attached-session views share the same terminal-height budget, so local scrolling should not hide the app chrome on short terminals.
-
-tmux-backed jobs now also carry an explicit supervisor protocol inside the launch prompt. When a session needs the user to respond, it should print `SB_STATUS:WAITING_HUMAN`. When it is done and ready for review, it should print `SB_STATUS:READY_REVIEW`. `sb` watches the pane for those markers so normal jobs visibly flip into `waiting on you` / `needs review`, and Foreman can treat that as a real yield signal instead of guessing from whether the tmux window is still open.
-As a fallback, `sb` also treats obvious interruption / provider-limit messages in the live pane (for example `conversation interrupted` or `usage limit reached`) as a yield back to the operator, and it now also catches broader handoff endings when the model forgets to print `SB_STATUS`: direct questions, soft `if you'd like me to keep going...` offers, `Choose one` / `Select an option` prompts, `y/n` confirmations, and similar GUI-style follow-up requests. Those fallback detections only fire after the tmux activity capture has been quiet for 10 seconds, so an in-progress answer is less likely to false-trigger midway through a turn.
-Foreman handoffs now split cleanly: `waiting on you` and `needs review` no longer consume a Foreman concurrency slot, but write-capable jobs still keep their repo lock until you resolve them so later same-repo queued work does not pile onto a dirty tree by accident.
-
-**Roles** describe reusable launch behavior: role/persona, launch mode, system prompt, hooks, iteration, policies, and a suggested engine. **Engines** describe the concrete executor/runtime (Claude CLI, Codex CLI, Ollama model). A role can be launched with any loaded engine.
-
-Seed **roles** currently materialise in `~/.config/sb/presets/` on first run: `senior-dev`, `bug-fixer`, `test-writer`, `refactor`, `code-analyzer`, `explainer`, `docs-writer`, `scaffold`.
-
-Seed **engines** materialise in `~/.config/sb/providers/` on first run: `claude`, `codex`, `ollama-qwen`, `ollama-llama`, `ollama-gemma`.
-
-Edit any `*.json` in those dirs to customise. The on-disk schema still uses `presets` and `providers` for compatibility, even though the UI now frames them as roles and engines. Older utility roles still load if you already have them; they now sort below the core coding roles instead of crowding the top of the picker.
-From the Agents page, `m` opens in-app Advanced Setup.
-
-If you want to build your own stack outside the UI, the four library dirs are:
-
-- `~/.config/sb/prompts/` — reusable system prompt bodies
-- `~/.config/sb/hooks/` — reusable prompt/pre/post/iteration bundles
-- `~/.config/sb/providers/` — concrete executors/runtimes
-- `~/.config/sb/presets/` — roles that compose prompt + hooks + engine refs
-
-A minimal custom prompt:
-
-```json
-{
-  "id": "repo-surgeon",
-  "name": "Repo surgeon",
-  "body": "You are a careful repo mechanic. Make the smallest safe change, verify it, and report remaining risk."
-}
-```
-
-A minimal custom engine:
-
-```json
-{
-  "id": "codex-fast",
-  "name": "Codex fast",
-  "executor": {
-    "type": "codex"
-  }
-}
-```
-
-An Ollama engine override is the same shape, just with a model:
-
-```json
-{
-  "id": "ollama-qwen32b",
-  "name": "Ollama qwen3 32b",
-  "executor": {
-    "type": "ollama",
-    "model": "qwen3:32b"
-  }
-}
-```
-
-A hook bundle can inject prompt context, run shell hooks, and set iteration:
-
-```json
-{
-  "id": "verify-go",
-  "name": "Verify Go",
-  "post_shell": [
-    { "name": "go test", "cmd": "go test ./..." },
-    { "name": "git diff --stat", "cmd": "git diff --stat" }
-  ],
-  "iteration": { "mode": "one_shot" }
-}
-```
-
-A role/preset only stores refs plus launch policy:
-
-```json
-{
-  "id": "repo-surgeon-codex",
-  "name": "Repo surgeon",
-  "launch_mode": "single_job",
-  "permissions": "scoped-write",
-  "prompt_id": "repo-surgeon",
-  "hook_bundle_ids": ["verify-go"],
-  "engine_id": "codex-fast"
-}
-```
-
-Composition rules:
-
-- Presets are the source of truth for launch behavior; runtime-resolved `system_prompt`, `hooks`, and `executor` fields are loaded from refs and are not meant to be hand-authored inside preset JSON.
-- `prompt_id` is a single ref, `hook_bundle_ids` is an ordered list, and `engine_id` is a suggested default. At launch time you can still override the engine or clear prompt/hooks from the composer.
-- Hook bundles merge in listed order. Prompt hooks, pre-shell hooks, and post-shell hooks append together; the first non-default iteration policy wins.
-- Valid preset `launch_mode` values are `single_job` and `task_queue_sequence`.
-- Valid preset `permissions` values are `read-only`, `scoped-write`, and `wide-open`.
-- Valid engine `executor.type` values today are `claude`, `codex`, `ollama`, and `shell`. `shell` is still supported in code, but the main seeded engines are Claude/Codex/Ollama.
-
-The easiest authoring loop is: duplicate a seed JSON file, change the `id` first, then edit the fields you care about. `sb` uses the file id as the fallback identity, so keeping ids unique avoids confusing collisions in Advanced Setup.
-
-### tmux status bar and scrolling
-
-The bar at the bottom of live Claude/Codex sessions is the `tmux` status bar for the isolated `sb-cockpit` session. `sb` now gives that session its own styling, mouse support, higher scrollback, and no-prefix wheel/page scrolling without touching your personal tmux server or config.
-
-- The tmux bar refreshes on a moderate interval, and Claude usage snapshots are cached for a few minutes so the status command does not hammer the usage API.
-- The right side now shows only Claude/Codex limits; and any available 5h reset time is shown with the same `@3pm` marker for both providers.
-- `mouse` is enabled for the cockpit session, and wheel-up; `Esc` or `q` exits tmux copy-mode.
-- If you want the normal `sb` transcript/log view instead of the live native CLI pane, use `F1` / `Ctrl+g` / `F12` to return to `sb`.
-- Finished tmux jobs are easier to review inside `sb` itself, where `j/k`, `pgup/pgdn`, and the sessions rail are handled by the TUI instead of the native CLI.
-
-### Mouse wheel and long-file editing
-
-- The main `sb` surfaces now respond to the mouse wheel: dashboard preview, project view, help overlay, Agent jobs list, Agent settings, and attached transcript/log review.
-- On the dashboard, `pgup/pgdn` page the project list itself, while preview paging uses `ctrl+b` / `ctrl+f`.
-- The top header nav is mouse-clickable too: left-click `Dashboard`, `Dump`, or `Agent` to switch pages directly.
-- Inline `.md` edit mode supports `ctrl+home` / `ctrl+end` to jump to the top or bottom of long files.
-- Agent list, attached chat, launch flow, and library views now clamp themselves to short terminals instead of rendering past the footer; when space is tight, the viewport shrinks first and long summaries wrap to the available pane width before falling back to truncation.
-
-### Daemon (sb-foreman)
-
-The cockpit runs in a small daemon (`sb-foreman`) that owns job state. sb dials it over a unix socket at `~/.local/state/sb/foreman.sock`, so running jobs survive sb quits and restarts. Claude/Codex jobs are tracked as `tmux` windows; Ollama/shell jobs stay on the short-lived `exec.Cmd` path.
-
-When the daemon restarts, tmux-backed jobs are rehydrated from their persisted `TmuxTarget` and reconciled against the live `sb-cockpit` session instead of being marked failed immediately. That lets interactive Claude/Codex work keep running even if `sb` or `sb-foreman` was not up for a while.
-
-- `go build ./cmd/foreman` to build the binary; put it on your `PATH` (or set `cockpit_foreman_bin` in `config.json`).
-- sb auto-starts the daemon on launch if nothing is listening on the socket.
-- Set `"cockpit_daemon": false` in `config.json` to force the pre-daemon in-process mode.
-
-Job state is persisted under `~/.local/state/sb/jobs/<id>/`, rehydrated on every daemon start.
-
----
-
-## Navigation
+## Key Dashboard Keys
 
 | Key | Action |
-|-----|--------|
-| `j/k` | Navigate |
-| `pgup/pgdn` | Page through the project list |
-| `home/end` | Jump to the first / last project |
-| `J/K` | Scroll the WORK.md preview |
-| `ctrl+b` / `ctrl+f` | Page the WORK.md preview |
-| `enter` | Open project |
-| `e` | Edit WORK.md inline |
+|---|---|
+| `enter` | Open selected task file |
+| `e` | Edit selected task file |
+| `c` / `C` | Cleanup selected / chain cleanup |
 | `d` | Brain dump |
-| `a` | Agents |
-| `c` / `C` | Cleanup (single / chain) |
-| `P` | Daily plan |
-| `t` | Next todo |
-| `/` | Search across all WORK.md files |
-| `f` | Pin/unpin project |
-| `space` | Toggle project selection |
-| `o` | Open project dir in editor |
-| `r` | Refresh |
-| `,` | Open the `sb` config directory in editor |
-| `?` | Help |
+| `a` / `A` | Agents / open current project in task picker |
+| `f` | Pin or unpin project |
+| `r` | Refresh discovery |
+| `,` | Open sb config directory |
 
-Agents tab:
+## Notes
 
-| Key | Action |
-|-----|--------|
-| `n` | New run picker (row 0 is `★ New run without task source`, then projects) |
-| `F` | List: toggle Foreman on/off |
-| `ctrl+t` | New run: toggle immediate launch vs send to Foreman |
-| `f` | List: cycle job filters |
-| `tab` | List: cycle filters · New run: cycle role → engine → repo → note → review (advanced overrides optional) · Advanced Setup: cycle item/field focus, then groups · Attached exec-chat: swap transcript ↔ input |
-| `space` | Toggle task in picker |
-| `i` | List: open selected job (`tmux` attach while live, input focus for exec-chat jobs) · Attached exec-chat: focus input |
-| `pgup/pgdn` | List: page the right-side peek · Attached/review: page the transcript/log |
-| `enter` | New run: continue, note -> review, then launch from review · Advanced Setup: open/save overlay editor · open selected job (`tmux` attach while live, log review when finished, chat for exec jobs) · send when input-focused |
-| `alt+enter` | Launch from note |
-| `r` | Retry the selected job immediately with the same setup |
-| `R` | Reopen the selected job in the New Run composer with its prior settings prefilled |
-| `s` | Send `Esc` to the selected tmux-backed session |
-| `S` | Send `Ctrl+C` to the selected session / hard interrupt the active turn |
-| `c` | Send literal `continue` |
-| `ctrl+g` | Live tmux session: jump back to the shared `sb` main window |
-| `ctrl+c` | Attached in-app session: return to the Agents jobs list |
-| `j/k` | Scroll transcript or tmux activity in the attached view |
-| `[` / `]` | Attached view: previous / next job |
-| `K` | Skip queued/reviewed job and keep it in history (confirm) |
-| `C` | Skip current item and the rest of its queued run sequence (confirm) |
-| `d` | Delete job (confirm) |
-| `q` | Detach cockpit client when running inside `sb-cockpit`; otherwise quit/go back |
-| `esc` | Back (or leave input focus when typing) |
-
-Full keybind reference is available in-app with `?`.
-
-## License
-
-[AGPL-3.0](LICENSE)
+- `o` opens the selected project directory in your editor using `$VISUAL` or `$EDITOR`.
+- Logs are written to `~/.local/share/sb/logs/sb.log`.
+- Shared repo workflow rules for Claude and Codex live in [`CLAUDE.md`](CLAUDE.md).

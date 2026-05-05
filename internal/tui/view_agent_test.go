@@ -1109,16 +1109,16 @@ func TestDashboardViewFitsShortTerminal(t *testing.T) {
 	assertViewFitsHeight(t, m)
 }
 
-func TestDashboardPlanResultFitsShortTerminal(t *testing.T) {
+func TestDashboardLoadingPreviewFitsShortTerminal(t *testing.T) {
 	m := newModel(nil)
 	m.page = pageDashboard
-	m.mode = modePlanResult
+	m.mode = modeNormal
 	m.width = 80
 	m.height = 12
 	m.loading = false
 	m.cfg = &config.Config{}
-	m.projects = []workmd.Project{{Name: "demo", Path: "/tmp/demo/WORK.md", Content: "# WORK - demo"}}
-	m.viewport.SetContent(strings.Repeat("plan line\n", 30))
+	m.projects = []workmd.Project{{Name: "demo", Path: "/tmp/demo/WORK.md"}}
+	m.viewport.SetContent("loading demo…")
 	assertViewFitsHeight(t, m)
 }
 

@@ -14,6 +14,12 @@ import (
 	"github.com/LFroesch/sb/internal/config"
 )
 
+const (
+	sectionGuide = `Section guide:
+- current_tasks: active work that should happen now
+- backlog: future ideas or not-now work`
+)
+
 type Client struct {
 	provider config.ProviderConfig
 }
@@ -65,8 +71,11 @@ func (c *Client) chatOllama(ctx context.Context, prompt string, opts map[string]
 			Content string `json:"content"`
 		} `json:"message"`
 	}
-	if err := c.doJSON(ctx, http.MethodPost, c.provider.BaseURL+"/api/chat", nil, body, &resp); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, strings.TrimRight(c.provider.BaseURL, "/")+"/api/chat", nil, body, &resp); err != nil {
 		return "", fmt.Errorf("ollama: %w", err)
+	}
+	if strings.TrimSpace(resp.Message.Content) == "" {
+		return "", fmt.Errorf("ollama: empty response")
 	}
 	return resp.Message.Content, nil
 }
@@ -274,6 +283,42 @@ func renderSpecialTargets(catchall, ideas *SpecialTarget) string {
 	return b.String()
 }
 
+func deterministicOptions() map[string]any {
+	return map[string]any{
+		"temperature": 0,
+		"top_p":       1,
+		"seed":        42,
+	}
+}
+
+func stripMarkdownFence(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.TrimPrefix(cleaned, "```markdown")
+	cleaned = strings.TrimPrefix(cleaned, "```md")
+	cleaned = strings.TrimPrefix(cleaned, "```json")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(strings.TrimSpace(cleaned), "```")
+	return strings.TrimSpace(cleaned)
+}
+
+func extractBracketedJSON(raw string, open, close string) (string, error) {
+	content := stripMarkdownFence(raw)
+	start := strings.Index(content, open)
+	end := strings.LastIndex(content, close)
+	if start < 0 || end <= start {
+		return "", fmt.Errorf("no JSON %s...%s in response: %s", open, close, content)
+	}
+	return content[start : end+1], nil
+}
+
+func extractJSONArray(raw string) (string, error) {
+	return extractBracketedJSON(raw, "[", "]")
+}
+
+func extractJSONObject(raw string) (string, error) {
+	return extractBracketedJSON(raw, "{", "}")
+}
+
 // defaultUnsureLine returns the fallback instruction for ambiguous items, using
 // the catchall name if configured, else falling back to CLARIFY.
 func defaultUnsureLine(catchall *SpecialTarget) string {
@@ -284,22 +329,28 @@ func defaultUnsureLine(catchall *SpecialTarget) string {
 }
 
 // CleanupPrompt is the system prompt for WORK.md normalization.
-const CleanupPrompt = `You are a WORK.md file organizer. Your job is to lightly tidy the file while preserving its structure and meaning. You must not add, remove, rewrite, or invent substantive content.
+const CleanupPrompt = `You are a canonical task-file organizer. Your job is to rewrite the input into the strict sb task schema while preserving task meaning and wording.
 
 ABSOLUTE RULES — violating any of these is total failure:
 - DO NOT add any text that is not in the input. No "None noted", no summaries, nothing invented.
-- DO NOT drop any item. Every bullet, note, and line from the input must appear in the output.
+- DO NOT drop any task item. Every task bullet from the input must appear in the output.
 - DO NOT rewrite or rephrase task text. Copy each bullet word-for-word, character-for-character.
 - Each item appears EXACTLY ONCE. Never repeat an item in multiple sections.
 
 Structure rules:
 1. Keep the first heading exactly as-is, including its file-type prefix such as "# WORK - ..." or "# ROADMAP - ...".
-2. Preserve existing headers and their order unless an item is obviously under the wrong header.
-3. Keep the short description line directly below the H1 if one exists.
-4. You may remove exact duplicates.
-5. You may normalize malformed bullets and convert obvious task tables into plain bullets.
-6. Do NOT invent canonical headers or aggressively merge/rename sections.
-7. Output ONLY the cleaned markdown. No commentary, no code fences.`
+2. Keep the short description line directly below the H1 if one exists.
+3. Output ONLY these sections in this order:
+   - ## Current Phase
+   - ## Current Tasks
+   - ## Backlog / Future Features
+4. Current Phase must be a single concise plain-text line.
+5. Move urgent bugs/blockers into ## Current Tasks instead of using a separate section.
+6. Move future ideas/features/someday items into ## Backlog / Future Features.
+7. Remove instruction-only or legacy sections such as Workflow Rules, Unsorted, Bugs + Blockers, Updates + Features.
+8. You may remove exact duplicates.
+9. You may normalize malformed bullets and convert obvious task tables into plain bullets.
+10. Output ONLY the cleaned markdown. No commentary, no code fences.`
 
 // Cleanup sends a WORK.md file to the active provider for normalization and
 // returns the cleaned content. If feedback is non-empty it's appended so the
@@ -311,22 +362,14 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 			"\nPlease address this feedback in your cleanup."
 	}
 
-	raw, err := c.chat(ctx, prompt, 120*time.Second, map[string]any{
-		"temperature": 0,
-		"top_p":       1,
-		"seed":        42,
-	})
+	raw, err := c.chat(ctx, prompt, 120*time.Second, deterministicOptions())
 	if err != nil {
 		return "", err
 	}
 	slog.Info("llm cleanup", "provider", c.providerLabel(), "prompt", prompt, "response", raw)
 
 	project := projectNameFromContent(content)
-	cleaned := strings.TrimSpace(raw)
-	cleaned = strings.TrimPrefix(cleaned, "```markdown")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-	cleaned = normalizeContent(strings.TrimSpace(cleaned))
+	cleaned := normalizeContent(stripMarkdownFence(raw))
 	cleaned = stripProjectTagsFromBullets(cleaned, project)
 	cleaned = reconcileMissingBullets(content, cleaned)
 	cleaned = reconcileMissingSections(content, cleaned)
@@ -346,37 +389,24 @@ Your job:
 Available projects:
 %s
 %s
-Section guide:
-- current_tasks: active work (default when unsure between current_tasks and bugs_blockers)
-- bugs_blockers: something broken, failing, crashing, or actively blocking progress — urgent fix needed
-- updates_features: planned improvements, enhancements, new features
-- backlog: future ideas, someday/maybe items, low priority
-- unsorted: genuinely unclear
+%s
 
 %s
 
 Respond with ONLY a valid JSON array. Each element: {"text": "the extracted item", "project": "name", "section": "current_tasks"}
 
 Brain dump:
-%s`, renderProjectList(projects), renderSpecialTargets(catchall, ideas), defaultUnsureLine(catchall), text)
+%s`, renderProjectList(projects), renderSpecialTargets(catchall, ideas), sectionGuide, defaultUnsureLine(catchall), text)
 
-	raw, err := c.chat(ctx, prompt, 3*time.Minute, map[string]any{
-		"temperature": 0,
-		"top_p":       1,
-		"seed":        42,
-	})
+	raw, err := c.chat(ctx, prompt, 3*time.Minute, deterministicOptions())
 	if err != nil {
 		return nil, err
 	}
 
-	content := strings.TrimSpace(raw)
-	start := strings.Index(content, "[")
-	end := strings.LastIndex(content, "]")
-	if start < 0 || end <= start {
-		return nil, fmt.Errorf("no JSON array in response: %s", content)
+	content, err := extractJSONArray(raw)
+	if err != nil {
+		return nil, err
 	}
-	content = content[start : end+1]
-
 	var items []RouteItem
 	if err := json.Unmarshal([]byte(content), &items); err != nil {
 		return nil, fmt.Errorf("parse routes: %w (raw: %s)", err, raw)
@@ -391,68 +421,9 @@ Brain dump:
 	return items, nil
 }
 
-// NextTodo asks the active provider to suggest what to work on next given a WORK.md.
-func (c *Client) NextTodo(ctx context.Context, content string) (string, error) {
-	prompt := `You are a helpful assistant reviewing a WORK.md task file. Give a short, direct answer: what are the 2-3 most important things to work on right now? Be specific and actionable. No fluff.
-
-Priority order: Bugs + Blockers first (urgent), then Current Tasks, then Unsorted. If there are bugs/blockers, always lead with those.
-
-WORK.md:
-` + content
-
-	raw, err := c.chat(ctx, prompt, 60*time.Second, nil)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(raw), nil
-}
-
-// DailyPlan asks the active provider to group tasks from multiple projects by
-// theme and suggest a day plan.
-func (c *Client) DailyPlan(ctx context.Context, taskSummary string) (string, error) {
-	prompt := `You are a daily planning assistant. Given current tasks from multiple projects, group similar tasks by context/theme and produce a focused plan for today as clean markdown.
-
-Rules:
-- Create 2-4 context groups (e.g. "Bugs + Blockers", "Tooling", "Active Dev")
-- Pick 1-3 specific tasks per group that would move the needle today
-- Bugs + Blockers are URGENT — if any exist, surface them first under a "Bugs + Blockers" group regardless of project
-- Lead with highest-impact group (bugs/blockers group always first if present)
-- Copy task text verbatim from the input. Do not rephrase or invent tasks.
-- Each task is one bullet with the project name in parens at the end
-
-Output must be valid markdown using ONLY this structure:
-# Daily Plan
-
-## Group Name
-- task description (project-name)
-- another task (project-name)
-
-## Next Group Name
-- task description (project-name)
-
-No commentary, no preamble, no trailing notes — just the markdown plan.
-
-Current tasks:
-` + taskSummary
-
-	raw, err := c.chat(ctx, prompt, 90*time.Second, map[string]any{
-		"temperature": 0,
-		"top_p":       1,
-		"seed":        42,
-	})
-	if err != nil {
-		return "", err
-	}
-	slog.Info("llm daily plan", "provider", c.providerLabel(), "prompt", prompt, "response", raw)
-	cleaned := strings.TrimSpace(raw)
-	cleaned = strings.TrimPrefix(cleaned, "```markdown")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-	return strings.TrimSpace(cleaned), nil
-}
-
-// reconcileMissingBullets checks that every bullet from the original content appears in the
-// cleaned output. Any missing bullets are appended to ## Unsorted as a safety net.
+// reconcileMissingBullets checks that every bullet from the original content
+// appears in the cleaned output. Missing bullets are appended to
+// `## Current Tasks` as a conservative safety net.
 func reconcileMissingBullets(original, cleaned string) string {
 	extractBullets := func(s string) []string {
 		var bullets []string
@@ -488,14 +459,14 @@ func reconcileMissingBullets(original, cleaned string) string {
 		return cleaned
 	}
 
-	unsortedHeader := "## Unsorted"
-	if strings.Contains(cleaned, unsortedHeader) {
+	currentHeader := "## Current Tasks"
+	if strings.Contains(cleaned, currentHeader) {
 		lines := strings.Split(cleaned, "\n")
 		out := make([]string, 0, len(lines)+len(missing)+1)
 		inserted := false
 		for i, line := range lines {
 			out = append(out, line)
-			if !inserted && strings.TrimSpace(line) == unsortedHeader {
+			if !inserted && strings.TrimSpace(line) == currentHeader {
 				if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
 					out = append(out, lines[i+1])
 					i++
@@ -508,7 +479,7 @@ func reconcileMissingBullets(original, cleaned string) string {
 		return strings.Join(out, "\n")
 	}
 
-	result := strings.TrimRight(cleaned, "\n") + "\n\n## Unsorted\n\n"
+	result := strings.TrimRight(cleaned, "\n") + "\n\n## Current Tasks\n\n"
 	for _, m := range missing {
 		result += m + "\n"
 	}
@@ -516,50 +487,8 @@ func reconcileMissingBullets(original, cleaned string) string {
 }
 
 func reconcileMissingSections(original, cleaned string) string {
-	canonical := map[string]bool{
-		"## Current Phase":      true,
-		"## Current Tasks":      true,
-		"## Bugs + Blockers":    true,
-		"## Updates + Features": true,
-		"## Backlog":            true,
-		"## Unsorted":           true,
-	}
-
-	type sectionBlock struct {
-		header string
-		body   []string
-	}
-
-	var blocks []sectionBlock
-	var current *sectionBlock
-	for _, line := range strings.Split(original, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			if current != nil && !canonical[current.header] {
-				blocks = append(blocks, *current)
-			}
-			current = &sectionBlock{header: trimmed, body: []string{line}}
-			continue
-		}
-		if current != nil {
-			current.body = append(current.body, line)
-		}
-	}
-	if current != nil && !canonical[current.header] {
-		blocks = append(blocks, *current)
-	}
-	if len(blocks) == 0 {
-		return cleaned
-	}
-
-	result := strings.TrimRight(cleaned, "\n")
-	for _, block := range blocks {
-		if strings.Contains(cleaned, block.header) {
-			continue
-		}
-		result += "\n\n" + strings.TrimRight(strings.Join(block.body, "\n"), "\n")
-	}
-	return result
+	_ = original
+	return cleaned
 }
 
 // ensureHeaderNewlines guarantees a blank line after every ## heading.
@@ -729,18 +658,14 @@ func stripProjectTag(text, project string) string {
 	return text
 }
 
-// projectNameFromContent extracts the slug from a "# WORK - slug" title line.
+// projectNameFromContent extracts the slug from a typed H1 line.
 func projectNameFromContent(content string) string {
 	for _, line := range strings.SplitN(content, "\n", 5) {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "# ") {
 			title := strings.TrimSpace(strings.TrimPrefix(line, "# "))
 			if _, afterDash, ok := strings.Cut(title, " - "); ok {
-				name := afterDash
-				if beforePipe, _, hasPipe := strings.Cut(name, "|"); hasPipe {
-					name = beforePipe
-				}
-				return strings.TrimSpace(name)
+				return strings.TrimSpace(afterDash)
 			}
 			return strings.TrimSpace(title)
 		}
@@ -776,29 +701,21 @@ func (c *Client) RerouteSingle(ctx context.Context, text, clarification string, 
 Available projects:
 %s
 %s
-Sections: current_tasks (active work, default), bugs_blockers (broken/actively blocking), updates_features (planned improvements), backlog (future/low-prio), unsorted (unclear)
+%s
 
 Respond with ONLY valid JSON: {"text": "the item", "project": "name", "section": "current_tasks"}
 
-Item: %s`, clarification, renderProjectList(projects), renderSpecialTargets(catchall, ideas), text)
+Item: %s`, clarification, renderProjectList(projects), renderSpecialTargets(catchall, ideas), sectionGuide, text)
 
-	raw, err := c.chat(ctx, prompt, 30*time.Second, map[string]any{
-		"temperature": 0,
-		"top_p":       1,
-		"seed":        42,
-	})
+	raw, err := c.chat(ctx, prompt, 30*time.Second, deterministicOptions())
 	if err != nil {
 		return nil, err
 	}
 
-	content := strings.TrimSpace(raw)
-	if idx := strings.Index(content, "{"); idx >= 0 {
-		end := strings.LastIndex(content, "}")
-		if end > idx {
-			content = content[idx : end+1]
-		}
+	content, err := extractJSONObject(raw)
+	if err != nil {
+		return nil, err
 	}
-
 	var item RouteItem
 	if err := json.Unmarshal([]byte(content), &item); err != nil {
 		return nil, fmt.Errorf("parse reroute: %w (raw: %s)", err, raw)

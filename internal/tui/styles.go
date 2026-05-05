@@ -12,7 +12,6 @@ var (
 	colorText     = lipgloss.Color("#EEEEEE")
 	colorYellow   = lipgloss.Color("#F3F99D")
 	colorBacklog  = lipgloss.Color("#5E8DD6") // blue — backlog
-	colorUnsorted = lipgloss.Color("#FF6AC1") // pink — unsorted
 
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -32,9 +31,6 @@ var (
 
 	backlogStyle = lipgloss.NewStyle().
 			Foreground(colorBacklog)
-
-	unsortedStyle = lipgloss.NewStyle().
-			Foreground(colorUnsorted)
 
 	currentStyle = lipgloss.NewStyle().
 			Foreground(colorYellow) // yellow — current task counts

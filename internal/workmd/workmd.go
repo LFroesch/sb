@@ -30,7 +30,7 @@ func fileKey(path string) string {
 type Task struct {
 	Name    string
 	Status  string // raw status/priority text from table
-	Section string // "current", "inbox", "backlog"
+	Section string // "current" or "backlog"
 	Done    bool
 }
 
@@ -49,11 +49,10 @@ type Project struct {
 	Tasks         []Task
 	TaskCount     int // non-done tasks
 	CurrentCount  int
-	BugsCount     int
-	UnsortedCount int
 	BacklogCount  int
 	NonListCount  int // plain-text lines in sections (not list items)
 	ModTime       time.Time
+	Hydrated      bool
 }
 
 type discoverRoot struct {
@@ -67,10 +66,28 @@ type nameCandidate struct {
 	explicit bool
 }
 
-// Discover finds markdown files under scanDirs matching filePatterns, plus
-// all .md files in ideaDirs (flat, non-recursive).
-// Pass nil/empty slices to use the legacy defaults.
-func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg *config.Config) []Project {
+// Discover finds markdown files under scan roots matching filePatterns, plus
+// explicit task-file paths, plus all .md files in ideaDirs (flat, non-recursive).
+// It fully hydrates every discovered file.
+func Discover(scanRoots []config.ScanRoot, filePatterns, explicitPaths, ideaDirs []string, cfg *config.Config) []Project {
+	projects := DiscoverCandidates(scanRoots, filePatterns, explicitPaths, ideaDirs, cfg)
+	for i := range projects {
+		hydrated, ok := HydrateProject(projects[i], cfg)
+		if !ok {
+			continue
+		}
+		projects[i] = hydrated
+	}
+	resolveProjectNames(projects, cfg)
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].ModTime.After(projects[j].ModTime)
+	})
+	return projects
+}
+
+// DiscoverCandidates returns lightweight project entries quickly so the TUI can
+// render before full file hydration completes.
+func DiscoverCandidates(scanRoots []config.ScanRoot, filePatterns, explicitPaths, ideaDirs []string, cfg *config.Config) []Project {
 	home, _ := os.UserHomeDir()
 	if len(scanRoots) == 0 {
 		scanRoots = []config.ScanRoot{{Name: "projects", Path: filepath.Join(home, "projects")}}
@@ -94,15 +111,14 @@ func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg 
 		depth := strings.Count(path, string(filepath.Separator))
 		if entry, exists := seen[resolved]; exists {
 			if depth < entry.depth {
-				// Shallower path wins — replace the existing project in-place
-				if p, ok := loadProject(path, root, cfg); ok {
+				if p, ok := candidateProject(path, root); ok {
 					projects[entry.idx] = p
 					seen[resolved] = seenEntry{idx: entry.idx, depth: depth}
 				}
 			}
 			return
 		}
-		if p, ok := loadProject(path, root, cfg); ok {
+		if p, ok := candidateProject(path, root); ok {
 			seen[resolved] = seenEntry{idx: len(projects), depth: depth}
 			projects = append(projects, p)
 		}
@@ -134,6 +150,18 @@ func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg 
 		}
 	}
 
+	for _, path := range explicitPaths {
+		path = strings.TrimSpace(path)
+		if path == "" || cfg.IsScanPathBlocked(path) {
+			continue
+		}
+		addOrReplace(path, discoverRoot{
+			Name: filepath.Base(filepath.Dir(path)),
+			Path: filepath.Dir(path),
+			Flat: true,
+		})
+	}
+
 	// Flat idea dirs — load all .md files directly (non-recursive)
 	for _, dir := range ideaDirs {
 		discoverFlatDir(dir, discoverRoot{
@@ -149,29 +177,48 @@ func Discover(scanRoots []config.ScanRoot, filePatterns, ideaDirs []string, cfg 
 	}
 
 	resolveProjectNames(projects, cfg)
-
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].ModTime.After(projects[j].ModTime)
 	})
-
 	return projects
 }
 
-// loadProject reads a markdown file at path and builds a Project.
-// root is used only for deriving the display name.
-func loadProject(path string, root discoverRoot, cfg *config.Config) (Project, bool) {
-	content, err := os.ReadFile(path)
+func candidateProject(path string, root discoverRoot) (Project, bool) {
+	rel := relativeProjectPath(path, root)
+	fallback := fallbackProjectName(rel, root.Name)
+	var modTime time.Time
+	if info, err := os.Stat(path); err == nil {
+		modTime = info.ModTime()
+	}
+	return Project{
+		Name:         fallback,
+		Path:         path,
+		Dir:          filepath.Dir(path),
+		RootName:     root.Name,
+		RelativePath: rel,
+		FileName:     filepath.Base(path),
+		ModTime:      modTime,
+	}, true
+}
+
+// HydrateProject reads a markdown file and fills in metadata, content, and
+// counts while preserving the candidate discovery identity fields.
+func HydrateProject(project Project, cfg *config.Config) (Project, bool) {
+	if strings.TrimSpace(project.Path) == "" {
+		return Project{}, false
+	}
+	_ = cfg
+	content, err := os.ReadFile(project.Path)
 	if err != nil {
 		return Project{}, false
 	}
 	text := string(content)
 	meta := extractProjectMetadata(text)
-	rel := relativeProjectPath(path, root)
 	tasks := extractTasks(text)
 	phase := extractPhase(text)
 	activePreview := activeTaskPreview(tasks, 2)
 
-	var cur, bugs, unsorted, backlog int
+	var cur, backlog int
 	for _, t := range tasks {
 		if t.Done {
 			continue
@@ -179,41 +226,24 @@ func loadProject(path string, root discoverRoot, cfg *config.Config) (Project, b
 		switch t.Section {
 		case "current":
 			cur++
-		case "bugs":
-			bugs++
-		case "unsorted":
-			unsorted++
 		case "backlog":
 			backlog++
 		}
 	}
 
-	var modTime time.Time
-	if info, err := os.Stat(path); err == nil {
-		modTime = info.ModTime()
-	}
-
-	return Project{
-		Name:          meta.Label,
-		Description:   meta.Description,
-		Path:          path,
-		Dir:           filepath.Dir(path),
-		RootName:      root.Name,
-		RelativePath:  rel,
-		Content:       text,
-		Title:         meta.Title,
-		FileName:      filepath.Base(path),
-		Phase:         phase,
-		ActivePreview: activePreview,
-		Tasks:         tasks,
-		TaskCount:     cur + bugs + unsorted + backlog,
-		CurrentCount:  cur,
-		BugsCount:     bugs,
-		UnsortedCount: unsorted,
-		BacklogCount:  backlog,
-		NonListCount:  countNonListLines(text),
-		ModTime:       modTime,
-	}, true
+	project.Name = meta.Label
+	project.Description = meta.Description
+	project.Content = text
+	project.Title = meta.Title
+	project.Phase = phase
+	project.ActivePreview = activePreview
+	project.Tasks = tasks
+	project.TaskCount = cur + backlog
+	project.CurrentCount = cur
+	project.BacklogCount = backlog
+	project.NonListCount = countNonListLines(text)
+	project.Hydrated = true
+	return project, true
 }
 
 type titleMetadata struct {
@@ -222,42 +252,29 @@ type titleMetadata struct {
 	Description string
 }
 
-// extractProjectMetadata supports both:
-//   - legacy title metadata: "# WORK - sb | description"
-//   - structured preamble: first H1 is display name, first plain text line
-//     below it is the project summary.
+// extractProjectMetadata expects a typed H1 such as "# WORK - sb" followed by a
+// short plain-text summary line below it.
 func extractProjectMetadata(content string) titleMetadata {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "# ") {
 			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
-			meta := parseLegacyTitleMetadata(title)
-			if meta.Title == "" {
-				meta.Title = title
+			if !strings.Contains(title, " - ") {
+				return titleMetadata{}
 			}
-			if meta.Label == "" {
-				meta.Label = meta.Title
+			beforeDash, afterDash, ok := strings.Cut(title, " - ")
+			if !ok || strings.TrimSpace(beforeDash) == "" || strings.TrimSpace(afterDash) == "" {
+				return titleMetadata{}
 			}
-			if meta.Description == "" {
-				meta.Description = extractPreambleSummary(lines[i+1:])
+			return titleMetadata{
+				Title:       title,
+				Label:       strings.TrimSpace(afterDash),
+				Description: extractPreambleSummary(lines[i+1:]),
 			}
-			return meta
 		}
 	}
 	return titleMetadata{}
-}
-
-func parseLegacyTitleMetadata(title string) titleMetadata {
-	meta := titleMetadata{Title: strings.TrimSpace(title)}
-	beforePipe, desc, hasDesc := strings.Cut(meta.Title, "|")
-	if _, afterDash, ok := strings.Cut(strings.TrimSpace(beforePipe), " - "); ok {
-		meta.Label = strings.TrimSpace(afterDash)
-		if hasDesc {
-			meta.Description = strings.TrimSpace(desc)
-		}
-	}
-	return meta
 }
 
 func extractPreambleSummary(lines []string) string {
@@ -303,8 +320,7 @@ func Save(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-// AppendToSection appends text to a named section in a WORK.md file.
-// section is matched loosely (e.g. "inbox" → "## Inbox").
+// AppendToSection appends text to a named canonical task section.
 // If the section doesn't exist, it's created at the end of the file.
 func AppendToSection(path, section, text string) error {
 	raw, err := os.ReadFile(path)
@@ -348,20 +364,11 @@ func AppendToSection(path, section, text string) error {
 // sectionHeader maps a loose section name to a ## heading.
 func sectionHeader(section string) string {
 	switch strings.ToLower(strings.ReplaceAll(section, "_", " ")) {
-	case "current tasks", "current":
+	case "", "current", "current tasks":
 		return "## Current Tasks"
-	case "bugs blockers", "bugs", "blockers":
-		return "## Bugs + Blockers"
-	case "updates features", "updates", "features":
-		return "## Updates + Features"
 	case "backlog":
-		return "## Backlog"
-	case "unsorted", "inbox":
-		return "## Unsorted"
+		return "## Backlog / Future Features"
 	default:
-		if section == "" {
-			return "## Current Tasks"
-		}
 		return "## " + strings.ToUpper(section[:1]) + section[1:]
 	}
 }
@@ -428,7 +435,7 @@ func extractPhase(content string) string {
 		if trimmed != "" {
 			parts = append(parts, trimmed)
 		}
-		if len(parts) >= 2 {
+		if len(parts) >= 1 {
 			break
 		}
 	}
@@ -439,7 +446,7 @@ func activeTaskPreview(tasks []Task, limit int) []string {
 	if limit <= 0 {
 		return nil
 	}
-	sections := []string{"current", "bugs", "unsorted", "backlog"}
+	sections := []string{"current", "backlog"}
 	var out []string
 	for _, section := range sections {
 		for _, task := range tasks {
@@ -503,16 +510,13 @@ func resolveProjectNames(projects []Project, cfg *config.Config) {
 	candidates := make([]nameCandidate, len(projects))
 	groups := make(map[string][]int)
 	for i := range projects {
-		if projects[i].Name != "" {
+		if projects[i].Title != "" {
 			candidates[i] = nameCandidate{
 				base:     projects[i].Name,
 				explicit: true,
 			}
 		} else {
-			fallback := fixedSuffix(relativeParts(projects[i].RelativePath), maxDepth)
-			if fallback == "" {
-				fallback = projects[i].RootName
-			}
+			fallback := fallbackProjectName(projects[i].RelativePath, projects[i].RootName)
 			candidates[i] = nameCandidate{
 				base: fallback,
 			}
@@ -530,6 +534,12 @@ func resolveProjectNames(projects []Project, cfg *config.Config) {
 		}
 		resolveCollisionGroup(projects, candidates, idxs, maxDepth)
 	}
+}
+
+// ResolveProjectNamesForTUI exposes the shared collision-aware label resolver to
+// the TUI's staged hydration path without duplicating naming logic there.
+func ResolveProjectNamesForTUI(projects []Project, cfg *config.Config) {
+	resolveProjectNames(projects, cfg)
 }
 
 func resolveCollisionGroup(projects []Project, candidates []nameCandidate, idxs []int, maxDepth int) {
@@ -640,6 +650,14 @@ func shortestUniqueSuffix(projects []Project, idxs []int, targetIdx int, minDept
 	return strings.Join(parts, "/")
 }
 
+func fallbackProjectName(rel, rootName string) string {
+	fallback := fixedSuffix(relativeParts(rel), 2)
+	if fallback == "" {
+		fallback = rootName
+	}
+	return fallback
+}
+
 // sectionType maps a heading string to a canonical section name.
 // Returns "" for sections we don't care about.
 func sectionType(heading string) string {
@@ -647,15 +665,7 @@ func sectionType(heading string) string {
 	switch {
 	case strings.Contains(h, "current task") || h == "tasks" || h == "todo":
 		return "current"
-	case strings.Contains(h, "bugs") || strings.Contains(h, "blockers"):
-		return "bugs"
-	case strings.Contains(h, "inbox") || strings.Contains(h, "unsorted"):
-		return "unsorted"
-	case strings.Contains(h, "backlog") || strings.Contains(h, "feature") ||
-		strings.Contains(h, "ideas") || strings.Contains(h, "someday") ||
-		strings.Contains(h, "polish") ||
-		strings.Contains(h, "p1") || strings.Contains(h, "p2") ||
-		strings.Contains(h, "high impact") || strings.Contains(h, "maybe"):
+	case strings.Contains(h, "backlog") || strings.Contains(h, "future feature"):
 		return "backlog"
 	default:
 		return ""

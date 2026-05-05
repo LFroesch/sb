@@ -67,6 +67,7 @@ type Config struct {
 	ScanRoots      []ScanRoot                `json:"scan_roots,omitempty"`      // recursive discovery roots
 	ScanDirs       []string                  `json:"scan_dirs,omitempty"`       // deprecated compatibility field
 	FilePatterns   []string                  `json:"file_patterns"`             // file names to match (e.g. WORK.md, ROADMAP.md)
+	ExplicitPaths  []string                  `json:"explicit_paths,omitempty"`  // explicit markdown files to include even if they don't match FilePatterns
 	IdeaDirs       []string                  `json:"idea_dirs"`                 // dirs where all .md files are loaded flat
 	LabelMaxDepth  int                       `json:"label_max_depth,omitempty"` // number of trailing path components to keep for fallback labels
 	IndexPath      string                    `json:"index_path"`                // path to the auto-regenerated routing-context index
@@ -125,6 +126,7 @@ const (
 
 var defaultScanRoots = []ScanRoot{{Name: "projects", Path: "~/projects"}}
 var defaultFilePatterns = []string{"WORK.md"}
+var defaultScanBlacklistDirs = []string{"WORKmd"}
 
 func defaultProviders() map[string]ProviderConfig {
 	return map[string]ProviderConfig{
@@ -308,6 +310,9 @@ func (c *Config) ExpandedScanRoots() []ScanRoot {
 
 // ExpandedIdeaDirs returns IdeaDirs with ~ expanded.
 func (c *Config) ExpandedIdeaDirs() []string { return expandAll(c.IdeaDirs) }
+
+// ExpandedExplicitPaths returns ExplicitPaths with ~ expanded.
+func (c *Config) ExpandedExplicitPaths() []string { return expandAll(c.ExplicitPaths) }
 
 // ExpandedIndexPath returns IndexPath with ~ expanded.
 func (c *Config) ExpandedIndexPath() string { return expandHome(c.IndexPath) }
@@ -534,6 +539,7 @@ func Load() *Config {
 		LabelMaxDepth: defaultLabelMaxDepth,
 		IndexPath:     defaultIndexPath,
 		LogLevel:      defaultLogLevel,
+		ScanBlacklistDirs: append([]string(nil), defaultScanBlacklistDirs...),
 	}
 
 	if path, err := configPath(); err == nil {
@@ -557,6 +563,7 @@ func Load() *Config {
 			if cfg.LogLevel == "" {
 				cfg.LogLevel = defaultLogLevel
 			}
+			cfg.ScanBlacklistDirs = mergeUniqueStrings(cfg.ScanBlacklistDirs, defaultScanBlacklistDirs)
 			if strings.TrimSpace(cfg.Provider) == "" {
 				cfg.Provider = defaultProviderName
 			}
@@ -575,6 +582,7 @@ func Load() *Config {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = defaultLogLevel
 	}
+	cfg.ScanBlacklistDirs = mergeUniqueStrings(cfg.ScanBlacklistDirs, defaultScanBlacklistDirs)
 	if strings.TrimSpace(cfg.Provider) == "" {
 		cfg.Provider = defaultProviderName
 	}
@@ -627,7 +635,30 @@ func WriteDefaults() error {
 		LabelMaxDepth: defaultLabelMaxDepth,
 		IndexPath:     defaultIndexPath,
 		LogLevel:      defaultLogLevel,
+		ScanBlacklistDirs: append([]string(nil), defaultScanBlacklistDirs...),
 	}
 	data, _ := json.MarshalIndent(cfg, "", "  ")
 	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+func mergeUniqueStrings(existing, defaults []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(existing)+len(defaults))
+	add := func(values []string) {
+		for _, v := range values {
+			trimmed := strings.TrimSpace(v)
+			if trimmed == "" {
+				continue
+			}
+			key := strings.ToLower(trimmed)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, trimmed)
+		}
+	}
+	add(existing)
+	add(defaults)
+	return out
 }

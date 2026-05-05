@@ -2,11 +2,34 @@
 
 ## DevLog
 
+### 2026-05-05 — Canonical task-file schema, startup hydration split, and planner removal
+- Collapsed `sb` onto one strict task-file schema: typed H1 + summary, then `Current Phase`, `Current Tasks`, and `Backlog / Future Features`. Removed runtime support for `Workflow Rules`, `Unsorted`, `Bugs + Blockers`, `Updates + Features`, and legacy inline title metadata from the parser, cleanup prompts, and routing model. Files: [`internal/workmd/workmd.go`](internal/workmd/workmd.go), [`internal/llm/llm.go`](internal/llm/llm.go), [`internal/tui/view.go`](internal/tui/view.go).
+- Removed the old model-driven `Next Todo` / `Daily Plan` feature paths and their dashboard states/keybinds so the dashboard is focused on task files, cleanup, dump routing, and Agents rather than extra planning surfaces. Files: [`internal/tui/model.go`](internal/tui/model.go), [`internal/tui/update.go`](internal/tui/update.go), [`README.md`](README.md).
+- Split startup into lightweight candidate discovery plus background hydration, with pinned files hydrated first and the generated index written asynchronously after first paint. The index remains a human inspection artifact rather than runtime state. Files: [`internal/workmd/workmd.go`](internal/workmd/workmd.go), [`internal/tui/model.go`](internal/tui/model.go), [`internal/tui/update.go`](internal/tui/update.go), [`internal/workmd/index.go`](internal/workmd/index.go).
+- Added a shared repo-local [`CLAUDE.md`](CLAUDE.md) as the canonical workflow/instruction file for both Claude and Codex, and rewrote the main docs/task file to match the new 3-section task model. Files: [`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md), [`WORK.md`](WORK.md), [`README.md`](README.md).
+
+### 2026-05-04 — Tightened WORK.md rules and cleaned sb's task file back into shape
+- Rewrote [`WORK.md`](WORK.md) into a concise four-section layout: `Current Phase`, `Current Tasks / Bugs`, `Workflow Rules`, and `Backlog / Future Features`, removing the devlog-like completed-state clutter that had accumulated in the task file.
+- Added a repo-local [`AGENTS.md`](AGENTS.md) that makes the separation explicit: `WORK.md` is for active tasks, `DEVLOG.md` is for dated implementation history, and project docs should not be pre-read by reflex.
+- Updated [`README.md`](README.md) so the documented `WORK.md` structure and cleanup behavior match that same rule instead of leaving the format implicit.
+- Why: the previous setup still left too much room for agents to bloat `WORK.md` with shipped-history noise and unnecessary doc-reading. The repo now states the format and separation rules directly.
+
 ### 2026-05-04 — Finished the last obvious edit-flow cuts in New Run and Advanced Setup
 - Fixed the last guided-flow break in [`internal/tui/update_agent_launch.go`](internal/tui/update_agent_launch.go) and [`internal/tui/view_agent_launch.go`](internal/tui/view_agent_launch.go): pressing `enter` in the New Run note step now advances cleanly into **Review** instead of behaving like a hidden multiline editor, while `alt+enter` still launches immediately from the note.
 - Tightened the in-app editing loop in [`internal/tui/update_agent_manage.go`](internal/tui/update_agent_manage.go) and [`internal/tui/view.go`](internal/tui/view.go) so ordinary single-line edits in **Advanced Setup** save on `enter`; only real multiline fields still require `ctrl+s`.
 - Added focused regressions in [`internal/tui/update_agent_test.go`](internal/tui/update_agent_test.go) for the note-to-review transition and single-line Advanced Setup saves, and updated the matching user-facing docs in [`README.md`](README.md) plus the remaining follow-up notes in [`WORK.md`](WORK.md).
 - Why: the biggest remaining friction was not missing capability, it was that the edit surfaces still made common actions feel heavier than they needed to be. This removes two obvious "why is this harder than it should be?" edges without trying to redesign the whole Agents surface in one pass.
+
+### 2026-05-04 — Re-scoped the next cleanup track around discovery, markdown structure, and dashboard handoff
+- Rewrote [`WORK.md`](WORK.md) to make the active priorities explicit now that the Agents/Cockpit surface is in a better place: one canonical markdown discovery source, `WORKmd/` treated as mirror/backup rather than app truth, safer small-model cleanup behavior, and a stronger dashboard-to-cockpit handoff.
+- Captured the desired canonical markdown shape directly in the task file so cleanup work can optimize for preserving and normalizing that structure instead of freeform "organize this" behavior.
+- Why: the main product pain is no longer just the agent runtime. The messy part is now the first half of the app: too many discovery/index/mirror concepts and too much ambiguity in how markdown should be cleaned and handed off into real work.
+
+### 2026-05-04 — Discovery now distinguishes canonical task files from one-off explicit markdown sources
+- Added `explicit_paths` to the config/discovery model in [`internal/config/config.go`](internal/config/config.go), [`internal/workmd/workmd.go`](internal/workmd/workmd.go), [`internal/workmd/index.go`](internal/workmd/index.go), and the TUI discovery callsites so `sb` can include one-off task files without widening global filename discovery for every repo.
+- Added a default `WORKmd` scan blacklist so backup/mirror trees do not become accidental discovery roots, and documented the narrower "intentional task files only" model in [`README.md`](README.md).
+- Added regression coverage in [`internal/config/config_test.go`](internal/config/config_test.go) and [`internal/workmd/naming_test.go`](internal/workmd/naming_test.go), then verified with `GOCACHE=/tmp/sb-go-cache go test ./internal/config ./internal/workmd ./internal/tui ./...`.
+- Why: the previous discovery model blurred "project task files" and "any markdown with a matching basename", which made the mirror/audit workflow feel like a second source of truth. This keeps discovery narrow while still supporting special-case task files explicitly.
 
 ### 2026-05-04 — Advanced Setup now uses popup editing instead of cramming editors into the split pane
 - Reworked [`internal/tui/view_agent_manage.go`](internal/tui/view_agent_manage.go), [`internal/tui/view_agent.go`](internal/tui/view_agent.go), [`internal/tui/update_agent_manage.go`](internal/tui/update_agent_manage.go), and [`internal/tui/view.go`](internal/tui/view.go) so **Advanced Setup** now behaves as a cleaner two-level picker: the left side selects the role/prompt/hook/engine item, the right side selects the field, and `enter` / `e` opens a centered overlay editor for the actual field value instead of doing inline split-pane editing.
@@ -638,3 +661,7 @@
 
 - Fixed the attached exec-chat view for Ollama and other exec-per-turn sessions where the transcript could look cut off at the bottom after opening or sending a turn on shorter terminals. The renderer was reusing a pre-layout bottom offset, then shrinking the viewport once the final footer/composer height was known. `view_agent_attached.go` now re-anchors the viewport to the true bottom after the final transcript height is computed, so the last assistant lines stay visible.
 - Added regression coverage in `internal/tui/view_agent_test.go` that exercises a narrow attached exec-chat transcript and asserts the final transcript line remains visible after `refreshAttachedViewport(true)`.
+### 2026-05-04
+- fixed packaging/install parity for the Agents/Foreman runtime by shipping `sb-foreman` alongside `sb` in the release workflow, installer, and `make install`
+- updated the README install docs to call out that both binaries are required for the persistent unattended Foreman path
+- tightened the `internal/llm` integration surface so Ollama-backed cleanup, routing, reroute, planning, and next-todo flows all share deterministic options plus consistent markdown-fence and JSON extraction helpers

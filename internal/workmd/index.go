@@ -18,9 +18,10 @@ type SpecialTarget struct {
 }
 
 type IndexOptions struct {
-	ScanRoots    []config.ScanRoot
-	FilePatterns []string
-	IdeaDirs     []string
+	ScanRoots     []config.ScanRoot
+	FilePatterns  []string
+	ExplicitPaths []string
+	IdeaDirs      []string
 }
 
 // WriteIndex renders the routing-context index file. The file is purely an
@@ -37,8 +38,7 @@ func WriteIndex(path string, projects []Project, targets []SpecialTarget, opts I
 	var b strings.Builder
 	b.WriteString("# sb index\n")
 	b.WriteString("# Auto-generated. Do not edit — regenerated on every `sb` startup.\n")
-	b.WriteString("# Preferred metadata format: H1 project name + first plain text line below it as the short summary.\n")
-	b.WriteString("# Legacy H1 metadata still works: `# TYPE - label | description`\n\n")
+	b.WriteString("# Canonical metadata format: typed H1 + first plain text line below it as the short summary.\n\n")
 
 	b.WriteString("## Discovery Config\n\n")
 	if len(opts.ScanRoots) == 0 {
@@ -52,6 +52,13 @@ func WriteIndex(path string, projects []Project, targets []SpecialTarget, opts I
 		b.WriteString("- file patterns: WORK.md\n")
 	} else {
 		fmt.Fprintf(&b, "- file patterns: %s\n", strings.Join(opts.FilePatterns, ", "))
+	}
+	if len(opts.ExplicitPaths) == 0 {
+		b.WriteString("- explicit paths: (none)\n")
+	} else {
+		for _, path := range opts.ExplicitPaths {
+			fmt.Fprintf(&b, "- explicit path: %s\n", path)
+		}
 	}
 	if len(opts.IdeaDirs) == 0 {
 		b.WriteString("- idea dirs: (none)\n")
@@ -73,7 +80,7 @@ func WriteIndex(path string, projects []Project, targets []SpecialTarget, opts I
 			fmt.Fprintf(&b, "- phase: %s\n", p.Phase)
 		}
 		if len(p.ActivePreview) > 0 {
-			b.WriteString("- active preview:\n")
+			b.WriteString("- current preview:\n")
 			for _, item := range p.ActivePreview {
 				fmt.Fprintf(&b, "  - %s\n", item)
 			}

@@ -16,7 +16,7 @@ func TestDiscoverUsesTitleFirstThenCollisionFallback(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, "alpha", "WORK.md"), "# WORK - app\nalpha app\n")
 	mustWriteFile(t, filepath.Join(root, "beta", "WORK.md"), "# WORK - app\nbeta app\n")
 
-	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, &config.Config{LabelMaxDepth: 2})
+	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, nil, &config.Config{LabelMaxDepth: 2})
 	names := projectNames(projects)
 	assertContains(t, names, "app (alpha)")
 	assertContains(t, names, "app (beta)")
@@ -28,16 +28,16 @@ func TestDiscoverExpandsFallbackPathsAndUsesRootWhenNeeded(t *testing.T) {
 	clientRoot := filepath.Join(tmp, "client")
 	mustMkdirAll(t, filepath.Join(workRoot, "api"))
 	mustMkdirAll(t, filepath.Join(clientRoot, "api"))
-	mustWriteFile(t, filepath.Join(workRoot, "api", "WORK.md"), "# WORK\n")
-	mustWriteFile(t, filepath.Join(clientRoot, "api", "WORK.md"), "# WORK\n")
+	mustWriteFile(t, filepath.Join(workRoot, "api", "WORK.md"), "# WORK - work-api\nwork api\n")
+	mustWriteFile(t, filepath.Join(clientRoot, "api", "WORK.md"), "# WORK - client-api\nclient api\n")
 
 	projects := Discover([]config.ScanRoot{
 		{Name: "work", Path: workRoot},
 		{Name: "client", Path: clientRoot},
-	}, []string{"WORK.md"}, nil, &config.Config{LabelMaxDepth: 2})
+	}, []string{"WORK.md"}, nil, nil, &config.Config{LabelMaxDepth: 2})
 	names := projectNames(projects)
-	assertContains(t, names, "WORK (work/api)")
-	assertContains(t, names, "WORK (client/api)")
+	assertContains(t, names, "work-api")
+	assertContains(t, names, "client-api")
 }
 
 func TestDiscoverUsesNonWorkTitleLabel(t *testing.T) {
@@ -46,25 +46,7 @@ func TestDiscoverUsesNonWorkTitleLabel(t *testing.T) {
 	mustMkdirAll(t, filepath.Join(root, "toolkit"))
 	mustWriteFile(t, filepath.Join(root, "toolkit", "ROADMAP.md"), "# ROADMAP - toolkit\nv1 polish\n")
 
-	projects := Discover([]config.ScanRoot{{Name: "plans", Path: root}}, []string{"ROADMAP.md"}, nil, &config.Config{LabelMaxDepth: 2})
-	if len(projects) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(projects))
-	}
-	if projects[0].Name != "toolkit" {
-		t.Fatalf("expected toolkit, got %q", projects[0].Name)
-	}
-	if projects[0].Description != "v1 polish" {
-		t.Fatalf("expected description, got %q", projects[0].Description)
-	}
-}
-
-func TestDiscoverSupportsLegacyInlineMetadata(t *testing.T) {
-	tmp := t.TempDir()
-	root := filepath.Join(tmp, "plans")
-	mustMkdirAll(t, filepath.Join(root, "toolkit"))
-	mustWriteFile(t, filepath.Join(root, "toolkit", "ROADMAP.md"), "# ROADMAP - toolkit | v1 polish\n")
-
-	projects := Discover([]config.ScanRoot{{Name: "plans", Path: root}}, []string{"ROADMAP.md"}, nil, &config.Config{LabelMaxDepth: 2})
+	projects := Discover([]config.ScanRoot{{Name: "plans", Path: root}}, []string{"ROADMAP.md"}, nil, nil, &config.Config{LabelMaxDepth: 2})
 	if len(projects) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(projects))
 	}
@@ -92,12 +74,12 @@ shipping metadata refresh
 - first task
 - second task
 
-## Backlog
+## Backlog / Future Features
 
 - later
 `)
 
-	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, &config.Config{LabelMaxDepth: 2})
+	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, nil, &config.Config{LabelMaxDepth: 2})
 	if len(projects) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(projects))
 	}
@@ -120,7 +102,7 @@ func TestDiscoverSkipsBlacklistedScanRootPaths(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, "keep", "WORK.md"), "# WORK - keep\nactive project\n")
 	mustWriteFile(t, filepath.Join(root, "archive", "WORK.md"), "# WORK - archive\nold project\n")
 
-	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, &config.Config{
+	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, nil, nil, &config.Config{
 		LabelMaxDepth:     2,
 		ScanBlacklistDirs: []string{"archive"},
 	})
@@ -135,10 +117,10 @@ func TestDiscoverSkipsBlacklistedIdeaDirFiles(t *testing.T) {
 	ideas := filepath.Join(tmp, "ideas")
 	mustMkdirAll(t, scanRoot)
 	mustMkdirAll(t, ideas)
-	mustWriteFile(t, filepath.Join(ideas, "keep.md"), "# keep\nship this\n")
-	mustWriteFile(t, filepath.Join(ideas, "ignore.md"), "# ignore\nskip this\n")
+	mustWriteFile(t, filepath.Join(ideas, "keep.md"), "# NOTE - keep\nship this\n")
+	mustWriteFile(t, filepath.Join(ideas, "ignore.md"), "# NOTE - ignore\nskip this\n")
 
-	projects := Discover([]config.ScanRoot{{Name: "scan", Path: scanRoot}}, nil, []string{ideas}, &config.Config{
+	projects := Discover([]config.ScanRoot{{Name: "scan", Path: scanRoot}}, nil, nil, []string{ideas}, &config.Config{
 		LabelMaxDepth:         2,
 		ScanBlacklistNames:    []string{"ignore.md"},
 		ScanBlacklistSuffixes: []string{".bak"},
@@ -148,6 +130,22 @@ func TestDiscoverSkipsBlacklistedIdeaDirFiles(t *testing.T) {
 	}
 	if projects[0].Name != "keep" {
 		t.Fatalf("expected keep, got %q", projects[0].Name)
+	}
+}
+
+func TestDiscoverIncludesExplicitPathsOutsideFilePatterns(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "work")
+	mustMkdirAll(t, filepath.Join(root, "runx"))
+	explicit := filepath.Join(root, "runx", "script_ideas.md")
+	mustWriteFile(t, explicit, "# NOTE - script_ideas\nscript backlog\n")
+
+	projects := Discover([]config.ScanRoot{{Name: "work", Path: root}}, []string{"WORK.md"}, []string{explicit}, nil, &config.Config{LabelMaxDepth: 2})
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(projects))
+	}
+	if projects[0].RelativePath != "script_ideas" {
+		t.Fatalf("relative path = %q, want script_ideas", projects[0].RelativePath)
 	}
 }
 

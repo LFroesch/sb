@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="LFroesch/sb"
 BINARY_NAME="sb"
+FOREMAN_BINARY_NAME="sb-foreman"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 error() {
@@ -62,7 +63,7 @@ verify_checksum() {
 }
 
 main() {
-  local platform version binary_file base_url tmp_bin tmp_checksums
+  local platform version binary_file foreman_binary_file base_url tmp_bin tmp_foreman_bin tmp_checksums
 
   platform="$(detect_platform)"
   version="${VERSION:-$(get_latest_version)}"
@@ -70,8 +71,10 @@ main() {
 
   if [[ "$platform" == windows* ]]; then
     binary_file="${BINARY_NAME}-${platform}.exe"
+    foreman_binary_file="${FOREMAN_BINARY_NAME}-${platform}.exe"
   else
     binary_file="${BINARY_NAME}-${platform}"
+    foreman_binary_file="${FOREMAN_BINARY_NAME}-${platform}"
   fi
 
   base_url="https://github.com/${REPO}/releases/download/${version}"
@@ -80,19 +83,24 @@ main() {
   trap 'rm -rf "$tmp_dir"' EXIT
 
   tmp_bin="$tmp_dir/$binary_file"
+  tmp_foreman_bin="$tmp_dir/$foreman_binary_file"
   tmp_checksums="$tmp_dir/checksums.txt"
 
   curl -fsSL "${base_url}/${binary_file}" -o "$tmp_bin" || error "Failed to download ${binary_file}"
+  curl -fsSL "${base_url}/${foreman_binary_file}" -o "$tmp_foreman_bin" || error "Failed to download ${foreman_binary_file}"
   if curl -fsSL "${base_url}/checksums.txt" -o "$tmp_checksums"; then
     verify_checksum "$tmp_bin" "$tmp_checksums"
+    verify_checksum "$tmp_foreman_bin" "$tmp_checksums"
   else
     warn "checksums.txt not found; skipping checksum verification"
   fi
 
   mkdir -p "$INSTALL_DIR"
   install -m 0755 "$tmp_bin" "$INSTALL_DIR/$BINARY_NAME"
+  install -m 0755 "$tmp_foreman_bin" "$INSTALL_DIR/$FOREMAN_BINARY_NAME"
 
   echo "Installed $BINARY_NAME to $INSTALL_DIR/$BINARY_NAME"
+  echo "Installed $FOREMAN_BINARY_NAME to $INSTALL_DIR/$FOREMAN_BINARY_NAME"
   if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     warn "$INSTALL_DIR is not in PATH"
     warn "Add this to your shell config: export PATH=\"$PATH:$INSTALL_DIR\""

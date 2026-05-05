@@ -128,6 +128,14 @@ func (m model) rightPanelWidth() int {
 	return w
 }
 
+func (m model) dashboardLeftPanelWidth() int {
+	w := m.width * 25 / 100
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
 func mouseWheelDelta(msg tea.MouseMsg) int {
 	if msg.Action != tea.MouseActionPress {
 		return 0
@@ -149,6 +157,20 @@ func addScrollOffset(offset *int, delta int) {
 	}
 }
 
+func wheelScrollStep(delta int, divisor int) int {
+	if divisor <= 1 {
+		return delta
+	}
+	step := delta / divisor
+	if step == 0 && delta != 0 {
+		if delta > 0 {
+			return 1
+		}
+		return -1
+	}
+	return step
+}
+
 func (m model) dashboardPinnedCount() int {
 	count := 0
 	for _, p := range m.projects {
@@ -166,7 +188,7 @@ func (m model) dashboardListPageSize() int {
 	}
 	panelHeight := availableHeight - 2 // border top/bottom
 	pinnedDisplayLines := 0
-	if pinned := m.dashboardPinnedCount(); pinned > 0 {
+	if pinned := m.dashboardPinnedCount(); pinned > 0 && !m.dashboardCondensePinned() {
 		pinnedDisplayLines = pinned + 4
 	}
 	pageSize := panelHeight - pinnedDisplayLines - 3
@@ -174,6 +196,22 @@ func (m model) dashboardListPageSize() int {
 		pageSize = 3
 	}
 	return pageSize
+}
+
+func (m model) dashboardCondensePinned() bool {
+	pinned := m.dashboardPinnedCount()
+	if pinned == 0 {
+		return false
+	}
+
+	availableHeight := m.contentAreaHeight()
+	if availableHeight < 5 {
+		availableHeight = 5
+	}
+	panelHeight := availableHeight - 2 // border top/bottom
+
+	const minProjectRows = 3
+	return pinned+4+minProjectRows > panelHeight
 }
 
 func isDumpMode(mode mode) bool {
@@ -233,6 +271,7 @@ func (m model) rediscover() []workmd.Project {
 	projects := workmd.Discover(
 		m.cfg.ExpandedScanRoots(),
 		m.cfg.FilePatterns,
+		m.cfg.ExpandedExplicitPaths(),
 		m.cfg.ExpandedIdeaDirs(),
 		m.cfg,
 	)
@@ -248,11 +287,145 @@ func (m model) rediscover() []workmd.Project {
 		})
 	}
 	_ = workmd.WriteIndex(m.cfg.ExpandedIndexPath(), projects, targets, workmd.IndexOptions{
-		ScanRoots:    m.cfg.ExpandedScanRoots(),
-		FilePatterns: m.cfg.FilePatterns,
-		IdeaDirs:     m.cfg.ExpandedIdeaDirs(),
+		ScanRoots:     m.cfg.ExpandedScanRoots(),
+		FilePatterns:  m.cfg.FilePatterns,
+		ExplicitPaths: m.cfg.ExpandedExplicitPaths(),
+		IdeaDirs:      m.cfg.ExpandedIdeaDirs(),
 	})
+	_ = saveProjectCache(m.cfg, projects)
 	return projects
+}
+
+func discoverProjectsCmd(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		projects := workmd.DiscoverCandidates(
+			cfg.ExpandedScanRoots(),
+			cfg.FilePatterns,
+			cfg.ExpandedExplicitPaths(),
+			cfg.ExpandedIdeaDirs(),
+			cfg,
+		)
+		return projectsLoadedMsg{projects: projects}
+	}
+}
+
+func (m *model) beginProjectRefresh() tea.Cmd {
+	m.loading = true
+	m.hydrateQueue = nil
+	m.statusMsg = "refreshing..."
+	m.statusExpiry = time.Now().Add(2 * time.Second)
+	return discoverProjectsCmd(m.cfg)
+}
+
+func hydrateProjectCmd(cfg *config.Config, project workmd.Project) tea.Cmd {
+	return func() tea.Msg {
+		hydrated, ok := workmd.HydrateProject(project, cfg)
+		if !ok {
+			return projectHydrationFailedMsg{path: project.Path}
+		}
+		return projectHydratedMsg{project: hydrated}
+	}
+}
+
+func loadCachedProjectsCmd(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		projects, ok, err := loadProjectCache(cfg)
+		if err != nil {
+			return nil
+		}
+		if !ok || len(projects) == 0 {
+			return nil
+		}
+		return cachedProjectsLoadedMsg{projects: projects}
+	}
+}
+
+func writeIndexCmd(cfg *config.Config, projects []workmd.Project) tea.Cmd {
+	return func() tea.Msg {
+		var targets []workmd.SpecialTarget
+		if t := cfg.CatchallTarget; t != nil {
+			targets = append(targets, workmd.SpecialTarget{
+				Name: t.Name, Path: t.Path, Description: "catch-all for general notes",
+			})
+		}
+		if t := cfg.IdeasTarget; t != nil {
+			targets = append(targets, workmd.SpecialTarget{
+				Name: t.Name, Path: t.Path, Description: "ideas not tied to a project",
+			})
+		}
+		_ = workmd.WriteIndex(cfg.ExpandedIndexPath(), projects, targets, workmd.IndexOptions{
+			ScanRoots:     cfg.ExpandedScanRoots(),
+			FilePatterns:  cfg.FilePatterns,
+			ExplicitPaths: cfg.ExpandedExplicitPaths(),
+			IdeaDirs:      cfg.ExpandedIdeaDirs(),
+		})
+		_ = saveProjectCache(cfg, projects)
+		return nil
+	}
+}
+
+func (m *model) nextHydrateCmd() tea.Cmd {
+	if len(m.hydrateQueue) == 0 {
+		return writeIndexCmd(m.cfg, m.projects)
+	}
+	path := m.hydrateQueue[0]
+	m.hydrateQueue = m.hydrateQueue[1:]
+	for _, project := range m.projects {
+		if project.Path == path {
+			return hydrateProjectCmd(m.cfg, project)
+		}
+	}
+	return m.nextHydrateCmd()
+}
+
+func (m model) hydrationOrder() []string {
+	var queue []string
+	seen := make(map[string]bool, len(m.projects))
+	for _, project := range m.projects {
+		if project.Hydrated && strings.TrimSpace(project.Content) != "" {
+			continue
+		}
+		if m.favorites[project.Path] {
+			queue = append(queue, project.Path)
+			seen[project.Path] = true
+		}
+	}
+	for _, project := range m.projects {
+		if project.Hydrated && strings.TrimSpace(project.Content) != "" {
+			continue
+		}
+		if seen[project.Path] {
+			continue
+		}
+		queue = append(queue, project.Path)
+	}
+	return queue
+}
+
+func (m *model) setViewportProjectContent(idx, width int) {
+	if idx < 0 || idx >= len(m.projects) {
+		return
+	}
+	project := m.projects[idx]
+	if !project.Hydrated || strings.TrimSpace(project.Content) == "" {
+		label := project.Name
+		if strings.TrimSpace(label) == "" {
+			label = project.RelativePathOrFile()
+		}
+		m.viewport.SetContent(dimStyle.Render("loading " + label + "…"))
+		return
+	}
+	m.viewport.SetContent(markdown.Render(project.Content, width))
+}
+
+func (m *model) refreshProjectAfterSave(idx int) {
+	if idx < 0 || idx >= len(m.projects) {
+		return
+	}
+	if hydrated, ok := workmd.HydrateProject(m.projects[idx], m.cfg); ok {
+		m.projects[idx] = hydrated
+	}
+	_ = saveProjectCache(m.cfg, m.projects)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -262,10 +435,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewport = viewport.New(m.width-4, m.contentAreaHeight())
 		if m.page == pageProject && m.selected < len(m.projects) {
-			m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
+			m.setViewportProjectContent(m.selected, m.width-4)
 		} else if m.page == pageDashboard && m.cursor < len(m.projects) {
-			rightW := m.rightPanelWidth()
-			m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+			m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
 		} else if m.page == pageAgent && m.mode == modeAgentAttached {
 			m.refreshAttachedViewport(false)
 		}
@@ -283,7 +455,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if delta := mouseWheelDelta(msg); delta != 0 {
-			return m.handleMouseWheel(delta), nil
+			return m.handleMouseWheel(msg, delta), nil
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if target, ok := m.headerTabAt(msg.X, msg.Y); ok {
@@ -385,23 +557,90 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case projectsLoadedMsg:
+		cursorPath := ""
+		if m.cursor >= 0 && m.cursor < len(m.projects) {
+			cursorPath = m.projects[m.cursor].Path
+		}
+		selectedPath := ""
+		if m.selected >= 0 && m.selected < len(m.projects) {
+			selectedPath = m.projects[m.selected].Path
+		}
+		m.projects = mergeDiscoveredProjects(m.projects, msg.projects)
+		sortWithFavorites(m.projects, m.favorites)
+		if cursorPath != "" {
+			for i, project := range m.projects {
+				if project.Path == cursorPath {
+					m.cursor = i
+					break
+				}
+			}
+		}
+		if selectedPath != "" {
+			for i, project := range m.projects {
+				if project.Path == selectedPath {
+					m.selected = i
+					break
+				}
+			}
+		}
+		m.loading = false
+		m.hydrateQueue = m.hydrationOrder()
+		if len(m.projects) > 0 && m.width > 0 {
+			switch m.page {
+			case pageDashboard:
+				if m.cursor >= 0 && m.cursor < len(m.projects) {
+					m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
+					m.viewport.GotoTop()
+				}
+			case pageProject:
+				if m.selected >= 0 && m.selected < len(m.projects) {
+					m.setViewportProjectContent(m.selected, m.width-4)
+					m.viewport.GotoTop()
+				}
+			}
+		}
+		return m, m.nextHydrateCmd()
+
+	case cachedProjectsLoadedMsg:
+		if len(msg.projects) == 0 || len(m.projects) > 0 {
+			return m, nil
+		}
 		m.projects = msg.projects
 		sortWithFavorites(m.projects, m.favorites)
 		m.loading = false
 		if len(m.projects) > 0 && m.width > 0 {
 			switch m.page {
 			case pageDashboard:
-				rightW := m.rightPanelWidth()
-				m.viewport.SetContent(markdown.Render(m.projects[0].Content, rightW))
+				m.setViewportProjectContent(0, m.rightPanelWidth())
 				m.viewport.GotoTop()
 			case pageProject:
 				if m.selected >= 0 && m.selected < len(m.projects) {
-					m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
+					m.setViewportProjectContent(m.selected, m.width-4)
 					m.viewport.GotoTop()
 				}
 			}
 		}
 		return m, nil
+
+	case projectHydratedMsg:
+		for i, p := range m.projects {
+			if p.Path == msg.project.Path {
+				m.projects[i] = msg.project
+				break
+			}
+		}
+		workmd.ResolveProjectNamesForTUI(m.projects, m.cfg)
+		sortWithFavorites(m.projects, m.favorites)
+		if m.page == pageDashboard && m.cursor < len(m.projects) && m.projects[m.cursor].Path == msg.project.Path {
+			m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
+		}
+		if m.page == pageProject && m.selected < len(m.projects) && m.projects[m.selected].Path == msg.project.Path {
+			m.setViewportProjectContent(m.selected, m.width-4)
+		}
+		return m, m.nextHydrateCmd()
+
+	case projectHydrationFailedMsg:
+		return m, m.nextHydrateCmd()
 
 	case tickMsg:
 		cmds := []tea.Cmd{tickCmd()}
@@ -454,17 +693,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dumpItems[m.dumpCursor] = *msg.item
 		}
 		m.mode = modeDumpReview
-		return m, nil
-
-	case todoResultMsg:
-		if msg.err != nil {
-			m.statusMsg = "todo failed: " + msg.err.Error()
-			m.statusExpiry = time.Now().Add(5 * time.Second)
-			m.mode = modeNormal
-			return m, nil
-		}
-		m.todoResult = msg.result
-		m.mode = modeTodoResult
 		return m, nil
 
 	case cleanupDoneMsg:
@@ -524,19 +752,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cockpitForeman = msg.state
 		return m, nil
 
-	case planResultMsg:
-		if msg.err != nil {
-			m.statusMsg = "plan failed: " + msg.err.Error()
-			m.statusExpiry = time.Now().Add(5 * time.Second)
-			m.mode = modeNormal
-			return m, nil
-		}
-		m.planResult = msg.result
-		rightW := m.rightPanelWidth()
-		m.viewport.SetContent(markdown.Render(msg.result, rightW-4))
-		m.viewport.GotoTop()
-		m.mode = modePlanResult
-		return m, nil
 	}
 
 	// Route all other messages (cursor blink, paste, etc.) to active textarea
@@ -561,9 +776,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleMouseWheel(delta int) tea.Model {
+func (m model) handleMouseWheel(msg tea.MouseMsg, delta int) tea.Model {
 	if m.mode == modeHelp {
-		addScrollOffset(&m.helpScroll, delta/3)
+		addScrollOffset(&m.helpScroll, wheelScrollStep(delta, 3))
 		m.helpScroll = clampScrollOffset(m.helpScroll, len(m.helpLines()), m.helpVisibleHeight())
 		return m
 	}
@@ -571,14 +786,15 @@ func (m model) handleMouseWheel(delta int) tea.Model {
 	switch m.page {
 	case pageDashboard:
 		switch m.mode {
-		case modePlanResult, modeTodoResult:
-			if delta > 0 {
-				m.viewport.LineDown(delta)
-			} else {
-				m.viewport.LineUp(-delta)
-			}
-			return m
 		case modeNormal:
+			if msg.X >= m.dashboardLeftPanelWidth() {
+				if delta > 0 {
+					m.viewport.LineDown(delta)
+				} else {
+					m.viewport.LineUp(-delta)
+				}
+				return m
+			}
 			prevCursor := m.cursor
 			if delta > 0 && m.cursor < len(m.projects)-1 {
 				m.cursor++
@@ -587,8 +803,7 @@ func (m model) handleMouseWheel(delta int) tea.Model {
 			}
 			// Update right-panel viewport when cursor changes
 			if m.cursor != prevCursor && m.cursor < len(m.projects) {
-				rightW := m.rightPanelWidth()
-				m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+				m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
 				m.viewport.GotoTop()
 			}
 			return m
@@ -611,13 +826,13 @@ func (m model) handleMouseWheel(delta int) tea.Model {
 				m.viewport.LineUp(-delta)
 			}
 		case modeChainCleanupSummary:
-			addScrollOffset(&m.chainSummaryScroll, delta/3)
+			addScrollOffset(&m.chainSummaryScroll, wheelScrollStep(delta, 3))
 			m.chainSummaryScroll = clampScrollOffset(m.chainSummaryScroll, len(m.chainCleanupSummaryLines()), m.summaryVisibleHeight())
 		}
 		return m
 	case pageDump:
 		if m.mode == modeDumpSummary {
-			addScrollOffset(&m.dumpSummaryScroll, delta/3)
+			addScrollOffset(&m.dumpSummaryScroll, wheelScrollStep(delta, 3))
 			m.dumpSummaryScroll = clampScrollOffset(m.dumpSummaryScroll, len(m.dumpSummaryLines()), m.summaryVisibleHeight())
 		}
 		return m
@@ -630,36 +845,6 @@ func (m model) handleMouseWheel(delta int) tea.Model {
 // --- Dashboard ---
 
 func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.mode == modePlanResult {
-		switch msg.String() {
-		case "j", "down", "J", "s":
-			m.viewport.LineDown(3)
-		case "k", "up", "K", "w":
-			m.viewport.LineUp(3)
-		case "ctrl+d":
-			m.viewport.HalfViewDown()
-		case "ctrl+u":
-			m.viewport.HalfViewUp()
-		default:
-			m.mode = modeNormal
-			rightW := m.rightPanelWidth()
-			if m.cursor < len(m.projects) {
-				m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
-			}
-			m.viewport.GotoTop()
-		}
-		return m, nil
-	}
-	if m.mode == modePlanWait {
-		return m, nil
-	}
-	if m.mode == modeTodoResult {
-		m.mode = modeNormal
-		return m, nil
-	}
-	if m.mode == modeTodoWait {
-		return m, nil // ignore keys while waiting
-	}
 	prevCursor := m.cursor
 	switch msg.String() {
 	case "q", "esc":
@@ -722,11 +907,16 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.projects) {
 			m.selected = m.cursor
 			m.page = pageProject
-			m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
+			m.setViewportProjectContent(m.selected, m.width-4)
 			m.viewport.GotoTop()
 		}
 	case "e":
 		if m.cursor < len(m.projects) {
+			if !m.projects[m.cursor].Hydrated {
+				m.statusMsg = "project still loading"
+				m.statusExpiry = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
 			m.selected = m.cursor
 			m.mode = modeEdit
 			m.editArea.SetValue(m.projects[m.selected].Content)
@@ -751,6 +941,11 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "-":
 		if m.cursor < len(m.projects) {
 			proj := m.projects[m.cursor]
+			if !proj.Hydrated {
+				m.statusMsg = "project still loading"
+				m.statusExpiry = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
 			fixed := workmd.FixNonListLines(proj.Content)
 			if fixed == proj.Content {
 				m.statusMsg = "no non-list lines found"
@@ -758,11 +953,9 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err := workmd.Save(proj.Path, fixed); err != nil {
 					m.statusMsg = "save failed: " + err.Error()
 				} else {
-					m.projects[m.cursor].Content = fixed
-					m.projects[m.cursor].NonListCount = 0
+					m.refreshProjectAfterSave(m.cursor)
 					m.statusMsg = "non-list lines fixed"
-					rightW := m.rightPanelWidth()
-					m.viewport.SetContent(markdown.Render(fixed, rightW))
+					m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
 					m.viewport.GotoTop()
 				}
 			}
@@ -770,6 +963,11 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		if m.cursor < len(m.projects) {
+			if !m.projects[m.cursor].Hydrated {
+				m.statusMsg = "project still loading"
+				m.statusExpiry = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
 			m.selected = m.cursor
 			m.cleanupOriginal = m.projects[m.selected].Content
 			m.mode = modeCleanupWait
@@ -793,6 +991,13 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(queue) > 0 {
+			for _, idx := range queue {
+				if !m.projects[idx].Hydrated {
+					m.statusMsg = "selected project still loading"
+					m.statusExpiry = time.Now().Add(2 * time.Second)
+					return m, nil
+				}
+			}
 			m.chainQueue = queue
 			m.chainCursor = 0
 			m.chainAccepted = 0
@@ -805,22 +1010,6 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeChainCleanupWait
 			return m, tea.Batch(cleanupCmd(m.cfg, m.cleanupOriginal), m.spinner.Tick)
 		}
-	case "P":
-		var sources []workmd.Project
-		if len(m.selectedProjects) > 0 {
-			for _, p := range m.projects {
-				if m.selectedProjects[p.Path] {
-					sources = append(sources, p)
-				}
-			}
-		} else {
-			sources = m.projects
-		}
-		m.mode = modePlanWait
-		m.planScroll = 0
-		m.statusMsg = "generating daily plan..."
-		m.statusExpiry = time.Now().Add(10 * time.Second)
-		return m, tea.Batch(planCmd(m.cfg, sources), m.spinner.Tick)
 	case "o":
 		if m.cursor < len(m.projects) {
 			return m, openInEditor(m.projects[m.cursor].Dir)
@@ -853,15 +1042,6 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchQuery = ""
 		m.searchMatches = nil
 		return m, nil
-	case "t":
-		if m.cursor < len(m.projects) {
-			m.selected = m.cursor
-			m.mode = modeTodoWait
-			m.todoResult = ""
-			m.statusMsg = "asking model..."
-			m.statusExpiry = time.Now().Add(10 * time.Second)
-			return m, tea.Batch(todoCmd(m.cfg, m.projects[m.cursor].Content), m.spinner.Tick)
-		}
 	case "f":
 		if m.cursor < len(m.projects) {
 			path := m.projects[m.cursor].Path
@@ -884,10 +1064,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(2 * time.Second)
 		}
 	case "r":
-		m.projects = m.rediscover()
-		sortWithFavorites(m.projects, m.favorites)
-		m.statusMsg = "refreshed"
-		m.statusExpiry = time.Now().Add(2 * time.Second)
+		return m, m.beginProjectRefresh()
 	case ",":
 		if path, err := config.Dir(); err == nil {
 			return m, openInEditor(path)
@@ -896,8 +1073,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Update right-panel viewport when cursor changes
 	if m.cursor != prevCursor && m.cursor < len(m.projects) {
-		rightW := m.rightPanelWidth()
-		m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+		m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
 		m.viewport.GotoTop()
 	}
 
@@ -913,6 +1089,11 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "e":
 		if m.selected < len(m.projects) {
+			if !m.projects[m.selected].Hydrated {
+				m.statusMsg = "project still loading"
+				m.statusExpiry = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
 			m.mode = modeEdit
 			m.editArea.SetValue(m.projects[m.selected].Content)
 			m.editArea.SetWidth(m.width - 4)
@@ -922,6 +1103,11 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		if m.selected < len(m.projects) {
+			if !m.projects[m.selected].Hydrated {
+				m.statusMsg = "project still loading"
+				m.statusExpiry = time.Now().Add(2 * time.Second)
+				return m, nil
+			}
 			m.cleanupOriginal = m.projects[m.selected].Content
 			m.mode = modeCleanupWait
 			m.statusMsg = "asking model to clean up..."
@@ -947,16 +1133,6 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-func todoCmd(cfg *config.Config, content string) tea.Cmd {
-	return func() tea.Msg {
-		client := llm.New(cfg)
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		result, err := client.NextTodo(ctx, content)
-		return todoResultMsg{result: result, err: err}
-	}
 }
 
 func (m model) quitCmd() tea.Cmd {
@@ -1023,8 +1199,7 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(3 * time.Second)
 		}
 		m.page = pageDashboard
-		rightW := m.rightPanelWidth()
-		m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, rightW))
+		m.setViewportProjectContent(m.selected, m.rightPanelWidth())
 		m.viewport.GotoTop()
 	case "r":
 		m.chainFeedback.Reset()
@@ -1034,8 +1209,7 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "cleanup discarded"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 		m.page = pageDashboard
-		rightW := m.rightPanelWidth()
-		m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, rightW))
+		m.setViewportProjectContent(m.selected, m.rightPanelWidth())
 		m.viewport.GotoTop()
 	case "j", "down":
 		m.viewport.LineDown(1)
@@ -1167,52 +1341,11 @@ func (m model) dismissChainCleanupSummary() (tea.Model, tea.Cmd) {
 	m.chainSummaryScroll = 0
 	m.page = pageDashboard
 	m.mode = modeNormal
-	rightW := m.rightPanelWidth()
 	if m.cursor < len(m.projects) {
-		m.viewport.SetContent(markdown.Render(m.projects[m.cursor].Content, rightW))
+		m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
 	}
 	m.viewport.GotoTop()
 	return m, nil
-}
-
-func planCmd(cfg *config.Config, projects []workmd.Project) tea.Cmd {
-	return func() tea.Msg {
-		var sb strings.Builder
-		for _, p := range projects {
-			var bugs, cur []string
-			for _, t := range p.Tasks {
-				if t.Done {
-					continue
-				}
-				switch t.Section {
-				case "bugs":
-					bugs = append(bugs, t.Name)
-				case "current":
-					cur = append(cur, t.Name)
-				}
-			}
-			if len(bugs) == 0 && len(cur) == 0 {
-				continue
-			}
-			sb.WriteString("Project: " + p.Name + "\n")
-			for _, t := range bugs {
-				sb.WriteString("  [BUG] " + t + "\n")
-			}
-			for _, t := range cur {
-				sb.WriteString("  - " + t + "\n")
-			}
-			sb.WriteString("\n")
-		}
-		summary := sb.String()
-		if summary == "" {
-			return planResultMsg{result: "No current tasks found across projects.", err: nil}
-		}
-		client := llm.New(cfg)
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		result, err := client.DailyPlan(ctx, summary)
-		return planResultMsg{result: result, err: err}
-	}
 }
 
 func cleanupWithFeedbackCmd(cfg *config.Config, content, feedback string) tea.Cmd {
@@ -1235,8 +1368,8 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				m.statusMsg = "save failed: " + err.Error()
 			} else {
-				m.projects[m.selected].Content = content
-				m.viewport.SetContent(markdown.Render(content, m.width-4))
+				m.refreshProjectAfterSave(m.selected)
+				m.viewport.SetContent(markdown.Render(m.projects[m.selected].Content, m.width-4))
 				m.statusMsg = "saved"
 			}
 			m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -1244,17 +1377,15 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "ctrl+home":
-		m.editArea.SetValue(m.editArea.Value())
+		for m.editArea.Line() > 0 {
+			m.editArea.CursorUp()
+		}
+		m.editArea.CursorStart()
 		m.editArea, _ = m.editArea.Update(reposViewMsg{})
 		return m, nil
 	case "ctrl+end":
-		value := m.editArea.Value()
-		lines := strings.Split(value, "\n")
-		if len(lines) == 0 {
-			return m, nil
-		}
-		m.editArea.SetValue(value)
-		for i := 0; i < len(lines)-1; i++ {
+		lastLine := m.editArea.LineCount() - 1
+		for m.editArea.Line() < lastLine {
 			m.editArea.CursorDown()
 		}
 		m.editArea.CursorEnd()
@@ -1410,28 +1541,32 @@ func (m model) writeDumpItem(item llm.RouteItem) error {
 	// Normalize: strip leading #, trim spaces
 	proj := strings.TrimSpace(strings.TrimPrefix(item.Project, "#"))
 	projLower := strings.ToLower(proj)
+	section := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(item.Section, " ", "_")))
+	if section != "backlog" {
+		section = "current_tasks"
+	}
 
-	// Configured ideas bucket — section default is "inbox" so items land in the
-	// well-known unsorted spot regardless of what the model guessed.
+	// Configured ideas bucket — force ideas into backlog regardless of what the
+	// model guessed for the section.
 	if t := m.cfg.IdeasTarget; t != nil && t.Name != "" && projLower == strings.ToLower(t.Name) {
-		return workmd.AppendToSection(config.ExpandHome(t.Path), "inbox", item.Text)
+		return workmd.AppendToSection(config.ExpandHome(t.Path), "backlog", item.Text)
 	}
 
 	// Configured catch-all bucket — preserves the section the model chose.
 	if t := m.cfg.CatchallTarget; t != nil && t.Name != "" && projLower == strings.ToLower(t.Name) {
-		return workmd.AppendToSection(config.ExpandHome(t.Path), item.Section, item.Text)
+		return workmd.AppendToSection(config.ExpandHome(t.Path), section, item.Text)
 	}
 
 	// Find matching project — exact match first, then fuzzy (suffix/substring)
 	for _, p := range m.projects {
 		if strings.ToLower(p.Name) == projLower {
-			return workmd.AppendToSection(p.Path, item.Section, item.Text)
+			return workmd.AppendToSection(p.Path, section, item.Text)
 		}
 	}
 	for _, p := range m.projects {
 		lower := strings.ToLower(p.Name)
 		if strings.HasSuffix(lower, "/"+projLower) || strings.Contains(lower, projLower) {
-			return workmd.AppendToSection(p.Path, item.Section, item.Text)
+			return workmd.AppendToSection(p.Path, section, item.Text)
 		}
 	}
 	return fmt.Errorf("project %q not found", item.Project)

@@ -137,32 +137,17 @@ func (m model) renderHeader() string {
 		parts := []string{m.renderProviderBadge(m.cfg.ActiveProviderStatus())}
 		parts = append(parts, panelHeaderStyle.Render(p.Name))
 		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", p.CurrentCount)))
-		if p.BugsCount > 0 {
-			parts = append(parts, warnStyle.Render(fmt.Sprintf("%d bugs", p.BugsCount)))
-		}
-		if p.UnsortedCount > 0 {
-			parts = append(parts, unsortedStyle.Render(fmt.Sprintf("%d unsorted", p.UnsortedCount)))
-		}
 		parts = append(parts, backlogStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount)))
 		right = strings.Join(parts, dimStyle.Render(" · "))
 	default:
-		var totalCur, totalBugs, totalUnsorted, totalNonList, totalBacklog int
+		var totalCur, totalBacklog int
 		for _, p := range m.projects {
 			totalCur += p.CurrentCount
-			totalBugs += p.BugsCount
-			totalUnsorted += p.UnsortedCount
-			totalNonList += p.NonListCount
 			totalBacklog += p.BacklogCount
 		}
 		parts := []string{m.renderProviderBadge(m.cfg.ActiveProviderStatus())}
 		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d files", len(m.projects))))
 		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", totalCur)))
-		if totalBugs > 0 {
-			parts = append(parts, warnStyle.Render(fmt.Sprintf("%d bugs", totalBugs)))
-		}
-		if totalUnsorted > 0 {
-			parts = append(parts, unsortedStyle.Render(fmt.Sprintf("%d unsorted", totalUnsorted)))
-		}
 		parts = append(parts, backlogStyle.Render(fmt.Sprintf("%d backlog", totalBacklog)))
 		right = strings.Join(parts, dimStyle.Render(" · "))
 	}
@@ -240,7 +225,7 @@ func (m model) renderDashboard() string {
 		return m.renderEmpty(m.spinner.View()+" scanning ~/projects…", "")
 	}
 	if len(m.projects) == 0 {
-		return m.renderEmpty("No WORK.md files found", "Check ~/projects")
+		return m.renderEmpty("No task files found", "Check your configured scan roots")
 	}
 
 	availableHeight := m.contentAreaHeight()
@@ -290,6 +275,10 @@ func (m model) renderDashboard() string {
 				nFav++
 			}
 		}
+		condensedPinned := m.dashboardCondensePinned()
+		if condensedPinned {
+			nFav = 0
+		}
 
 		// renderProjectRow builds a single project line for the left panel.
 		// Counts are right-aligned to the panel edge so columns stay consistent.
@@ -323,14 +312,6 @@ func (m model) renderDashboard() string {
 			if p.CurrentCount > 0 {
 				styledParts = append(styledParts, bg(currentStyle).Render(fmt.Sprintf("%d", p.CurrentCount)))
 				rawParts = append(rawParts, fmt.Sprintf("%d", p.CurrentCount))
-			}
-			if p.UnsortedCount > 0 {
-				styledParts = append(styledParts, bg(unsortedStyle).Render(fmt.Sprintf("%d", p.UnsortedCount)))
-				rawParts = append(rawParts, fmt.Sprintf("%d", p.UnsortedCount))
-			}
-			if p.BugsCount > 0 {
-				styledParts = append(styledParts, bg(warnStyle).Render(fmt.Sprintf("%d", p.BugsCount)))
-				rawParts = append(rawParts, fmt.Sprintf("%d", p.BugsCount))
 			}
 			if p.BacklogCount > 0 {
 				styledParts = append(styledParts, bg(backlogStyle).Render(fmt.Sprintf("%d", p.BacklogCount)))
@@ -411,6 +392,11 @@ func (m model) renderDashboard() string {
 		if nFav >= len(m.projects) {
 			leftLines = leftLines[:projectsHeaderIdx] // remove header + blank
 		} else {
+			header := panelHeaderStyle.Render("Projects")
+			if condensedPinned {
+				header = lipgloss.JoinHorizontal(lipgloss.Left, header, dimStyle.Render("  ·  pinned condensed"))
+			}
+			leftLines[projectsHeaderIdx] = header
 			for i := startIdx; i < endIdx; i++ {
 				leftLines = append(leftLines, renderProjectRow(i, innerLeft))
 			}
@@ -437,40 +423,14 @@ func (m model) renderDashboard() string {
 	var rightContent string
 	if m.mode == modeEdit && m.selected == m.cursor {
 		rightContent = m.renderEditMode()
-	} else if (m.mode == modeCleanupWait || m.mode == modeTodoWait) && m.selected == m.cursor {
+	} else if m.mode == modeCleanupWait && m.selected == m.cursor {
 		label := "model cleaning up..."
-		if m.mode == modeTodoWait {
-			label = "asking model what to work on..."
-		}
 		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
 			m.spinner.View()+" "+dimStyle.Render(label),
 			"",
 			dimStyle.Render("please wait..."),
 		)
 		rightContent = lipgloss.Place(rightWidth-4, panelHeight, lipgloss.Center, lipgloss.Center, content)
-	} else if m.mode == modePlanWait {
-		content := lipgloss.JoinVertical(lipgloss.Center, "", "",
-			m.spinner.View()+" "+dimStyle.Render("generating daily plan..."),
-			"",
-			dimStyle.Render("please wait..."),
-		)
-		rightContent = lipgloss.Place(rightWidth-4, panelHeight, lipgloss.Center, lipgloss.Center, content)
-	} else if m.mode == modePlanResult {
-		m.viewport.Width = rightWidth - 4
-		m.viewport.Height = panelHeight - 2
-		banner := warnStyle.Render("DAILY PLAN")
-		rightContent = lipgloss.JoinVertical(lipgloss.Left, banner, "", m.viewport.View())
-	} else if m.mode == modeTodoResult && m.selected == m.cursor {
-		var lines []string
-		proj := ""
-		if m.selected < len(m.projects) {
-			proj = m.projects[m.selected].Name
-		}
-		lines = append(lines, accentStyle.Render("What to work on: ")+dimStyle.Render(proj), "")
-		for _, l := range strings.Split(m.todoResult, "\n") {
-			lines = append(lines, "  "+textStyle.Render(l))
-		}
-		rightContent = strings.Join(lines, "\n")
 	} else {
 		// Size the viewport to fit the right panel
 		m.viewport.Width = rightWidth - 4
@@ -955,13 +915,11 @@ func (m model) helpLines() []string {
 			{"ctrl+home/end", "Preview top / bottom"},
 			{"enter", "Full-screen project view"},
 			{"f", "Pin / unpin project (sticky at top)"},
-			{"space", "Toggle project selection (for C/P)"},
+			{"space", "Toggle project selection (for C)"},
 			{"e", "Edit WORK.md inline"},
 			{"-", "Fix non-list lines (save in-place)"},
 			{"c", "Cleanup via model (single)"},
 			{"C", "Chain cleanup selected (or all)"},
-			{"P", "Daily plan via model (grouped tasks)"},
-			{"t", "Ask model what to work on"},
 			{"o", "Open project directory in editor"},
 			{"y", "Copy project dir path to clipboard"},
 			{"d", "Brain dump"},

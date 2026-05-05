@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -148,5 +150,29 @@ func TestActiveProviderStatusEnabledForOllama(t *testing.T) {
 	}
 	if status.Name != "ollama" {
 		t.Fatalf("name = %q, want ollama", status.Name)
+	}
+}
+
+func TestLoadAppliesDefaultBlacklistedMirrorDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, ".config", "sb")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	raw, err := json.MarshalIndent(&Config{
+		ScanRoots:    []ScanRoot{{Name: "projects", Path: "~/projects"}},
+		FilePatterns: []string{"WORK.md"},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), append(raw, '\n'), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := Load()
+	if !cfg.IsScanPathBlocked("/tmp/SECOND_BRAIN/WORKmd/test.md") {
+		t.Fatalf("expected WORKmd to be blocked by default")
 	}
 }

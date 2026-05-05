@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/LFroesch/sb/internal/cockpit"
+	"github.com/LFroesch/sb/internal/config"
 	"github.com/LFroesch/sb/internal/workmd"
 )
 
@@ -1436,6 +1437,296 @@ func TestHelpScrollClampsToVisibleWindow(t *testing.T) {
 	}
 }
 
+func TestHelpMouseWheelMovesSingleStep(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 16
+	m.mode = modeHelp
+
+	got := m.handleMouseWheel(tea.MouseMsg{}, 1)
+	next := got.(model)
+	if next.helpScroll != 1 {
+		t.Fatalf("helpScroll = %d, want 1 after a single wheel notch", next.helpScroll)
+	}
+}
+
+func TestDashboardMouseWheelOverLeftPaneMovesCursor(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 20
+	m.page = pageDashboard
+	m.mode = modeNormal
+	m.projects = []workmd.Project{
+		{Name: "one", Hydrated: true, Content: "one"},
+		{Name: "two", Hydrated: true, Content: "two"},
+	}
+
+	got := m.handleMouseWheel(tea.MouseMsg{X: m.dashboardLeftPanelWidth() - 1}, 1)
+	next := got.(model)
+	if next.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 after wheel in left pane", next.cursor)
+	}
+}
+
+func TestDashboardMouseWheelOverRightPaneScrollsPreview(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 20
+	m.page = pageDashboard
+	m.mode = modeNormal
+	m.projects = []workmd.Project{{Name: "one", Hydrated: true, Content: strings.Repeat("line\n", 40)}}
+	m.viewport.Width = m.rightPanelWidth() - 4
+	m.viewport.Height = 6
+	m.setViewportProjectContent(0, m.rightPanelWidth())
+
+	got := m.handleMouseWheel(tea.MouseMsg{X: m.dashboardLeftPanelWidth()}, 1)
+	next := got.(model)
+	if next.cursor != 0 {
+		t.Fatalf("cursor = %d, want unchanged when wheel is in right pane", next.cursor)
+	}
+	if next.viewport.YOffset <= 0 {
+		t.Fatalf("viewport.YOffset = %d, want > 0 after wheel in right pane", next.viewport.YOffset)
+	}
+}
+
+func TestHydrationContinuesAfterFailedProject(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.md")
+	second := filepath.Join(dir, "second.md")
+	missing := filepath.Join(dir, "missing.md")
+	if err := os.WriteFile(first, []byte("# WORK - first\nsummary\n\n## Current Phase\nx\n\n## Current Tasks\n- a\n\n## Backlog / Future Features\n- b\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(first): %v", err)
+	}
+	if err := os.WriteFile(second, []byte("# WORK - second\nsummary\n\n## Current Phase\nx\n\n## Current Tasks\n- a\n\n## Backlog / Future Features\n- b\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(second): %v", err)
+	}
+
+	m := newModel(config.Load())
+	m.projects = []workmd.Project{
+		{Name: "first", Path: first},
+		{Name: "missing", Path: missing},
+		{Name: "second", Path: second},
+	}
+	m.hydrateQueue = []string{first, missing, second}
+
+	cmd := m.nextHydrateCmd()
+	msg := cmd()
+	hydrated, ok := msg.(projectHydratedMsg)
+	if !ok || hydrated.project.Path != first {
+		t.Fatalf("first hydration msg = %#v, want projectHydratedMsg for first", msg)
+	}
+
+	got, cmd := m.Update(msg)
+	next := got.(model)
+	msg = cmd()
+	failed, ok := msg.(projectHydrationFailedMsg)
+	if !ok || failed.path != missing {
+		t.Fatalf("second hydration msg = %#v, want projectHydrationFailedMsg for missing", msg)
+	}
+
+	got, cmd = next.Update(msg)
+	next = got.(model)
+	msg = cmd()
+	hydrated, ok = msg.(projectHydratedMsg)
+	if !ok || hydrated.project.Path != second {
+		t.Fatalf("third hydration msg = %#v, want projectHydratedMsg for second", msg)
+	}
+}
+
+func TestMergeDiscoveredProjectsKeepsCachedHydratedPreview(t *testing.T) {
+	now := time.Now()
+	discovered := []workmd.Project{{
+		Name:         "fallback",
+		Path:         "/tmp/demo/WORK.md",
+		RelativePath: "demo/WORK.md",
+		FileName:     "WORK.md",
+		ModTime:      now,
+	}}
+	cached := []workmd.Project{{
+		Name:         "demo",
+		Path:         "/tmp/demo/WORK.md",
+		RelativePath: "demo/WORK.md",
+		FileName:     "WORK.md",
+		Content:      "# WORK - demo\nsummary",
+		CurrentCount: 2,
+		BacklogCount: 1,
+		ModTime:      now,
+		Hydrated:     true,
+	}}
+
+	merged := mergeDiscoveredProjects(cached, discovered)
+	if len(merged) != 1 {
+		t.Fatalf("len(merged) = %d, want 1", len(merged))
+	}
+	if merged[0].Name != "demo" {
+		t.Fatalf("merged name = %q, want cached hydrated name", merged[0].Name)
+	}
+	if merged[0].Content == "" || !merged[0].Hydrated {
+		t.Fatalf("merged project lost hydrated content: %+v", merged[0])
+	}
+	if merged[0].CurrentCount != 2 || merged[0].BacklogCount != 1 {
+		t.Fatalf("merged counts = %d/%d, want 2/1", merged[0].CurrentCount, merged[0].BacklogCount)
+	}
+}
+
+func TestHydrationOrderSkipsUnchangedCachedProjects(t *testing.T) {
+	now := time.Now()
+	m := newModel(nil)
+	m.projects = []workmd.Project{
+		{Name: "cached", Path: "/tmp/cached/WORK.md", Content: "# WORK - cached\nsummary", Hydrated: true, ModTime: now},
+		{Name: "pending", Path: "/tmp/pending/WORK.md"},
+	}
+
+	queue := m.hydrationOrder()
+	if len(queue) != 1 || queue[0] != "/tmp/pending/WORK.md" {
+		t.Fatalf("hydrationOrder = %v, want only pending project", queue)
+	}
+}
+
+func TestCachedProjectsLoadedMsgPaintsDashboardImmediately(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 20
+	m.page = pageDashboard
+
+	got, _ := m.Update(cachedProjectsLoadedMsg{projects: []workmd.Project{{
+		Name:     "demo",
+		Path:     "/tmp/demo/WORK.md",
+		Content:  "# WORK - demo\nsummary",
+		Hydrated: true,
+	}}})
+	next := got.(model)
+	if next.loading {
+		t.Fatalf("loading = true, want false after cached projects load")
+	}
+	if len(next.projects) != 1 {
+		t.Fatalf("len(projects) = %d, want 1", len(next.projects))
+	}
+	if !strings.Contains(next.viewport.View(), "demo") {
+		t.Fatalf("viewport did not render cached project content: %q", next.viewport.View())
+	}
+}
+
+func TestProjectsLoadedMsgKeepsCurrentDashboardPreview(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 20
+	m.page = pageDashboard
+	m.cursor = 1
+	m.projects = []workmd.Project{
+		{Name: "a", Path: "/tmp/a/WORK.md", Content: "# WORK - a\nsummary", Hydrated: true},
+		{Name: "b", Path: "/tmp/b/WORK.md", Content: "# WORK - b\nsummary", Hydrated: true},
+	}
+	m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
+
+	got, _ := m.Update(projectsLoadedMsg{projects: []workmd.Project{
+		{Name: "a", Path: "/tmp/a/WORK.md"},
+		{Name: "b", Path: "/tmp/b/WORK.md"},
+	}})
+	next := got.(model)
+	if next.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1", next.cursor)
+	}
+	if !strings.Contains(next.viewport.View(), "b") {
+		t.Fatalf("viewport switched away from current selection: %q", next.viewport.View())
+	}
+}
+
+func TestProjectHydratedMsgDoesNotRepaintUnrelatedDashboardPreview(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 20
+	m.page = pageDashboard
+	m.cursor = 0
+	m.projects = []workmd.Project{
+		{Name: "a", Path: "/tmp/a/WORK.md", Content: "# WORK - a\nsummary", Hydrated: true},
+		{Name: "b", Path: "/tmp/b/WORK.md"},
+	}
+	m.setViewportProjectContent(0, m.rightPanelWidth())
+	before := m.viewport.View()
+
+	got, _ := m.Update(projectHydratedMsg{project: workmd.Project{
+		Name:     "b",
+		Path:     "/tmp/b/WORK.md",
+		Content:  "# WORK - b\nsummary",
+		Hydrated: true,
+	}})
+	next := got.(model)
+	after := next.viewport.View()
+	if before != after {
+		t.Fatalf("viewport changed for unrelated hydration\nbefore: %q\nafter: %q", before, after)
+	}
+}
+
+func TestDashboardRefreshStartsStagedDiscovery(t *testing.T) {
+	cfg := config.Load()
+	m := newModel(cfg)
+	m.page = pageDashboard
+	m.projects = []workmd.Project{{Name: "demo", Path: "/tmp/demo/WORK.md", Hydrated: true, Content: "# WORK - demo\nsummary"}}
+	m.hydrateQueue = []string{"/tmp/demo/WORK.md"}
+
+	got, cmd := m.updateDashboard(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	next := got.(model)
+	if !next.loading {
+		t.Fatalf("loading = false, want true after refresh")
+	}
+	if len(next.hydrateQueue) != 0 {
+		t.Fatalf("hydrateQueue = %v, want cleared before rediscovery", next.hydrateQueue)
+	}
+	if next.statusMsg != "refreshing..." {
+		t.Fatalf("statusMsg = %q, want refreshing...", next.statusMsg)
+	}
+	if cmd == nil {
+		t.Fatal("refresh should return discover command")
+	}
+	if _, ok := cmd().(projectsLoadedMsg); !ok {
+		t.Fatalf("refresh cmd should return projectsLoadedMsg")
+	}
+}
+
+func TestUpdateEditSaveRefreshesProjectCacheImmediately(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectPath := filepath.Join(home, "demo", "WORK.md")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	original := "# WORK - demo\nold summary\n\n## Current Phase\nold phase\n\n## Current Tasks\n- old task\n\n## Backlog / Future Features\n- old backlog\n"
+	if err := os.WriteFile(projectPath, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := &config.Config{}
+	project, ok := workmd.HydrateProject(workmd.Project{Path: projectPath}, cfg)
+	if !ok {
+		t.Fatalf("HydrateProject failed for seed project")
+	}
+
+	m := newModel(cfg)
+	m.selected = 0
+	m.projects = []workmd.Project{project}
+	m.mode = modeEdit
+	m.editArea.SetValue("# WORK - demo\nnew summary\n\n## Current Phase\nnew phase\n\n## Current Tasks\n- new task\n\n## Backlog / Future Features\n- new backlog\n")
+
+	got, _ := m.updateEdit(tea.KeyMsg{Type: tea.KeyCtrlS})
+	next := got.(model)
+
+	cached, ok, err := loadProjectCache(cfg)
+	if err != nil {
+		t.Fatalf("loadProjectCache error: %v", err)
+	}
+	if !ok || len(cached) != 1 {
+		t.Fatalf("cache load = ok:%v len:%d, want true and 1 project", ok, len(cached))
+	}
+	if !strings.Contains(cached[0].Content, "new summary") {
+		t.Fatalf("cached content = %q, want updated summary", cached[0].Content)
+	}
+	if next.projects[0].Phase != "new phase" {
+		t.Fatalf("phase = %q, want hydrated updated phase", next.projects[0].Phase)
+	}
+}
+
 func TestUpdateAgentManagePagesAndScrollsFieldList(t *testing.T) {
 	m := newModel(nil)
 	m.mode = modeAgentManage
@@ -1544,5 +1835,92 @@ func TestUpdateDashboardPageKeysMoveProjectCursor(t *testing.T) {
 	next = got.(model)
 	if next.cursor != 0 {
 		t.Fatalf("cursor after pgup = %d, want 0", next.cursor)
+	}
+}
+
+func TestUpdateEditCtrlHomeAndEndJumpFileBounds(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeEdit
+	m.editArea.SetWidth(40)
+	m.editArea.SetHeight(5)
+	m.editArea.SetValue("one\ntwo\nthree\nfour")
+	m.editArea.CursorDown()
+	m.editArea.CursorDown()
+	m.editArea.CursorEnd()
+
+	got, _ := m.updateEdit(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+	next := got.(model)
+	if next.editArea.Line() != next.editArea.LineCount()-1 {
+		t.Fatalf("line after ctrl+end = %d, want %d", next.editArea.Line(), next.editArea.LineCount()-1)
+	}
+
+	got, _ = next.updateEdit(tea.KeyMsg{Type: tea.KeyCtrlHome})
+	next = got.(model)
+	if next.editArea.Line() != 0 {
+		t.Fatalf("line after ctrl+home = %d, want 0", next.editArea.Line())
+	}
+	if next.editArea.LineInfo().ColumnOffset != 0 {
+		t.Fatalf("column after ctrl+home = %d, want 0", next.editArea.LineInfo().ColumnOffset)
+	}
+}
+
+func TestDashboardCondensesPinnedSectionOnShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDashboard
+	m.mode = modeNormal
+	m.width = 80
+	m.height = 12
+	m.loading = false
+	m.projects = []workmd.Project{
+		{Name: "alpha", Path: "/alpha", Content: "# alpha"},
+		{Name: "bravo", Path: "/bravo", Content: "# bravo"},
+		{Name: "charlie", Path: "/charlie", Content: "# charlie"},
+		{Name: "delta", Path: "/delta", Content: "# delta"},
+		{Name: "echo", Path: "/echo", Content: "# echo"},
+		{Name: "foxtrot", Path: "/foxtrot", Content: "# foxtrot"},
+	}
+	m.favorites["/alpha"] = true
+	m.favorites["/bravo"] = true
+	m.favorites["/charlie"] = true
+	m.favorites["/delta"] = true
+
+	if !m.dashboardCondensePinned() {
+		t.Fatalf("dashboardCondensePinned() = false, want true")
+	}
+
+	out := m.renderDashboard()
+	if strings.Contains(out, "★ Pinned") {
+		t.Fatalf("renderDashboard should collapse pinned section on short terminals: %q", out)
+	}
+	if !strings.Contains(out, "pinned condensed") {
+		t.Fatalf("renderDashboard missing condensed pinned hint: %q", out)
+	}
+}
+
+func TestDashboardCondensedPinnedKeepsCursorVisible(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDashboard
+	m.mode = modeNormal
+	m.width = 80
+	m.height = 12
+	m.loading = false
+	m.projects = []workmd.Project{
+		{Name: "alpha", Path: "/alpha", Content: "# alpha"},
+		{Name: "bravo", Path: "/bravo", Content: "# bravo"},
+		{Name: "charlie", Path: "/charlie", Content: "# charlie"},
+		{Name: "delta", Path: "/delta", Content: "# delta"},
+		{Name: "echo", Path: "/echo", Content: "# echo"},
+		{Name: "foxtrot", Path: "/foxtrot", Content: "# foxtrot"},
+		{Name: "golf", Path: "/golf", Content: "# golf"},
+	}
+	m.favorites["/alpha"] = true
+	m.favorites["/bravo"] = true
+	m.favorites["/charlie"] = true
+	m.favorites["/delta"] = true
+	m.cursor = 5
+
+	out := m.renderDashboard()
+	if !strings.Contains(out, "foxtrot") {
+		t.Fatalf("renderDashboard should keep cursor row visible when pinned condenses: %q", out)
 	}
 }
