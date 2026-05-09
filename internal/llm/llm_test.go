@@ -49,6 +49,67 @@ func TestReconcileMissingSectionsKeepsCanonicalOutputOnly(t *testing.T) {
 	}
 }
 
+func TestReconcileMissingSectionsRestoresCanonicalSectionsAndPhase(t *testing.T) {
+	original := `# WORK - demo
+ship dashboard polish
+
+## Current Tasks
+
+- keep this
+`
+	cleaned := `# WORK - demo
+ship dashboard polish
+
+## Current Tasks
+- keep this
+`
+
+	got := reconcileMissingSections(original, cleaned)
+	wantSections := []string{"## Current Phase", "## Current Tasks", "## Backlog / Future Features"}
+	for _, section := range wantSections {
+		if !strings.Contains(got, section) {
+			t.Fatalf("missing canonical section %q in:\n%s", section, got)
+		}
+	}
+	if !strings.Contains(got, "\nship dashboard polish\n") {
+		t.Fatalf("expected summary-derived phase fallback in:\n%s", got)
+	}
+}
+
+func TestReconcileMissingBulletsDoesNotDuplicateBlankLineAfterCurrentTasks(t *testing.T) {
+	original := `# WORK - demo
+summary
+
+## Current Phase
+
+ship it
+
+## Current Tasks
+
+- keep this
+- restore this
+`
+	cleaned := `# WORK - demo
+summary
+
+## Current Phase
+
+ship it
+
+## Current Tasks
+
+- keep this
+`
+
+	got := reconcileMissingBullets(original, cleaned)
+	if strings.Contains(got, "\n\n\n- restore this") {
+		t.Fatalf("unexpected duplicate blank lines around restored bullet:\n%s", got)
+	}
+	if !strings.Contains(got, "- restore this") {
+		t.Fatalf("missing restored bullet:\n%s", got)
+	}
+}
+
 func TestProjectNameFromContentSupportsTypedTitles(t *testing.T) {
 	if got := projectNameFromContent("# ROADMAP - toolkit\nsummary\n"); got != "toolkit" {
 		t.Fatalf("got %q", got)

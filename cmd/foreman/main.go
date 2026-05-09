@@ -22,13 +22,20 @@ import (
 	"github.com/LFroesch/sb/internal/logs"
 )
 
+var version = "dev"
+
 func main() {
 	var (
-		listCmd  = flag.Bool("list", false, "list jobs and exit")
-		serveCmd = flag.Bool("serve", false, "start the socket server (default)")
-		sockPath = flag.String("socket", "", "override socket path")
+		listCmd     = flag.Bool("list", false, "list jobs and exit")
+		serveCmd    = flag.Bool("serve", false, "start the socket server (default)")
+		sockPath    = flag.String("socket", "", "override socket path")
+		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("sb-foreman " + version)
+		return
+	}
 
 	slog.SetDefault(logs.Open("sb-foreman", "info"))
 	paths := cockpit.DefaultPaths()

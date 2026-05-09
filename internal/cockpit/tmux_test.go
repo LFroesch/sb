@@ -2,6 +2,7 @@ package cockpit
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,9 +26,10 @@ func TestTmuxCmdEnvAddsTERMWhenMissing(t *testing.T) {
 
 func TestTmuxSessionExistsRecognizesMissingSession(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
+if [ "$1" = "-S" ]; then
   shift 2
 fi
 if [ "$1" = "has-session" ]; then
@@ -52,9 +54,10 @@ exit 0
 
 func TestTmuxSessionExistsRecognizesMissingSocket(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
+if [ "$1" = "-S" ]; then
   shift 2
 fi
 if [ "$1" = "has-session" ]; then
@@ -79,6 +82,7 @@ exit 0
 
 func TestConfigureSessionSetsCockpitOptions(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	logPath := filepath.Join(dir, "tmux.log")
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
@@ -132,11 +136,12 @@ exit 0
 
 func TestCapturePaneUsesSnapshotCommand(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	logPath := filepath.Join(dir, "tmux.log")
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
 printf '%s\n' "$*" >> "` + logPath + `"
-if [ "$3" = "capture-pane" ]; then
+if [ "$3" = "capture-pane" ] || [ "$1" = "capture-pane" ]; then
   printf 'snapshot line\n'
 fi
 exit 0
@@ -164,9 +169,10 @@ exit 0
 
 func TestShowEnvironmentReadsGlobalValue(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
+if [ "$1" = "-S" ]; then
   shift 2
 fi
 if [ "$1" = "show-environment" ]; then
@@ -190,10 +196,11 @@ exit 0
 
 func TestEnsureDashboardWindowRespawnsPlaceholderShell(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	logPath := filepath.Join(dir, "tmux.log")
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
+if [ "$1" = "-S" ]; then
   shift 2
 fi
 printf '%s\n' "$*" >> "` + logPath + `"
@@ -222,10 +229,11 @@ exit 0
 
 func TestEnsureDashboardWindowRecreatesMissingMainWindowInSession(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	logPath := filepath.Join(dir, "tmux.log")
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
+if [ "$1" = "-S" ]; then
   shift 2
 fi
 printf '%s\n' "$*" >> "` + logPath + `"
@@ -255,10 +263,11 @@ exit 0
 
 func TestEnsureDashboardWindowLeavesLiveDashboardAlone(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	logPath := filepath.Join(dir, "tmux.log")
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
+if [ "$1" = "-S" ]; then
   shift 2
 fi
 printf '%s\n' "$*" >> "` + logPath + `"
@@ -282,5 +291,27 @@ exit 0
 	got := string(out)
 	if strings.Contains(got, "respawn-window") || strings.Contains(got, "new-window") {
 		t.Fatalf("expected no dashboard repair commands, got:\n%s", got)
+	}
+}
+
+func TestProcessMatchesExecutableRequiresCurrentBinaryPath(t *testing.T) {
+	dir := t.TempDir()
+	self := filepath.Join(dir, "sb")
+	if err := os.WriteFile(self, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(self): %v", err)
+	}
+	stale := filepath.Join(dir, "sb-stale")
+	if err := os.WriteFile(stale, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(stale): %v", err)
+	}
+
+	cmd := exec.Command(stale)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start(stale): %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+
+	if processMatchesExecutable(cmd.Process.Pid, "sb", self) {
+		t.Fatal("expected stale process path to be rejected")
 	}
 }

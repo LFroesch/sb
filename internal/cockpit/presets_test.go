@@ -39,6 +39,62 @@ func TestWriteDefaultPresets_SeedsThenNoops(t *testing.T) {
 	}
 }
 
+func TestWriteDefaultPresets_FillsMissingSeeds(t *testing.T) {
+	dir := t.TempDir()
+	if err := SavePreset(dir, LaunchPreset{ID: "senior-dev", Name: "Senior dev"}); err != nil {
+		t.Fatalf("preseed: %v", err)
+	}
+	n, err := WriteDefaultPresets(dir)
+	if err != nil {
+		t.Fatalf("seed missing presets: %v", err)
+	}
+	if n != DefaultPresetCount-1 {
+		t.Fatalf("expected %d missing seeds, got %d", DefaultPresetCount-1, n)
+	}
+}
+
+func TestWriteDefaultProviders_FillsMissingSeeds(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveProvider(dir, ProviderProfile{ID: "claude", Name: "Claude Code"}); err != nil {
+		t.Fatalf("preseed provider: %v", err)
+	}
+	n, err := WriteDefaultProviders(dir)
+	if err != nil {
+		t.Fatalf("seed missing providers: %v", err)
+	}
+	if n != DefaultProviderCount-1 {
+		t.Fatalf("expected %d missing providers, got %d", DefaultProviderCount-1, n)
+	}
+}
+
+func TestWriteDefaultPrompts_FillsMissingSeeds(t *testing.T) {
+	dir := t.TempDir()
+	if err := SavePrompt(dir, PromptTemplate{ID: "senior-dev", Name: "Senior dev", Body: "x"}); err != nil {
+		t.Fatalf("preseed prompt: %v", err)
+	}
+	n, err := WriteDefaultPrompts(dir)
+	if err != nil {
+		t.Fatalf("seed missing prompts: %v", err)
+	}
+	if n != DefaultPromptCount-1 {
+		t.Fatalf("expected %d missing prompts, got %d", DefaultPromptCount-1, n)
+	}
+}
+
+func TestWriteDefaultHookBundles_FillsMissingSeeds(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveHookBundle(dir, HookBundle{ID: "diff-stat", Name: "Post: git diff --stat"}); err != nil {
+		t.Fatalf("preseed hook bundle: %v", err)
+	}
+	n, err := WriteDefaultHookBundles(dir)
+	if err != nil {
+		t.Fatalf("seed missing hook bundles: %v", err)
+	}
+	if n != DefaultHookBundleCount-1 {
+		t.Fatalf("expected %d missing hook bundles, got %d", DefaultHookBundleCount-1, n)
+	}
+}
+
 func TestLoadPresets_SortsCoreBeforeUtility(t *testing.T) {
 	dir := t.TempDir()
 	prompts, bundles, providers := seedTestLibraries()

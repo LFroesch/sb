@@ -2,8 +2,12 @@ package tui
 
 import (
 	"log/slog"
+	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/LFroesch/sb/internal/cockpit"
 	"github.com/LFroesch/sb/internal/config"
@@ -14,6 +18,7 @@ func Run() error {
 	_ = config.WriteDefaults() // create ~/.config/sb/config.json on first run
 	cfg := config.Load()
 	slog.SetDefault(logs.Open("sb", cfg.LogLevel))
+	ensureColorProfile()
 
 	// Bootstrap: re-exec ourselves inside the cockpit tmux session so
 	// that window 0 of sb-cockpit is sb itself. No-op (and ExecFallback
@@ -99,4 +104,36 @@ func Run() error {
 		_ = m.cockpitClient.Close()
 	}
 	return nil
+}
+
+func ensureColorProfile() {
+	if lipgloss.ColorProfile() != termenv.Ascii {
+		return
+	}
+	if noColorRequested() {
+		return
+	}
+
+	term := strings.ToLower(strings.TrimSpace(os.Getenv("TERM")))
+	colorTerm := strings.ToLower(strings.TrimSpace(os.Getenv("COLORTERM")))
+	insideTmux := strings.TrimSpace(os.Getenv("TMUX")) != ""
+
+	switch {
+	case colorTerm == "truecolor" || colorTerm == "24bit":
+		lipgloss.SetColorProfile(termenv.TrueColor)
+	case strings.Contains(term, "256color"), strings.Contains(term, "color"), insideTmux:
+		lipgloss.SetColorProfile(termenv.ANSI256)
+	case term != "":
+		lipgloss.SetColorProfile(termenv.ANSI)
+	}
+}
+
+func noColorRequested() bool {
+	if strings.TrimSpace(os.Getenv("NO_COLOR")) != "" {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("CLICOLOR")) == "0" && strings.TrimSpace(os.Getenv("CLICOLOR_FORCE")) != "1" {
+		return true
+	}
+	return false
 }

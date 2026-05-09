@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LFroesch/sb/internal/accounts"
 	"github.com/LFroesch/sb/internal/statusbar"
 )
 
@@ -129,7 +130,7 @@ type LaunchRequest struct {
 // first turn in a background goroutine. Returns immediately with the
 // created job.
 func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
-	if req.Repo == "" {
+	if req.Repo == "" && len(req.Sources) > 0 {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return Job{}, fmt.Errorf("launch: repo is required")
@@ -645,8 +646,13 @@ func (m *Manager) runTurn(id JobID) {
 		m.finishTurn(id, "", -1, "build cmd: "+err.Error(), StatusFailed)
 		return
 	}
+	extraEnv, err := runtimeEnv(j)
+	if err != nil {
+		m.finishTurn(id, "", -1, "env: "+err.Error(), StatusFailed)
+		return
+	}
 	cmd.Dir = j.Repo
-	cmd.Env = append(os.Environ(), "SB_JOB_ID="+string(j.ID))
+	cmd.Env = append(os.Environ(), extraEnv...)
 	if stdinBody != "" {
 		cmd.Stdin = strings.NewReader(stdinBody)
 	}
@@ -832,6 +838,9 @@ func countAssistantTurns(j *Job) int {
 // when stdinBody is non-empty, the caller must feed it to cmd.Stdin.
 func buildTurnCmd(ctx context.Context, j Job, userInput string) (*exec.Cmd, string, error) {
 	spec := j.Executor
+	if err := demoModeExecutorError(spec); err != nil {
+		return nil, "", err
+	}
 	switch strings.ToLower(spec.Type) {
 	case "claude":
 		args := []string{"-p"}
@@ -1016,6 +1025,21 @@ func codexRuntimeArgs(j Job) []string {
 		args = append(args, "--ask-for-approval", "never")
 	}
 	return args
+}
+
+func runtimeEnv(j Job) ([]string, error) {
+	env := []string{"SB_JOB_ID=" + string(j.ID)}
+	provider := strings.ToLower(strings.TrimSpace(j.Executor.Type))
+	switch provider {
+	case "", "ollama", "shell":
+		return env, nil
+	}
+	activeEnv, err := accounts.ActiveEnv(provider)
+	if err != nil {
+		return nil, err
+	}
+	env = append(env, activeEnv...)
+	return env, nil
 }
 
 func jobRunsUnattended(j Job) bool {

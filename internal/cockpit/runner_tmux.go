@@ -71,10 +71,14 @@ func (r *tmuxRunner) StartJob(j Job) error {
 	if err != nil {
 		return err
 	}
+	env, err := runtimeEnv(j)
+	if err != nil {
+		return err
+	}
 
 	info, err := NewWindow(CockpitSession, winName,
 		cmd,
-		[]string{"SB_JOB_ID=" + string(j.ID)},
+		env,
 		j.Repo,
 	)
 	if err != nil {

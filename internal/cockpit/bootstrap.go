@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -58,7 +59,7 @@ func dashboardWindowAlive(self string) (bool, error) {
 			continue
 		}
 		pid, _ := strconv.Atoi(fields[0])
-		if fields[1] == "0" && processAlive(pid) && sameExecutableName(fields[2], self) {
+		if fields[1] == "0" && processAlive(pid) && processMatchesExecutable(pid, fields[2], self) {
 			return true, nil
 		}
 	}
@@ -170,11 +171,17 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 		ExecFallback = true
 		return false, true, fmt.Errorf("lookpath tmux: %w", err)
 	}
+	if err := ensureTmuxSocketDir(); err != nil {
+		ExecFallback = true
+		return false, true, fmt.Errorf("prepare tmux socket dir: %w", err)
+	}
 	// Always land on the dashboard window — attaching to the bare session
 	// reattaches to the last-active window, which may be a job pane the
 	// user previously stepped out of. Targeting the window explicitly
 	// selects it before attaching so `sb` always opens to itself.
-	args := []string{tmux, "-L", TmuxServerLabel, "attach", "-t", cockpitDashboardTarget}
+	args := []string{tmux}
+	args = append(args, tmuxSocketArgs()...)
+	args = append(args, "attach", "-t", cockpitDashboardTarget)
 	env := os.Environ()
 	if execErr := syscall.Exec(tmux, args, env); execErr != nil {
 		ExecFallback = true
@@ -190,4 +197,20 @@ func MaybeReExecIntoTmux() (reExeced bool, fallback bool, err error) {
 // the dashboard process and leaving the tmux client attached.
 func ShouldDetachOnQuit() bool {
 	return os.Getenv(EnvInCockpit) == "1" && InsideTmux() && !ExecFallback
+}
+
+func processMatchesExecutable(pid int, currentCmd, self string) bool {
+	if !sameExecutableName(currentCmd, self) {
+		return false
+	}
+	if pid <= 0 {
+		return false
+	}
+	selfPath, selfErr := filepath.EvalSymlinks(strings.TrimSpace(self))
+	procPath, procErr := filepath.EvalSymlinks(fmt.Sprintf("/proc/%d/exe", pid))
+	if selfErr == nil && procErr == nil {
+		return procPath == selfPath
+	}
+	// Fall back to the looser name check when /proc resolution is unavailable.
+	return true
 }

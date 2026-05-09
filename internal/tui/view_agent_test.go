@@ -382,6 +382,29 @@ func TestJobOperatorStatusShowsTakenOverForSupersededJob(t *testing.T) {
 	}
 }
 
+func TestJobOperatorStatusShowsDemoModeForDemoDisabledFailure(t *testing.T) {
+	got, _ := jobOperatorStatus(cockpit.Job{
+		Status: cockpit.StatusFailed,
+		Note:   "build cmd: " + cockpit.DemoModeLLMDisabledNote,
+	})
+	if got != "demo mode" {
+		t.Fatalf("jobOperatorStatus(demo disabled) = %q, want demo mode", got)
+	}
+}
+
+func TestRenderChatConversationShowsAssistantNoteWhenReplyBodyIsEmpty(t *testing.T) {
+	out := renderChatConversation([]cockpit.Turn{
+		{Role: cockpit.TurnUser, Content: "hello"},
+		{Role: cockpit.TurnAssistant, Note: "build cmd: " + cockpit.DemoModeLLMDisabledNote},
+	}, "", 80, false)
+	if !strings.Contains(out, cockpit.DemoModeLLMDisabledNote) {
+		t.Fatalf("renderChatConversation missing demo note:\n%s", out)
+	}
+	if strings.Contains(out, "build cmd:") {
+		t.Fatalf("renderChatConversation leaked internal prefix:\n%s", out)
+	}
+}
+
 func TestRenderAgentJobsHeaderShowsForemanPool(t *testing.T) {
 	jobs := []cockpit.Job{
 		{Status: cockpit.StatusQueued, WaitForForeman: true, ForemanManaged: true},
@@ -557,6 +580,22 @@ func TestRenderAgentLaunchShowsRepoTabForFreeform(t *testing.T) {
 	}
 }
 
+func TestRenderAgentLaunchShowsNoPresetOption(t *testing.T) {
+	m := newModel(nil)
+	m.width = 120
+	m.height = 30
+	m.mode = modeAgentLaunch
+	m.launchFocus = launchFocusRole
+	m.launchPresetIdx = -1
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if !strings.Contains(out, "(no preset)") {
+		t.Fatalf("renderAgentLaunch missing no-preset option: %q", out)
+	}
+}
+
 func TestRenderAgentLaunchShowsLongerRepoPaths(t *testing.T) {
 	m := newModel(nil)
 	m.width = 120
@@ -604,6 +643,61 @@ func TestRenderAgentLaunchKeepsCustomRepoEditorVisibleOnShorterTerminals(t *test
 	}
 	if got := renderedLineCount(out); got > m.height {
 		t.Fatalf("renderAgentLaunch overflowed terminal height: got %d lines in %d-line terminal:\n%s", got, m.height, out)
+	}
+}
+
+func TestRenderAgentLaunchNoteStepFitsShortTerminal(t *testing.T) {
+	m := newModel(nil)
+	m.width = 80
+	m.height = 12
+	m.mode = modeAgentLaunch
+	m.launchFocus = m.launchNoteFocus()
+	m.launchBrief.SetValue(strings.Repeat("note line\n", 12))
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if got := renderedLineCount(out); got > m.height {
+		t.Fatalf("note step rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
+	}
+}
+
+func TestRenderAgentLaunchReviewShowsNoRepo(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 20
+	m.mode = modeAgentLaunch
+	m.launchFocus = m.launchReviewFocus()
+	m.launchRepo = repoSentinelNone
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev"}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex"}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if !strings.Contains(out, "(no repo)") {
+		t.Fatalf("review missing no-repo label: %q", out)
+	}
+}
+
+func TestRenderAgentLaunchReviewShowsNoPreset(t *testing.T) {
+	m := newModel(nil)
+	m.width = 100
+	m.height = 28
+	m.mode = modeAgentLaunch
+	m.launchFocus = m.launchReviewFocus()
+	m.launchPresetIdx = -1
+	m.launchProviderIdx = 0
+	m.cockpitProviders = []cockpit.ProviderProfile{{
+		ID:       "codex",
+		Name:     "Codex",
+		Executor: cockpit.ExecutorSpec{Type: "codex"},
+	}}
+
+	out := xansi.Strip(m.renderAgentLaunch())
+	if !strings.Contains(out, "(no preset)") {
+		t.Fatalf("review missing no-preset label: %q", out)
+	}
+	if !strings.Contains(out, "Codex") {
+		t.Fatalf("review missing engine label for no-preset launch: %q", out)
 	}
 }
 

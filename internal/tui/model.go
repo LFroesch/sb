@@ -123,6 +123,7 @@ type model struct {
 	// Cleanup
 	cleanupOriginal string // original content before cleanup
 	cleanupResult   string // LLM-cleaned content
+	cleanupReturn   page   // page to return to after single-project cleanup
 
 	// Chain cleanup
 	chainQueue         []int

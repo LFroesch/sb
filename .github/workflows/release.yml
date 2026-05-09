@@ -9,8 +9,10 @@ permissions:
   contents: write
 
 env:
-  BINARY_NAME: sb
-  BUILD_TARGET: .
+  SB_BINARY_NAME: sb
+  FOREMAN_BINARY_NAME: sb-foreman
+  SB_BUILD_TARGET: .
+  FOREMAN_BUILD_TARGET: ./cmd/foreman
 
 jobs:
   release:
@@ -44,21 +46,25 @@ jobs:
               ext=".exe"
             fi
 
-            out="${BINARY_NAME}-${os}-${arch}${ext}"
-            echo "Building $out"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "$out" "${BUILD_TARGET}"
+            sb_out="${SB_BINARY_NAME}-${os}-${arch}${ext}"
+            foreman_out="${FOREMAN_BINARY_NAME}-${os}-${arch}${ext}"
+            echo "Building $sb_out"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "$sb_out" "${SB_BUILD_TARGET}"
+            echo "Building $foreman_out"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "$foreman_out" "${FOREMAN_BUILD_TARGET}"
           done
 
       - name: Generate checksums
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum "${BINARY_NAME}"-* > checksums.txt
+          sha256sum "${SB_BINARY_NAME}"-* "${FOREMAN_BINARY_NAME}"-* > checksums.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ env.BINARY_NAME }}-*
+            ${{ env.SB_BINARY_NAME }}-*
+            ${{ env.FOREMAN_BINARY_NAME }}-*
             checksums.txt
           generate_release_notes: true

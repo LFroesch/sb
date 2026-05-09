@@ -8,7 +8,46 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/LFroesch/sb/internal/accounts"
 )
+
+func TestRuntimeEnvUsesActiveCodexSlot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("CODEX_HOME", filepath.Join(home, "codex-live"))
+
+	live := filepath.Join(home, "codex-live")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "auth.json"), []byte(`{"tokens":{"account_id":"acct-a"}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "logs_2.sqlite"), []byte("db"), 0o600); err != nil {
+		t.Fatalf("WriteFile db: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "state_5.sqlite"), []byte("state"), 0o600); err != nil {
+		t.Fatalf("WriteFile state: %v", err)
+	}
+
+	if err := accounts.SaveCurrent("codex", "work"); err != nil {
+		t.Fatalf("SaveCurrent: %v", err)
+	}
+	if err := accounts.Use("codex", "work"); err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+
+	env, err := runtimeEnv(Job{ID: "job-1", Executor: ExecutorSpec{Type: "codex"}})
+	if err != nil {
+		t.Fatalf("runtimeEnv: %v", err)
+	}
+	want := "CODEX_HOME=" + filepath.Join(home, ".config", "sb", "accounts", "codex", "work")
+	if !containsString(env, want) {
+		t.Fatalf("env = %q, want %q", env, want)
+	}
+}
 
 func TestBuildTurnCmdCodexInitialTurnUsesJSONExec(t *testing.T) {
 	t.Parallel()
@@ -25,6 +64,15 @@ func TestBuildTurnCmdCodexInitialTurnUsesJSONExec(t *testing.T) {
 	if stdinBody != "" {
 		t.Fatal("expected codex prompt as argv, not stdin replay")
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildTurnCmdCodexResumeUsesThreadID(t *testing.T) {
@@ -132,16 +180,31 @@ func TestBuildTurnCmdCodexHonorsExecutorModel(t *testing.T) {
 	assertArgsEqual(t, cmd.Args, want)
 }
 
+func TestBuildTurnCmdOllamaReturnsDemoModeError(t *testing.T) {
+	t.Setenv("DEMO_ENV", "1")
+
+	_, _, err := buildTurnCmd(context.Background(), Job{
+		Executor: ExecutorSpec{Type: "ollama", Model: "qwen2.5:7b"},
+	}, "do thing")
+	if err == nil {
+		t.Fatal("expected demo mode error")
+	}
+	if got := err.Error(); got != DemoModeLLMDisabledNote {
+		t.Fatalf("error = %q, want %q", got, DemoModeLLMDisabledNote)
+	}
+}
+
 func TestTakeOverJobSupersedesForemanTmuxJob(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(envTmuxSocket, filepath.Join(dir, "tmux.sock"))
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	logPath := filepath.Join(dir, "tmux.log")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
-  shift 2
-fi
-printf '%s\n' "$*" >> "` + logPath + `"
-case "$1" in
+	if [ "$1" = "-S" ]; then
+	  shift 2
+	fi
+	printf '%s\n' "$*" >> "` + logPath + `"
+	case "$1" in
   list-panes)
     printf '0\n'
     ;;
@@ -386,7 +449,7 @@ func TestBuildTurnCmdClaudeNormalizesLegacyPrintArg(t *testing.T) {
 	}
 }
 
-func TestLaunchJobFallsBackToCurrentWorkingDir(t *testing.T) {
+func TestLaunchJobAllowsFreeformWithoutRepo(t *testing.T) {
 	dir := t.TempDir()
 	paths := Paths{
 		StateDir:     filepath.Join(dir, "state"),
@@ -425,8 +488,8 @@ func TestLaunchJobFallsBackToCurrentWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LaunchJob: %v", err)
 	}
-	if job.Repo != dir {
-		t.Fatalf("Repo = %q, want %q", job.Repo, dir)
+	if job.Repo != "" {
+		t.Fatalf("Repo = %q, want empty", job.Repo)
 	}
 	waitForJobTerminalState(t, mgr, job.ID)
 }

@@ -177,12 +177,16 @@ func (m model) agentListLayout(prefixLines int) (panelHeight, listWidth, rightWi
 		panelHeight = 3
 	}
 	listWidth = m.width * 42 / 100
-	if listWidth < 42 {
-		listWidth = 42
+	if listWidth < 16 {
+		listWidth = 16
 	}
 	rightWidth = m.width - listWidth - 6
-	if rightWidth < 34 {
-		rightWidth = 34
+	if rightWidth < 16 {
+		rightWidth = 16
+		listWidth = m.width - rightWidth - 6
+		if listWidth < 8 {
+			listWidth = 8
+		}
 	}
 	innerHeight = panelHeight - 2
 	if innerHeight < 1 {
@@ -252,6 +256,17 @@ func statusLabel(s cockpit.Status) string {
 		return "done"
 	}
 	return string(s)
+}
+
+func assistantTurnDisplayBody(t cockpit.Turn) string {
+	body := strings.TrimSpace(t.Content)
+	if body != "" {
+		return body
+	}
+	note := strings.TrimSpace(t.Note)
+	note = strings.TrimPrefix(note, "build cmd: ")
+	note = strings.TrimPrefix(note, "start: ")
+	return strings.TrimSpace(note)
 }
 
 // providerChoices lists the launch-modal provider options: the preset's
@@ -397,10 +412,8 @@ func launchReviewLines(m model) []string {
 		panelHeaderStyle.Render("  Review Run"),
 		dimStyle.Render("  assembled run: source -> role -> engine -> note"),
 		"",
+		renderLaunchKV("repo", textStyle.Render(launchRepoPathLabel(m.launchRepo))),
 		renderLaunchKV("sources", textStyle.Render(fmt.Sprintf("%d selected", len(m.launchSources)))),
-	}
-	if strings.TrimSpace(m.launchRepo) != "" {
-		lines = append(lines[:3], append([]string{renderLaunchKV("repo", textStyle.Render(shortPath(m.launchRepo)))}, lines[3:]...)...)
 	}
 	startMode := "start immediately"
 	if m.launchQueueOnly {
@@ -421,6 +434,21 @@ func launchReviewLines(m model) []string {
 				len(preset.Hooks.Prompt),
 				countVisibleShellHooks(preset.Hooks.PreShell),
 				countVisibleShellHooks(preset.Hooks.PostShell)))),
+		)
+	} else {
+		engineLabel := "(none)"
+		if strings.TrimSpace(finalExecutor.Type) != "" {
+			engineLabel = describeExecutor(finalExecutor)
+		}
+		policy := "(none)"
+		if v := launchPermsValue(m.launchPermsIdx); v != "" {
+			policy = v
+		}
+		lines = append(lines,
+			renderLaunchKV("role", dimStyle.Render("(no preset)")),
+			renderLaunchKV("launch", textStyle.Render(describeLaunchMode(cockpit.LaunchModeSingleJob))),
+			renderLaunchKV("engine", textStyle.Render(engineLabel)),
+			renderLaunchKV("policy", textStyle.Render(policy)),
 		)
 	}
 	if (provider.ID != "" || provider.Name != "") && describeExecutor(provider.Executor) != describeExecutor(preset.Executor) {
@@ -1056,8 +1084,14 @@ func jobOperatorStatus(j cockpit.Job) (string, lipgloss.Style) {
 	case cockpit.StatusNeedsReview:
 		return "needs review", warnStyle
 	case cockpit.StatusBlocked:
+		if cockpit.IsDemoDisabledNote(j.Note) {
+			return "demo mode", warnStyle
+		}
 		return "blocked", warnStyle
 	case cockpit.StatusFailed:
+		if cockpit.IsDemoDisabledNote(j.Note) {
+			return "demo mode", warnStyle
+		}
 		return "failed", warnStyle
 	case cockpit.StatusQueued:
 		if j.EligibilityReason != "" && j.EligibilityReason != "waiting for foreman" {
@@ -1377,7 +1411,7 @@ func renderChatConversation(turns []cockpit.Turn, liveAssistant string, width in
 			parts = append(parts, accentStyle.Render("You"))
 			parts = append(parts, indentLines(body, "  "))
 		case cockpit.TurnAssistant:
-			body := strings.TrimSpace(t.Content)
+			body := assistantTurnDisplayBody(t)
 			if body == "" {
 				continue
 			}

@@ -1,29 +1,40 @@
 # sb
 
-`sb` is a terminal control plane for task-file discovery, brain-dump routing, and agent-run supervision.
+`sb` is a terminal control plane for `WORK.md`-style project management. It is built around task-file cleanup, routing brain dumps into the right project, and launching agent-backed work from that task data.
 
 ## Install
+
+Recommended:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LFroesch/sb/main/install.sh | bash
 ```
 
-Or:
+Or install with Go:
 
 ```bash
 go install github.com/LFroesch/sb@latest
 go install github.com/LFroesch/sb/cmd/foreman@latest
 ```
 
-Run with:
+Run:
 
 ```bash
 sb
+sb --version
 ```
 
-## Canonical Task File
+## Main Jobs
 
-`WORK.md` is the default task filename, but any configured task-source filename is allowed if it uses the same schema:
+| Area | Purpose |
+|------|---------|
+| Dashboard | Browse discovered task files, clean them up, and jump into other flows |
+| Dump | Turn a rough brain dump into routed task bullets |
+| Agents | Start task-backed or freeform coding-agent runs |
+
+If `tmux` is available, `sb` uses a shared cockpit session for the richer agent workflow. Without `tmux`, the TUI still works, but the agent flow is more limited.
+
+## Canonical Task File Shape
 
 ```md
 # WORK - <name>
@@ -39,71 +50,44 @@ single plain-text line
 - not-now work
 ```
 
-Rules:
+The important rules are simple:
+
 - task files are for active work only
-- no `Workflow Rules`, `Unsorted`, `Bugs + Blockers`, `Updates + Features`, or shipped-history sections
-- completed implementation history belongs in `DEVLOG.md`
-- typed H1 plus the next plain-text line is the only supported title/summary format
+- shipped history belongs in `DEVLOG.md`
+- cleanup rewrites files into the canonical shape instead of preserving ad hoc sections
+
+## Useful Commands
+
+```bash
+sb
+sb tmux-status
+sb audit-taskfiles
+sb account list
+sb account show
+sb account save claude work
+sb account use codex personal
+```
 
 ## Config
 
-`~/.config/sb/config.json` controls discovery, providers, and Foreman behavior.
+Config is read from `~/.config/sb/config.json`.
 
-Important fields:
-- `providers` and `provider`: named LLM profiles and the active profile
-- `scan_roots`: recursive task-file roots
-- `file_patterns`: allowed task-source basenames such as `WORK.md` or `ROADMAP.md`
-- `explicit_paths`: one-off task files that should behave like normal task sources
-- `idea_dirs`: flat directories of `.md` files to include directly
-- `index_path`: read-only generated discovery index
-- `catchall_target` and `ideas_target`: optional non-project routing buckets
+Common fields:
 
-`sb` keeps discovery intentionally narrow: only configured task-like markdown should be scanned.
-
-## Behavior
-
-### Discovery
-
-- Startup renders from lightweight discovery first, then hydrates pinned files before the rest.
-- The generated `index.md` is a human inspection artifact only. It is written asynchronously and is never used as runtime state.
-
-### Brain Dump
-
-- `d` opens brain dump.
-- `ctrl+d` routes the dump through the active model.
-- Project items can land only in `Current Tasks` or `Backlog / Future Features`.
-- If the model cannot confidently choose a project, it uses `CLARIFY`.
-
-### Cleanup
-
-- `c` cleans the selected file.
-- `C` chain-cleans the selected files, or all files when nothing is selected.
-- Cleanup rewrites task files into the canonical schema above.
-- Review the diff, then accept or reject it.
-
-### Agents
-
-- `a` opens Agents.
-- `A` opens the current project directly in the task picker.
-- Task-sourced runs remove accepted bullets from the source task file on approval and append shipped details to `DEVLOG.md`.
-- `ctrl+t` in New Run toggles immediate start vs Foreman queue.
-- Claude and Codex use tmux-backed runs; exec-style engines stay in-app.
-
-## Key Dashboard Keys
-
-| Key | Action |
-|---|---|
-| `enter` | Open selected task file |
-| `e` | Edit selected task file |
-| `c` / `C` | Cleanup selected / chain cleanup |
-| `d` | Brain dump |
-| `a` / `A` | Agents / open current project in task picker |
-| `f` | Pin or unpin project |
-| `r` | Refresh discovery |
-| `,` | Open sb config directory |
+- `scan_roots`
+- `file_patterns`
+- `explicit_paths`
+- `idea_dirs`
+- `catchall_target`
+- `ideas_target`
+- `provider` and `providers`
 
 ## Notes
 
-- `o` opens the selected project directory in your editor using `$VISUAL` or `$EDITOR`.
-- Logs are written to `~/.local/share/sb/logs/sb.log`.
-- Shared repo workflow rules for Claude and Codex live in [`CLAUDE.md`](CLAUDE.md).
+- saved account snapshots live under `~/.config/sb/accounts/`
+- logs are written under your user data dir, usually `~/.local/share/sb/logs/`
+- repo-local workflow rules for a checkout can live in `AGENTS.md`
+
+## License
+
+[AGPL-3.0](LICENSE)

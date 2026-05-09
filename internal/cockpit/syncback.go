@@ -132,15 +132,7 @@ func deleteLinesContent(content, path string, sources []SourceTask) (string, err
 func appendDevlogContent(content string, exists bool, job Job) (string, error) {
 	date := time.Now().Format("2006-01-02")
 	title := fmt.Sprintf("### %s — Agent: %s", date, job.PresetID)
-	var body strings.Builder
-	body.WriteString(title)
-	body.WriteString("\n")
-	for _, s := range job.Sources {
-		body.WriteString("- ")
-		body.WriteString(s.Text)
-		body.WriteString("\n")
-	}
-	entry := body.String()
+	entry := buildDevlogEntry(title, job)
 	if !strings.HasSuffix(entry, "\n") {
 		entry += "\n"
 	}
@@ -187,4 +179,62 @@ func appendDevlogContent(content string, exists bool, job Job) (string, error) {
 	}
 	content += "\n## DevLog\n\n" + entry + "\n"
 	return content, nil
+}
+
+func buildDevlogEntry(title string, job Job) string {
+	var body strings.Builder
+	body.WriteString(title)
+	body.WriteString("\n")
+	for _, s := range job.Sources {
+		body.WriteString("- Completed: ")
+		body.WriteString(s.Text)
+		body.WriteString("\n")
+	}
+	if summary := strings.TrimSpace(lastAssistantSummary(job)); summary != "" {
+		body.WriteString("- Shipped: ")
+		body.WriteString(summary)
+		body.WriteString("\n")
+	}
+	if artifact, ok := LoadReviewArtifact(job); ok {
+		for _, line := range artifact.DiffStat {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			body.WriteString("- Diff: ")
+			body.WriteString(line)
+			body.WriteString("\n")
+		}
+		if len(artifact.DiffStat) == 0 {
+			for _, file := range artifact.ChangedFiles {
+				file = strings.TrimSpace(file)
+				if file == "" {
+					continue
+				}
+				body.WriteString("- Changed: ")
+				body.WriteString(file)
+				body.WriteString("\n")
+			}
+		}
+	}
+	return body.String()
+}
+
+func lastAssistantSummary(job Job) string {
+	for i := len(job.Turns) - 1; i >= 0; i-- {
+		if job.Turns[i].Role != TurnAssistant {
+			continue
+		}
+		for _, line := range strings.Split(job.Turns[i].Content, "\n") {
+			line = strings.Join(strings.Fields(strings.TrimSpace(line)), " ")
+			if line == "" {
+				continue
+			}
+			if len(line) > 200 {
+				line = strings.TrimSpace(line[:199]) + "…"
+			}
+			return line
+		}
+	}
+	return ""
 }

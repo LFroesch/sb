@@ -21,7 +21,7 @@ detect_platform() {
   case "$(uname -s)" in
     Linux*) os="linux" ;;
     Darwin*) os="darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) os="windows" ;;
+    MINGW*|MSYS*|CYGWIN*) error "install.sh supports macOS and Linux only; use 'go install github.com/LFroesch/sb@latest' on Windows" ;;
     *) error "Unsupported OS: $(uname -s)" ;;
   esac
 

@@ -7,7 +7,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 build:
 	go build -ldflags "-s -w -X main.version=$(VERSION)" -o $(BIN) $(BUILD_TARGET)
-	go build -ldflags "-s -w" -o $(FOREMAN_BIN) $(FOREMAN_BUILD_TARGET)
+	go build -ldflags "-s -w -X main.version=$(VERSION)" -o $(FOREMAN_BIN) $(FOREMAN_BUILD_TARGET)
 
 install: build
 	mkdir -p $(INSTALL_DIR)

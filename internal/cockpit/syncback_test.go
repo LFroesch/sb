@@ -10,6 +10,8 @@ import (
 func TestParseItems(t *testing.T) {
 	content := `# WORK - demo
 
+- workflow note
+
 ## Current Tasks
 
 - first item
@@ -20,12 +22,16 @@ func TestParseItems(t *testing.T) {
 ## Backlog / Future Features
 
 - later
+
+## DevLog
+
+- shipped already
 `
 	items := ParseItems(content)
 	if len(items) != 5 {
-		t.Fatalf("expected 5 items, got %d", len(items))
+		t.Fatalf("expected 5 task items, got %d", len(items))
 	}
-	if items[0].Line != 5 || items[0].Text != "first item" {
+	if items[0].Line != 7 || items[0].Text != "first item" {
 		t.Fatalf("bad first item: %+v", items[0])
 	}
 	if items[2].Indent != 2 {
@@ -64,6 +70,9 @@ func TestApplySyncBack_DeletesLinesAndAppendsDevlog(t *testing.T) {
 	job := Job{
 		ID:       "j-test",
 		PresetID: "claude-senior-dev",
+		Turns: []Turn{
+			{Role: TurnAssistant, Content: "Implemented the deletion flow and tightened sync-back."},
+		},
 		Sources: []SourceTask{
 			{File: workPath, Line: 6, Text: "delete me"},
 		},
@@ -85,8 +94,11 @@ func TestApplySyncBack_DeletesLinesAndAppendsDevlog(t *testing.T) {
 	}
 
 	dl, _ := os.ReadFile(devlogPath)
-	if !strings.Contains(string(dl), "delete me") {
+	if !strings.Contains(string(dl), "Completed: delete me") {
 		t.Fatalf("devlog missing entry:\n%s", dl)
+	}
+	if !strings.Contains(string(dl), "Shipped: Implemented the deletion flow and tightened sync-back.") {
+		t.Fatalf("devlog missing shipped summary:\n%s", dl)
 	}
 	if !strings.Contains(string(dl), "prior entry") {
 		t.Fatalf("devlog lost earlier entry:\n%s", dl)

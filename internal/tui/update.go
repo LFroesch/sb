@@ -26,8 +26,11 @@ import (
 // --- Favorites ---
 
 func favoritesPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "sb", "favorites")
+	base, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return filepath.Join(base, "sb", "favorites")
 }
 
 func loadFavorites() map[string]bool {
@@ -46,6 +49,9 @@ func loadFavorites() map[string]bool {
 
 func saveFavorites(fav map[string]bool) {
 	p := favoritesPath()
+	if p == "" {
+		return
+	}
 	os.MkdirAll(filepath.Dir(p), 0755) //nolint:errcheck
 	var lines []string
 	for k := range fav {
@@ -708,7 +714,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "cleanup failed: " + msg.err.Error()
 			m.statusExpiry = time.Now().Add(5 * time.Second)
 			m.mode = modeNormal
-			m.page = pageProject
+			m.page = m.cleanupReturn
+			if m.page == pageDashboard {
+				m.setViewportProjectContent(m.selected, m.rightPanelWidth())
+				m.viewport.GotoTop()
+			} else if m.page == pageProject {
+				m.setViewportProjectContent(m.selected, m.width-4)
+				m.viewport.GotoTop()
+			}
 			return m, nil
 		}
 		m.cleanupResult = msg.result
@@ -938,29 +951,6 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				delete(m.selectedProjects, path)
 			}
 		}
-	case "-":
-		if m.cursor < len(m.projects) {
-			proj := m.projects[m.cursor]
-			if !proj.Hydrated {
-				m.statusMsg = "project still loading"
-				m.statusExpiry = time.Now().Add(2 * time.Second)
-				return m, nil
-			}
-			fixed := workmd.FixNonListLines(proj.Content)
-			if fixed == proj.Content {
-				m.statusMsg = "no non-list lines found"
-			} else {
-				if err := workmd.Save(proj.Path, fixed); err != nil {
-					m.statusMsg = "save failed: " + err.Error()
-				} else {
-					m.refreshProjectAfterSave(m.cursor)
-					m.statusMsg = "non-list lines fixed"
-					m.setViewportProjectContent(m.cursor, m.rightPanelWidth())
-					m.viewport.GotoTop()
-				}
-			}
-			m.statusExpiry = time.Now().Add(3 * time.Second)
-		}
 	case "c":
 		if m.cursor < len(m.projects) {
 			if !m.projects[m.cursor].Hydrated {
@@ -970,6 +960,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.selected = m.cursor
 			m.cleanupOriginal = m.projects[m.selected].Content
+			m.cleanupReturn = pageDashboard
 			m.mode = modeCleanupWait
 			m.statusMsg = "asking model to clean up..."
 			m.statusExpiry = time.Now().Add(10 * time.Second)
@@ -1109,6 +1100,7 @@ func (m model) updateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.cleanupOriginal = m.projects[m.selected].Content
+			m.cleanupReturn = pageProject
 			m.mode = modeCleanupWait
 			m.statusMsg = "asking model to clean up..."
 			m.statusExpiry = time.Now().Add(10 * time.Second)
@@ -1197,20 +1189,30 @@ func (m model) updateCleanup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "cleanup saved"
 			}
 			m.statusExpiry = time.Now().Add(3 * time.Second)
-		}
-		m.page = pageDashboard
-		m.setViewportProjectContent(m.selected, m.rightPanelWidth())
-		m.viewport.GotoTop()
-	case "r":
+			}
+			m.page = m.cleanupReturn
+			if m.page == pageDashboard {
+				m.setViewportProjectContent(m.selected, m.rightPanelWidth())
+				m.viewport.GotoTop()
+			} else if m.page == pageProject {
+				m.setViewportProjectContent(m.selected, m.width-4)
+				m.viewport.GotoTop()
+			}
+		case "r":
 		m.chainFeedback.Reset()
 		m.chainFeedback.Focus()
 		m.mode = modeCleanupFeedback
 	case "n", "esc", "q":
-		m.statusMsg = "cleanup discarded"
-		m.statusExpiry = time.Now().Add(2 * time.Second)
-		m.page = pageDashboard
-		m.setViewportProjectContent(m.selected, m.rightPanelWidth())
-		m.viewport.GotoTop()
+			m.statusMsg = "cleanup discarded"
+			m.statusExpiry = time.Now().Add(2 * time.Second)
+			m.page = m.cleanupReturn
+			if m.page == pageDashboard {
+				m.setViewportProjectContent(m.selected, m.rightPanelWidth())
+				m.viewport.GotoTop()
+			} else if m.page == pageProject {
+				m.setViewportProjectContent(m.selected, m.width-4)
+				m.viewport.GotoTop()
+			}
 	case "j", "down":
 		m.viewport.LineDown(1)
 	case "k", "up":

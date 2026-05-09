@@ -17,7 +17,12 @@ const (
 
 // Open returns a slog.Logger that writes JSON lines to the sb data dir.
 func Open(tag, level string) *slog.Logger {
-	path := filepath.Join(xdgDataHome(), "sb", "logs", "sb.log")
+	base := xdgDataHome()
+	if strings.TrimSpace(base) == "" {
+		handler := slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: parseLevel(level)})
+		return slog.New(handler).With("app", tag)
+	}
+	path := filepath.Join(base, "sb", "logs", "sb.log")
 	w, err := newRotatingWriter(path, defaultMaxBytes, defaultKeep)
 	if err != nil {
 		handler := slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: parseLevel(level)})
@@ -106,8 +111,8 @@ func xdgDataHome() string {
 		return v
 	}
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", ".local", "share")
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
 	}
 	return filepath.Join(home, ".local", "share")
 }

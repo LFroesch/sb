@@ -173,7 +173,9 @@ func (m *model) prepareRetryLaunch(j cockpit.Job) tea.Cmd {
 	m.mode = modeAgentLaunch
 	m.launchSources = slices.Clone(j.Sources)
 	m.launchRepo = strings.TrimSpace(j.Repo)
-	if m.launchRepo == "" {
+	if m.launchRepo == "" && len(m.launchSources) == 0 {
+		m.launchRepo = repoSentinelNone
+	} else if m.launchRepo == "" {
 		m.launchRepo = m.defaultLaunchRepo()
 	}
 	m.launchBrief.SetValue(j.Freeform)
@@ -276,7 +278,7 @@ func (m model) currentLaunchSelectValue() string {
 func (m *model) beginLaunchSelectionEdit() tea.Cmd {
 	switch m.launchFocus {
 	case launchFocusRole:
-		m.launchSelectInput.Placeholder = "type role id/name"
+		m.launchSelectInput.Placeholder = "blank = no preset, or type role id/name"
 	case launchFocusEngine:
 		m.launchSelectInput.Placeholder = "blank = role default, or type engine id/name"
 	case launchFocusPrompt:
@@ -295,6 +297,16 @@ func (m *model) applyLaunchSelectionEdit() error {
 	raw := strings.TrimSpace(m.launchSelectInput.Value())
 	switch m.launchFocus {
 	case launchFocusRole:
+		if raw == "" || normalizeLaunchLookup(raw) == "none" || normalizeLaunchLookup(raw) == "no preset" {
+			m.launchPresetIdx = -1
+			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
+			m.launchPromptIdx = launchPromptRoleDefault
+			m.launchHookCursor = -1
+			m.launchHookOverride = false
+			m.launchHookSelected = map[string]bool{}
+			m.launchPermsIdx = 0
+			return nil
+		}
 		idx := exactOrUniqueMatch(raw, len(m.cockpitPresets),
 			func(i int) string { return m.cockpitPresets[i].ID },
 			func(i int) string { return m.cockpitPresets[i].Name })
@@ -430,7 +442,7 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if def := strings.TrimSpace(m.defaultLaunchRepo()); def != "" {
 					m.launchRepo = def
 				} else {
-					m.launchRepo = ""
+					m.launchRepo = repoSentinelNone
 				}
 			}
 			return m, nil
@@ -589,7 +601,7 @@ func (m *model) launchListMove(delta int) {
 	switch m.launchFocus {
 	case launchFocusRole:
 		next := m.launchPresetIdx + delta
-		if next >= 0 && next < len(m.cockpitPresets) {
+		if next >= -1 && next < len(m.cockpitPresets) {
 			m.launchPresetIdx = next
 			m.launchProviderIdx = defaultProviderIndex(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 			// Reset overrides when role changes — fresh start on a new role.
@@ -665,7 +677,7 @@ func (m *model) toggleLaunchHookAtCursor() {
 // LaunchPreset. The role provides defaults; Prompt/Hooks/Perms tabs swap
 // individual fields without persisting anything.
 func (m model) effectiveLaunchPreset() cockpit.LaunchPreset {
-	preset := m.cockpitPresets[m.launchPresetIdx]
+	preset := selectedLaunchPreset(m)
 	switch {
 	case m.launchPromptIdx == launchPromptNone:
 		preset.PromptID = ""
@@ -703,14 +715,16 @@ func (m model) effectiveLaunchPreset() cockpit.LaunchPreset {
 }
 
 func (m model) doLaunch() (tea.Model, tea.Cmd) {
-	if len(m.cockpitPresets) == 0 {
-		m.statusMsg = "no presets available"
+	if len(m.cockpitProviders) == 0 && m.launchProviderIdx < 0 {
+		m.statusMsg = "no engines available"
 		m.statusExpiry = time.Now().Add(3 * time.Second)
 		return m, nil
 	}
 	preset := m.effectiveLaunchPreset()
 	repo := strings.TrimSpace(m.launchRepo)
-	if repo == repoSentinelCustom {
+	if repo == repoSentinelNone {
+		repo = ""
+	} else if repo == repoSentinelCustom {
 		// User landed on the "custom path..." sentinel without typing one.
 		// Fall back to default rather than passing the marker through.
 		repo = m.defaultLaunchRepo()
@@ -732,10 +746,14 @@ func (m model) doLaunch() (tea.Model, tea.Cmd) {
 		m.statusExpiry = time.Now().Add(5 * time.Second)
 		return m, nil
 	}
+	label := strings.TrimSpace(preset.Name)
+	if label == "" {
+		label = "raw run"
+	}
 	if m.launchQueueOnly {
-		m.statusMsg = "sent to Foreman: " + preset.Name
+		m.statusMsg = "sent to Foreman: " + label
 	} else {
-		m.statusMsg = "launched " + preset.Name
+		m.statusMsg = "launched " + label
 	}
 	m.statusExpiry = time.Now().Add(3 * time.Second)
 	if m.launchQueueOnly {
@@ -759,27 +777,27 @@ func (m model) defaultLaunchRepo() string {
 	return ""
 }
 
-// repoSentinelCustom is a non-path marker. When it's the selected repo
-// the view shows "(custom path...)" and pressing enter opens an inline
-// text input so the user can type any absolute path — even one that
-// isn't a discovered WORK.md project.
+// repoSentinelNone and repoSentinelCustom are non-path markers for the
+// freeform repo selector.
+const repoSentinelNone = "\x00none"
 const repoSentinelCustom = "\x00custom"
 
-// launchRepoChoices returns the menu shown on the Repo tab: every
-// discovered repo path plus a "(custom path...)" entry at the end so
-// the user can type a path that isn't tracked by sb.
+// launchRepoChoices returns the menu shown on the Repo tab: a likely
+// default repo first, then "(no repo)", then "(custom path...)", then
+// the remaining discovered repos.
 func (m model) launchRepoChoices() []string {
 	seen := map[string]bool{}
-	repos := []string{repoSentinelCustom}
+	repos := []string{}
 	add := func(path string) {
 		path = strings.TrimSpace(path)
-		if path == "" || path == repoSentinelCustom || seen[path] {
+		if path == "" || path == repoSentinelNone || path == repoSentinelCustom || seen[path] {
 			return
 		}
 		seen[path] = true
 		repos = append(repos, path)
 	}
 	add(m.defaultLaunchRepo())
+	repos = append(repos, repoSentinelNone, repoSentinelCustom)
 	for _, p := range m.projects {
 		add(p.Dir)
 	}
@@ -794,8 +812,15 @@ func (m model) launchRepoChoices() []string {
 func indexOfLaunchRepo(repos []string, current string) int {
 	current = strings.TrimSpace(current)
 	if current == "" {
-		if len(repos) > 1 {
-			return 1
+		for i, repo := range repos {
+			if repo != repoSentinelNone && repo != repoSentinelCustom {
+				return i
+			}
+		}
+		for i, repo := range repos {
+			if repo == repoSentinelNone {
+				return i
+			}
 		}
 		return 0
 	}

@@ -213,6 +213,36 @@ func TestUpdateAgentLaunchEditKeyAllowsTypedEngineDefault(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentLaunchEditKeyAllowsTypedNoPreset(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentLaunch
+	m.launchFocus = launchFocusRole
+	m.launchRepo = "/tmp/demo"
+	m.cockpitPresets = []cockpit.LaunchPreset{{ID: "senior-dev", Name: "Senior dev", Executor: cockpit.ExecutorSpec{Type: "claude"}}}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex", Executor: cockpit.ExecutorSpec{Type: "codex"}}}
+	m.launchPresetIdx = 0
+	m.launchProviderIdx = -1
+
+	got, cmd := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	next := got.(model)
+	if !next.launchSelectEditing {
+		t.Fatalf("launchSelectEditing = false, want true")
+	}
+	if cmd == nil {
+		t.Fatalf("edit key should return input blink cmd")
+	}
+
+	next.launchSelectInput.SetValue("")
+	got, _ = next.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyEnter})
+	next = got.(model)
+	if next.launchPresetIdx != -1 {
+		t.Fatalf("launchPresetIdx = %d, want -1 after blank role selection", next.launchPresetIdx)
+	}
+	if next.launchProviderIdx != 0 {
+		t.Fatalf("launchProviderIdx = %d, want default provider after clearing preset", next.launchProviderIdx)
+	}
+}
+
 func TestUpdateAgentLaunchEditKeyAllowsTypedPromptNone(t *testing.T) {
 	m := newModel(nil)
 	m.mode = modeAgentLaunch
@@ -236,6 +266,62 @@ func TestUpdateAgentLaunchEditKeyAllowsTypedPromptNone(t *testing.T) {
 	next = got.(model)
 	if next.launchPromptIdx != launchPromptNone {
 		t.Fatalf("launchPromptIdx = %d, want %d for typed blank prompt", next.launchPromptIdx, launchPromptNone)
+	}
+}
+
+func TestSingleCleanupDiscardReturnsToDashboard(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageCleanup
+	m.mode = modeNormal
+	m.cleanupReturn = pageDashboard
+	m.projects = []workmd.Project{{Name: "demo", Content: "# WORK - demo\nsummary\n\n## Current Phase\nbuild\n"}}
+	m.selected = 0
+	m.cursor = 0
+
+	got, _ := m.updateCleanup(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	next := got.(model)
+	if next.page != pageDashboard {
+		t.Fatalf("page = %v, want dashboard", next.page)
+	}
+}
+
+func TestSingleCleanupDiscardReturnsToProject(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageCleanup
+	m.mode = modeNormal
+	m.cleanupReturn = pageProject
+	m.width = 100
+	m.projects = []workmd.Project{{Name: "demo", Content: "# WORK - demo\nsummary\n\n## Current Phase\nbuild\n"}}
+	m.selected = 0
+	m.viewport.SetContent("stale diff")
+
+	got, _ := m.updateCleanup(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	next := got.(model)
+	if next.page != pageProject {
+		t.Fatalf("page = %v, want project", next.page)
+	}
+	if strings.Contains(next.viewport.View(), "stale diff") {
+		t.Fatalf("project viewport kept stale cleanup diff")
+	}
+}
+
+func TestCleanupErrorReturnsToOriginPage(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageDashboard
+	m.mode = modeCleanupWait
+	m.cleanupReturn = pageDashboard
+	m.projects = []workmd.Project{{Name: "demo", Content: "# WORK - demo\nsummary\n\n## Current Phase\nbuild\n"}}
+	m.selected = 0
+	m.cursor = 0
+	m.width = 100
+
+	got, _ := m.Update(cleanupDoneMsg{err: os.ErrInvalid})
+	next := got.(model)
+	if next.page != pageDashboard {
+		t.Fatalf("page = %v, want dashboard", next.page)
+	}
+	if next.mode != modeNormal {
+		t.Fatalf("mode = %v, want normal", next.mode)
 	}
 }
 
@@ -1086,17 +1172,20 @@ func TestLaunchRepoChoicesPutCustomPathFirstWithoutChangingDefaultSelection(t *t
 	m.launchRepo = ""
 
 	repos := m.launchRepoChoices()
-	if len(repos) < 3 {
-		t.Fatalf("launchRepoChoices len = %d, want at least 3", len(repos))
+	if len(repos) < 4 {
+		t.Fatalf("launchRepoChoices len = %d, want at least 4", len(repos))
 	}
-	if repos[0] != repoSentinelCustom {
-		t.Fatalf("launchRepoChoices[0] = %q, want custom-path sentinel first", repos[0])
+	if repos[0] != "/tmp/a" {
+		t.Fatalf("launchRepoChoices[0] = %q, want default repo /tmp/a first", repos[0])
 	}
-	if repos[1] != "/tmp/a" {
-		t.Fatalf("launchRepoChoices[1] = %q, want default repo /tmp/a second", repos[1])
+	if repos[1] != repoSentinelNone {
+		t.Fatalf("launchRepoChoices[1] = %q, want no-repo sentinel second", repos[1])
 	}
-	if got := indexOfLaunchRepo(repos, m.launchRepo); got != 1 {
-		t.Fatalf("indexOfLaunchRepo(empty) = %d, want 1 so default selection starts on the second row", got)
+	if repos[2] != repoSentinelCustom {
+		t.Fatalf("launchRepoChoices[2] = %q, want custom-path sentinel third", repos[2])
+	}
+	if got := indexOfLaunchRepo(repos, m.launchRepo); got != 0 {
+		t.Fatalf("indexOfLaunchRepo(empty) = %d, want 0 so default selection starts on the default repo row", got)
 	}
 }
 
@@ -1148,7 +1237,7 @@ func TestUpdateRoutesTypingIntoCustomRepoInput(t *testing.T) {
 	}
 }
 
-func TestLaunchRepoChoicesReachCustomPathWithOneMoveUpFromDefault(t *testing.T) {
+func TestLaunchRepoChoicesReachNoRepoWithOneMoveDownFromDefault(t *testing.T) {
 	m := newModel(nil)
 	m.mode = modeAgentLaunch
 	m.projects = []workmd.Project{
@@ -1160,11 +1249,44 @@ func TestLaunchRepoChoicesReachCustomPathWithOneMoveUpFromDefault(t *testing.T) 
 	m.launchRepo = ""
 	m.launchFocus = m.launchRepoFocus()
 
-	next := m.handleAgentMouseWheel(-1).(model)
+	next := m.handleAgentMouseWheel(1).(model)
 	m = next
 
-	if m.launchRepo != repoSentinelCustom {
-		t.Fatalf("launchRepo = %q, want custom-path sentinel after one move up", m.launchRepo)
+	if m.launchRepo != repoSentinelNone {
+		t.Fatalf("launchRepo = %q, want no-repo sentinel after one move down", m.launchRepo)
+	}
+}
+
+func TestPrepareRetryLaunchPreservesNoRepoFreeform(t *testing.T) {
+	m := newModel(nil)
+	job := cockpit.Job{
+		PresetID: "senior-dev",
+		Freeform: "freeform",
+	}
+
+	m.prepareRetryLaunch(job)
+	if m.launchRepo != repoSentinelNone {
+		t.Fatalf("launchRepo = %q, want no-repo sentinel", m.launchRepo)
+	}
+}
+
+func TestLaunchListMoveAllowsNoPresetSelection(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentLaunch
+	m.cockpitPresets = []cockpit.LaunchPreset{
+		{ID: "senior-dev", Name: "Senior dev", Executor: cockpit.ExecutorSpec{Type: "claude"}},
+		{ID: "bug-fixer", Name: "Bug fixer", Executor: cockpit.ExecutorSpec{Type: "claude"}},
+	}
+	m.cockpitProviders = []cockpit.ProviderProfile{{ID: "codex", Name: "Codex", Executor: cockpit.ExecutorSpec{Type: "codex"}}}
+	m.launchPresetIdx = 0
+	m.launchFocus = launchFocusRole
+
+	m.launchListMove(-1)
+	if m.launchPresetIdx != -1 {
+		t.Fatalf("launchPresetIdx = %d, want -1 after moving above first preset", m.launchPresetIdx)
+	}
+	if m.launchProviderIdx != 0 {
+		t.Fatalf("launchProviderIdx = %d, want default provider in no-preset mode", m.launchProviderIdx)
 	}
 }
 
@@ -1245,12 +1367,13 @@ func TestUpdateAgentListCtrlRArmsTakeoverConfirm(t *testing.T) {
 
 func TestGlobalCtrlRUsesPendingTmuxTakeoverTarget(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("SB_TMUX_SOCKET", filepath.Join(dir, "tmux.sock"))
 	shim := filepath.Join(dir, "tmux-shim.sh")
 	body := `#!/bin/sh
-if [ "$1" = "-L" ]; then
-  shift 2
-fi
-case "$1" in
+	if [ "$1" = "-S" ]; then
+	  shift 2
+	fi
+	case "$1" in
   show-environment)
     printf 'SB_TAKEOVER_TARGET=sb-cockpit:@3\n'
     ;;

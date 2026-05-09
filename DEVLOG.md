@@ -2,6 +2,11 @@
 
 ## DevLog
 
+### 2026-05-05 — Added V1 Claude/Codex account save/use commands
+- Added a small `sb account` CLI surface for Claude/Codex saved-login swaps: `list`, `show`, `save <provider> <name>`, and `use <provider> <name>`. The implementation stores named snapshots under `~/.config/sb/accounts/` and tracks the active slot per provider in a small registry file. Files: [`main.go`](main.go), [`internal/accounts/accounts.go`](internal/accounts/accounts.go).
+- Claude snapshots currently save and restore `.credentials.json`; Codex snapshots save and restore `auth.json` plus `logs_2.sqlite` so account swaps preserve the current login and keep per-account rate-limit context closer to accurate after switching. Files: [`internal/accounts/accounts.go`](internal/accounts/accounts.go), [`internal/statusbar/claude.go`](internal/statusbar/claude.go), [`internal/statusbar/codex.go`](internal/statusbar/codex.go).
+- Added regression coverage for Claude/Codex save/use round-trips, active-slot reporting, and missing-live-auth failures in [`internal/accounts/accounts_test.go`](internal/accounts/accounts_test.go), and documented the new commands in [`README.md`](README.md).
+
 ### 2026-05-05 — Canonical task-file schema, startup hydration split, and planner removal
 - Collapsed `sb` onto one strict task-file schema: typed H1 + summary, then `Current Phase`, `Current Tasks`, and `Backlog / Future Features`. Removed runtime support for `Workflow Rules`, `Unsorted`, `Bugs + Blockers`, `Updates + Features`, and legacy inline title metadata from the parser, cleanup prompts, and routing model. Files: [`internal/workmd/workmd.go`](internal/workmd/workmd.go), [`internal/llm/llm.go`](internal/llm/llm.go), [`internal/tui/view.go`](internal/tui/view.go).
 - Removed the old model-driven `Next Todo` / `Daily Plan` feature paths and their dashboard states/keybinds so the dashboard is focused on task files, cleanup, dump routing, and Agents rather than extra planning surfaces. Files: [`internal/tui/model.go`](internal/tui/model.go), [`internal/tui/update.go`](internal/tui/update.go), [`README.md`](README.md).

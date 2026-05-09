@@ -12,8 +12,8 @@ import (
 
 func (m model) attachedExecDims() (width, panelHeight int) {
 	width = m.width
-	if width < 40 {
-		width = 40
+	if width < 1 {
+		width = 1
 	}
 	panelHeight = m.agentContentHeight()
 	if panelHeight < 1 {
@@ -24,15 +24,15 @@ func (m model) attachedExecDims() (width, panelHeight int) {
 
 func (m model) attachedLayoutDims() (railWidth, chatWidth, panelHeight int) {
 	railWidth = m.width * 31 / 100
-	if railWidth < 32 {
-		railWidth = 32
+	if railWidth < 12 {
+		railWidth = 12
 	}
 	chatWidth = m.width - railWidth - 5
-	if chatWidth < 36 {
-		chatWidth = 36
+	if chatWidth < 16 {
+		chatWidth = 16
 		railWidth = m.width - chatWidth - 5
-		if railWidth < 24 {
-			railWidth = 24
+		if railWidth < 8 {
+			railWidth = 8
 		}
 	}
 	panelHeight = m.agentContentHeight() - 2
@@ -45,8 +45,8 @@ func (m model) attachedLayoutDims() (railWidth, chatWidth, panelHeight int) {
 func (m model) attachedTranscriptWidth() int {
 	_, chatWidth, _ := m.attachedLayoutDims()
 	width := chatWidth - 6
-	if width < 20 {
-		width = 20
+	if width < 8 {
+		width = 8
 	}
 	return width
 }
@@ -54,8 +54,8 @@ func (m model) attachedTranscriptWidth() int {
 func (m model) attachedExecTranscriptWidth() int {
 	width, _ := m.attachedExecDims()
 	content := width - 6
-	if content < 24 {
-		content = 24
+	if content < 8 {
+		content = 8
 	}
 	return content
 }
@@ -63,8 +63,8 @@ func (m model) attachedExecTranscriptWidth() int {
 func (m model) attachedExecInputWidth() int {
 	width, _ := m.attachedExecDims()
 	content := width - 8
-	if content < 20 {
-		content = 20
+	if content < 8 {
+		content = 8
 	}
 	return content
 }
@@ -72,8 +72,8 @@ func (m model) attachedExecInputWidth() int {
 func (m model) attachedInputWidth() int {
 	_, chatWidth, _ := m.attachedLayoutDims()
 	width := chatWidth - 8
-	if width < 20 {
-		width = 20
+	if width < 8 {
+		width = 8
 	}
 	return width
 }

@@ -10,12 +10,29 @@ import (
 func TestDirReturnsSBConfigDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
 
 	dir, err := Dir()
 	if err != nil {
 		t.Fatalf("Dir(): %v", err)
 	}
 	want := filepath.Join(home, ".config", "sb")
+	if dir != want {
+		t.Fatalf("dir = %q, want %q", dir, want)
+	}
+}
+
+func TestDirPrefersXDGConfigHome(t *testing.T) {
+	home := t.TempDir()
+	xdg := filepath.Join(t.TempDir(), "cfg")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	dir, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir(): %v", err)
+	}
+	want := filepath.Join(xdg, "sb")
 	if dir != want {
 		t.Fatalf("dir = %q, want %q", dir, want)
 	}
@@ -150,6 +167,28 @@ func TestActiveProviderStatusEnabledForOllama(t *testing.T) {
 	}
 	if status.Name != "ollama" {
 		t.Fatalf("name = %q, want ollama", status.Name)
+	}
+}
+
+func TestActiveProviderStatusDisabledInDemoMode(t *testing.T) {
+	t.Setenv("DEMO_ENV", "1")
+	cfg := &Config{
+		Provider: "ollama",
+		Providers: map[string]ProviderConfig{
+			"ollama": {
+				Type:    "ollama",
+				Model:   "qwen2.5:7b",
+				BaseURL: "http://localhost:11434",
+			},
+		},
+	}
+
+	status := cfg.ActiveProviderStatus()
+	if status.Enabled {
+		t.Fatal("status enabled, want disabled in demo mode")
+	}
+	if status.Problem != "public demo mode — LLM features are disabled" {
+		t.Fatalf("problem = %q", status.Problem)
 	}
 }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -388,6 +389,12 @@ func (c *Config) ActiveProviderStatus() ProviderStatus {
 		Enabled: true,
 	}
 
+	if os.Getenv("DEMO_ENV") == "1" || os.Getenv("TUI_HUB_DEMO") == "1" {
+		status.Enabled = false
+		status.Problem = "public demo mode — LLM features are disabled"
+		return status
+	}
+
 	if p.Type == "" {
 		status.Enabled = false
 		status.Problem = "no provider type configured"
@@ -609,7 +616,11 @@ func Dir() (string, error) {
 
 // configPath returns the path to the config file, creating the dir if needed.
 func configPath() (string, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".config", "sb")
+	base, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(base) == "" {
+		return "", fmt.Errorf("resolve user config dir: %w", err)
+	}
+	dir := filepath.Join(base, "sb")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}

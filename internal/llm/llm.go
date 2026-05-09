@@ -366,7 +366,7 @@ func (c *Client) Cleanup(ctx context.Context, content, feedback string) (string,
 	if err != nil {
 		return "", err
 	}
-	slog.Info("llm cleanup", "provider", c.providerLabel(), "prompt", prompt, "response", raw)
+	slog.Info("llm cleanup", "provider", c.providerLabel(), "input_bytes", len(content), "response_bytes", len(raw))
 
 	project := projectNameFromContent(content)
 	cleaned := normalizeContent(stripMarkdownFence(raw))
@@ -464,13 +464,13 @@ func reconcileMissingBullets(original, cleaned string) string {
 		lines := strings.Split(cleaned, "\n")
 		out := make([]string, 0, len(lines)+len(missing)+1)
 		inserted := false
-		for i, line := range lines {
+		for i := 0; i < len(lines); i++ {
+			line := lines[i]
 			out = append(out, line)
 			if !inserted && strings.TrimSpace(line) == currentHeader {
 				if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
 					out = append(out, lines[i+1])
 					i++
-					_ = i
 				}
 				out = append(out, missing...)
 				inserted = true
@@ -487,8 +487,65 @@ func reconcileMissingBullets(original, cleaned string) string {
 }
 
 func reconcileMissingSections(original, cleaned string) string {
-	_ = original
-	return cleaned
+	title := firstTypedTitle(original)
+	if title == "" {
+		title = firstTypedTitle(cleaned)
+	}
+	summary := firstSummaryLine(original)
+	if summary == "" {
+		summary = firstSummaryLine(cleaned)
+	}
+
+	sections := parseCanonicalSections(cleaned)
+	phase := firstPhaseLine(sections["Current Phase"])
+	if phase == "" {
+		phase = strings.TrimSpace(extractPhase(original))
+	}
+	if phase == "" {
+		phase = firstSummaryLine(original)
+	}
+	if phase == "" {
+		phase = firstBulletText(original)
+	}
+	if phase == "" {
+		phase = firstSummaryLine(cleaned)
+	}
+
+	current := normalizeSectionBody(linesOrNil(sections["Current Tasks"]))
+	backlog := normalizeSectionBody(linesOrNil(sections["Backlog / Future Features"]))
+
+	var b strings.Builder
+	if title != "" {
+		b.WriteString(title)
+		b.WriteString("\n")
+	}
+	if summary != "" {
+		b.WriteString("\n")
+		b.WriteString(summary)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Current Phase\n\n")
+	if phase != "" {
+		b.WriteString(phase)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Current Tasks\n")
+	if len(current) > 0 {
+		b.WriteString("\n")
+		b.WriteString(strings.Join(current, "\n"))
+		b.WriteString("\n")
+	} else {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Backlog / Future Features\n")
+	if len(backlog) > 0 {
+		b.WriteString("\n")
+		b.WriteString(strings.Join(backlog, "\n"))
+		b.WriteString("\n")
+	} else {
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // ensureHeaderNewlines guarantees a blank line after every ## heading.
@@ -504,6 +561,149 @@ func ensureHeaderNewlines(content string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+func firstTypedTitle(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func firstSummaryLine(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	seenTitle := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !seenTitle {
+			if strings.HasPrefix(trimmed, "# ") {
+				seenTitle = true
+			}
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			return ""
+		}
+		return trimmed
+	}
+	return ""
+}
+
+func parseCanonicalSections(content string) map[string][]string {
+	out := map[string][]string{
+		"Current Phase":               nil,
+		"Current Tasks":               nil,
+		"Backlog / Future Features":   nil,
+	}
+	current := ""
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+			switch name {
+			case "Current Phase", "Current Tasks", "Backlog / Future Features":
+				current = name
+			default:
+				current = ""
+			}
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		out[current] = append(out[current], line)
+	}
+	return out
+}
+
+func firstPhaseLine(lines []string) string {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			return strings.TrimSpace(trimmed[2:])
+		}
+		return trimmed
+	}
+	return ""
+}
+
+func normalizeSectionBody(lines []string) []string {
+	start, end := -1, -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		start = i
+		break
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		end = i
+		break
+	}
+	if start == -1 || end == -1 || end < start {
+		return nil
+	}
+	body := append([]string(nil), lines[start:end+1]...)
+	return body
+}
+
+func linesOrNil(lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+	return lines
+}
+
+func firstBulletText(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			return strings.TrimSpace(trimmed[2:])
+		}
+	}
+	return ""
+}
+
+func extractPhase(content string) string {
+	lines := strings.Split(content, "\n")
+	inPhase := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+			if name == "Current Phase" {
+				inPhase = true
+				continue
+			}
+			if inPhase {
+				break
+			}
+		}
+		if !inPhase || trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			return strings.TrimSpace(trimmed[2:])
+		}
+		return trimmed
+	}
+	return ""
 }
 
 // normalizeContent converts table rows and emoji-priority lists to plain bullets.
@@ -691,7 +891,7 @@ func stripProjectTagsFromBullets(content, project string) string {
 
 // routeLog records the raw routing response plus parsed items for debugging.
 func routeLog(provider, input, raw string, items []RouteItem) {
-	slog.Info("llm route", "provider", provider, "input", input, "raw", raw, "items", items)
+	slog.Info("llm route", "provider", provider, "input_bytes", len(input), "response_bytes", len(raw), "item_count", len(items))
 }
 
 // RerouteSingle re-routes a single item with user-provided clarification context.

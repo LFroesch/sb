@@ -99,17 +99,27 @@ func handleConn(ctx context.Context, c net.Conn, mgr *Manager) {
 	var (
 		subMu     sync.Mutex
 		subCancel func()
+		subDone   chan struct{}
 	)
 	unsubscribe := func() {
 		subMu.Lock()
-		if subCancel != nil {
-			subCancel()
-			subCancel = nil
-		}
+		cancel := subCancel
+		done := subDone
+		subCancel = nil
+		subDone = nil
 		subMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if done != nil {
+			<-done
+		}
 	}
-	defer unsubscribe()
-	defer close(writes)
+	defer func() {
+		unsubscribe()
+		close(writes)
+		<-writerDone
+	}()
 
 	scanner := bufio.NewScanner(c)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -128,7 +138,9 @@ func handleConn(ctx context.Context, c net.Conn, mgr *Manager) {
 			}
 			ch, cancel := mgr.Subscribe()
 			subCancel = cancel
+			subDone = make(chan struct{})
 			go func() {
+				defer close(subDone)
 				for e := range ch {
 					ev := e
 					send(Envelope{Kind: "event", Event: &ev})

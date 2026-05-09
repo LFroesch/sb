@@ -36,12 +36,16 @@ func (m model) renderAgentManage() string {
 
 	panelHeight, innerHeight := m.agentManagePanelHeights()
 	leftWidth := m.width * 29 / 100
-	if leftWidth < 30 {
-		leftWidth = 30
+	if leftWidth < 14 {
+		leftWidth = 14
 	}
 	rightWidth := m.width - leftWidth - 6
-	if rightWidth < 52 {
-		rightWidth = 52
+	if rightWidth < 18 {
+		rightWidth = 18
+		leftWidth = m.width - rightWidth - 6
+		if leftWidth < 8 {
+			leftWidth = 8
+		}
 	}
 	var items []string
 	items = append(items, panelHeaderStyle.Render("  "+kindLabel))
@@ -96,8 +100,8 @@ func (m model) renderAgentManageOverlay() string {
 	if width > 96 {
 		width = 96
 	}
-	if width < 28 {
-		width = 28
+	if width < 18 {
+		width = 18
 	}
 	overlay := m.renderAgentManageEditorDialog(width, maxInt(1, baseHeight-4))
 	lines = append(lines, lipgloss.Place(m.width, baseHeight, lipgloss.Center, lipgloss.Center, overlay))
@@ -109,12 +113,12 @@ func (m model) renderAgentManageEditorDialog(width, maxBodyLines int) string {
 	if !ok {
 		return dialogStyle.Width(width).Render("no field selected")
 	}
-	if width < 28 {
-		width = 28
+	if width < 18 {
+		width = 18
 	}
 	bodyWidth := width - 6
-	if bodyWidth < 20 {
-		bodyWidth = 20
+	if bodyWidth < 8 {
+		bodyWidth = 8
 	}
 
 	header := panelHeaderStyle.Render("Edit " + spec.Label)
@@ -414,16 +418,20 @@ func (m model) agentManageEditorDims() (width, height int) {
 	panelHeight, innerHeight := m.agentManagePanelHeights()
 	_ = panelHeight
 	leftWidth := m.width * 29 / 100
-	if leftWidth < 30 {
-		leftWidth = 30
+	if leftWidth < 14 {
+		leftWidth = 14
 	}
 	rightWidth := m.width - leftWidth - 6
-	if rightWidth < 52 {
-		rightWidth = 52
+	if rightWidth < 18 {
+		rightWidth = 18
+		leftWidth = m.width - rightWidth - 6
+		if leftWidth < 8 {
+			leftWidth = 8
+		}
 	}
 	width = rightWidth - 4
-	if width < 20 {
-		width = 20
+	if width < 8 {
+		width = 8
 	}
 	height = innerHeight - 3
 	if height < 3 {

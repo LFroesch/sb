@@ -37,10 +37,9 @@ func (m model) updateAgentPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.agentCursor == 0 {
 				m.resetAgentLaunch()
 				m.launchSources = nil
-				m.launchRepo = m.defaultLaunchRepo()
-				// Land on the Repo tab so the user explicitly picks (or
-				// types) the repo before composing the brief — Lucas's
-				// feedback was the implicit-cwd default felt "stuck".
+				// Freeform still asks for repo context first, but the default
+				// repo is only highlighted, not committed yet.
+				m.launchRepo = ""
 				m.launchFocus = m.launchRepoFocus()
 				m.launchBrief.Blur()
 				m.mode = modeAgentLaunch

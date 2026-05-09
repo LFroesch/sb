@@ -1,6 +1,7 @@
 package cockpit
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,12 +11,13 @@ import (
 // derived from the user's XDG dirs so tests can point it at a temp dir
 // by setting HOME + XDG_* before calling DefaultPaths.
 type Paths struct {
-	StateDir    string // ~/.local/state/sb
-	JobsDir     string // <state>/jobs
-	CampaignDir string // <state>/campaigns
-	ForemanFile string // <state>/foreman.json
-	Socket      string // <state>/foreman.sock
-	PIDFile     string // <state>/foreman.pid
+	StateDir     string // ~/.local/state/sb
+	JobsDir      string // <state>/jobs
+	CampaignDir  string // <state>/campaigns
+	ForemanFile  string // <state>/foreman.json
+	Socket       string // <state>/foreman.sock
+	TmuxSocket   string // <state>/tmux.sock
+	PIDFile      string // <state>/foreman.pid
 	LogFile      string // ~/.local/share/sb/logs/foreman.log
 	PresetsDir   string // ~/.config/sb/presets
 	ProvidersDir string // ~/.config/sb/providers
@@ -34,12 +36,13 @@ func DefaultPaths() Paths {
 	sbData := filepath.Join(data, "sb")
 	sbConfig := filepath.Join(config, "sb")
 	return Paths{
-		StateDir:    sbState,
-		JobsDir:     filepath.Join(sbState, "jobs"),
-		CampaignDir: filepath.Join(sbState, "campaigns"),
-		ForemanFile: filepath.Join(sbState, "foreman.json"),
-		Socket:      filepath.Join(sbState, "foreman.sock"),
-		PIDFile:     filepath.Join(sbState, "foreman.pid"),
+		StateDir:     sbState,
+		JobsDir:      filepath.Join(sbState, "jobs"),
+		CampaignDir:  filepath.Join(sbState, "campaigns"),
+		ForemanFile:  filepath.Join(sbState, "foreman.json"),
+		Socket:       filepath.Join(sbState, "foreman.sock"),
+		TmuxSocket:   filepath.Join(sbState, "tmux.sock"),
+		PIDFile:      filepath.Join(sbState, "foreman.pid"),
 		LogFile:      filepath.Join(sbData, "logs", "foreman.log"),
 		PresetsDir:   filepath.Join(sbConfig, "presets"),
 		ProvidersDir: filepath.Join(sbConfig, "providers"),
@@ -51,6 +54,9 @@ func DefaultPaths() Paths {
 // EnsureDirs makes sure every referenced directory exists.
 func (p Paths) EnsureDirs() error {
 	for _, d := range []string{p.StateDir, p.JobsDir, p.CampaignDir, p.PresetsDir, p.ProvidersDir, p.PromptsDir, p.HooksDir, filepath.Dir(p.LogFile)} {
+		if strings.TrimSpace(d) == "" {
+			return fmt.Errorf("resolve sb user directories")
+		}
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
@@ -65,6 +71,9 @@ func xdgStateHome(home string) string {
 	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" {
 		return v
 	}
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
 	return filepath.Join(home, ".local", "state")
 }
 
@@ -72,12 +81,18 @@ func xdgDataHome(home string) string {
 	if v := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); v != "" {
 		return v
 	}
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
 	return filepath.Join(home, ".local", "share")
 }
 
 func xdgConfigHome(home string) string {
 	if v := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); v != "" {
 		return v
+	}
+	if strings.TrimSpace(home) == "" {
+		return ""
 	}
 	return filepath.Join(home, ".config")
 }

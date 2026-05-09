@@ -1,10 +1,8 @@
 // Package cockpit implements the agent orchestration runtime for sb:
 // job model + registry, PTY-backed executors, pre/post hooks, preset
 // config, and sync-back of approved work into WORK.md / DEVLOG.md.
-//
-// See sb/docs/agent-cockpit-rfc.md for the full design. The package is
-// organised around a single Manager that the TUI (or the sb-foreman
-// daemon) drives via a small synchronous API plus an event channel.
+// The package is organised around a single Manager that the TUI (or the
+// sb-foreman daemon) drives via a small synchronous API plus an event channel.
 package cockpit
 
 import "time"

@@ -114,3 +114,75 @@ func TestSocketRoundtrip(t *testing.T) {
 	}
 	t.Fatal("timed out waiting for first turn to settle")
 }
+
+func TestSocketDisconnectAfterSubscribeDoesNotCrashServer(t *testing.T) {
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     dir,
+		JobsDir:      filepath.Join(dir, "jobs"),
+		CampaignDir:  filepath.Join(dir, "campaigns"),
+		PresetsDir:   filepath.Join(dir, "presets"),
+		ProvidersDir: filepath.Join(dir, "providers"),
+		PromptsDir:   filepath.Join(dir, "prompts"),
+		HooksDir:     filepath.Join(dir, "hooks"),
+		Socket:       filepath.Join(dir, "sock"),
+		PIDFile:      filepath.Join(dir, "pid"),
+		LogFile:      filepath.Join(dir, "log"),
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	l, err := ListenUnix(paths.Socket)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("unix sockets unavailable in this environment: %v", err)
+		}
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan struct{})
+	go func() {
+		_ = Serve(ctx, l, mgr)
+		close(serveDone)
+	}()
+
+	subClient, err := Dial(paths.Socket)
+	if err != nil {
+		t.Fatalf("dial subscriber: %v", err)
+	}
+	_, unsub := subClient.Subscribe()
+	unsub()
+	_ = subClient.Close()
+
+	launchClient, err := Dial(paths.Socket)
+	if err != nil {
+		t.Fatalf("dial launcher: %v", err)
+	}
+	defer launchClient.Close()
+
+	preset := LaunchPreset{
+		ID:       "test",
+		Name:     "test",
+		Executor: ExecutorSpec{Type: "shell", Cmd: "bash", Args: []string{"-lc"}},
+		Hooks:    HookSpec{Iteration: IterationPolicy{Mode: IterationOneShot}},
+	}
+	if _, err := launchClient.LaunchJob(LaunchRequest{
+		Preset:   preset,
+		Repo:     dir,
+		Freeform: "echo hello-after-disconnect",
+	}); err != nil {
+		t.Fatalf("launch after disconnect: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case <-serveDone:
+		t.Fatal("server exited after subscriber disconnect")
+	default:
+	}
+}

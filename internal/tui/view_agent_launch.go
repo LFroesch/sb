@@ -12,8 +12,10 @@ func (m model) renderAgentLaunch() string {
 	lineWidth := maxInt(20, m.width-4)
 
 	presetLabel := "(none)"
-	if m.launchPresetIdx < len(m.cockpitPresets) {
+	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
 		presetLabel = m.cockpitPresets[m.launchPresetIdx].Name
+	} else if m.launchPresetIdx < 0 {
+		presetLabel = "(no preset)"
 	}
 	providerLabel := m.launchProviderLabel()
 
@@ -81,20 +83,17 @@ func (m model) renderAgentLaunch() string {
 
 	switch {
 	case m.launchFocus == launchFocusRole:
-		lines = append(lines, panelHeaderStyle.Render("  Step 1 · Choose Role"), dimStyle.Render("  reusable run behavior and defaults · enter continues · e types a match"), "")
+		lines = append(lines, panelHeaderStyle.Render("  Step 1 · Choose Role"), dimStyle.Render("  reusable run behavior and defaults · (no preset) = raw prompt mode · enter continues · e types a match"), "")
 		if m.launchSelectEditing {
-			lines = append(lines, dimStyle.Render("  type role id/name · enter to select · esc to cancel"))
+			lines = append(lines, dimStyle.Render("  blank = no preset · type role id/name · enter to select · esc to cancel"))
 			lines = append(lines, "  "+m.launchSelectInput.View(), "")
 		}
 		var options []string
+		options = append(options, launchOverrideOption("(no preset)", m.launchPresetIdx == -1))
 		for i, p := range m.cockpitPresets {
-			prefix := "  "
-			if i == m.launchPresetIdx {
-				prefix = accentStyle.Render("▸ ")
-			}
-			options = append(options, prefix+p.Name)
+			options = append(options, launchOverrideOption(p.Name, i == m.launchPresetIdx))
 		}
-		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchPresetIdx, listRows), listRows)...)
+		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), m.launchPresetIdx+1, listRows), listRows)...)
 	case m.launchFocus == launchFocusEngine:
 		lines = append(lines, panelHeaderStyle.Render("  Step 2 · Choose Engine"), dimStyle.Render("  concrete CLI / model to run · enter continues · e types one"), "")
 		if m.launchSelectEditing {
@@ -150,7 +149,7 @@ func (m model) renderAgentLaunch() string {
 		if m.launchRepoEditing {
 			lines = append(lines, "")
 		} else {
-			lines = append(lines, dimStyle.Render("  where the agent should run · enter on (custom path…) to type any path"), "")
+			lines = append(lines, dimStyle.Render("  choose a repo context, or continue with no repo · enter on (custom path…) to type any path"), "")
 		}
 		repos := m.launchRepoChoices()
 		selected := indexOfLaunchRepo(repos, m.launchRepo)
@@ -159,6 +158,13 @@ func (m model) renderAgentLaunch() string {
 			prefix := "  "
 			var label string
 			switch repo {
+			case repoSentinelNone:
+				label = "(no repo)"
+				if i == selected {
+					label = accentStyle.Bold(true).Render(label)
+				} else {
+					label = dimStyle.Render(label)
+				}
 			case repoSentinelCustom:
 				label = "(custom path…)"
 				if i == selected {
@@ -190,9 +196,12 @@ func (m model) renderAgentLaunch() string {
 		lines = append(lines, scrollWindow(options, scrollOffsetForCursor(len(options), selected, listRows), listRows)...)
 	case m.launchFocus == m.launchNoteFocus():
 		m.launchBrief.SetWidth(m.width - 6)
-		briefH := visibleRows - 2 // section title + subtitle
-		if briefH < 1 {
-			briefH = 1
+		briefH := visibleRows - 4
+		if briefH > 6 {
+			briefH = 6
+		}
+		if briefH < 3 {
+			briefH = 3
 		}
 		m.launchBrief.SetHeight(briefH)
 		lines = append(lines, panelHeaderStyle.Render("  Step 4 · Note"), dimStyle.Render("  optional run note · enter to review · alt+enter launches now"), "")
@@ -270,6 +279,9 @@ func (m model) launchProviderLabel() string {
 	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
 		return "(role default: " + describeExecutor(m.cockpitPresets[m.launchPresetIdx].Executor) + ")"
 	}
+	if m.launchPresetIdx < 0 {
+		return "(required)"
+	}
 	return "(none)"
 }
 
@@ -310,7 +322,10 @@ func launchHookRow(label string, selected, atCursor, showCheckbox bool) string {
 func launchRepoPathLabel(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return path
+		return "(no repo)"
+	}
+	if path == repoSentinelNone {
+		return "(no repo)"
 	}
 	if path == repoSentinelCustom {
 		return "(custom path…)"
@@ -329,8 +344,10 @@ func launchRepoPathLabel(path string) string {
 func (m model) launchReviewVisibleRows() int {
 	providers := providerChoices(m.cockpitPresets, m.launchPresetIdx, m.cockpitProviders)
 	presetLabel := "(none)"
-	if m.launchPresetIdx < len(m.cockpitPresets) {
+	if m.launchPresetIdx >= 0 && m.launchPresetIdx < len(m.cockpitPresets) {
 		presetLabel = m.cockpitPresets[m.launchPresetIdx].Name
+	} else if m.launchPresetIdx < 0 {
+		presetLabel = "(no preset)"
 	}
 	providerLabel := "(none)"
 	if m.launchProviderIdx < len(providers) {

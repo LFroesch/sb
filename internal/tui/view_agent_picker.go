@@ -17,14 +17,14 @@ func (m model) renderAgentPicker() string {
 			visibleRows = 1
 		}
 		var options []string
-		// Row 0: freeform sentinel — start a run without picking task lines.
+		// Row 0: freeform sentinel — start a run without attaching task lines.
 		sentinelPrefix := "    "
-		sentinelLabel := primaryStyle.Render("★ New run without task source")
+		sentinelLabel := primaryStyle.Render("★ Freeform run")
 		if m.agentCursor == 0 {
 			sentinelPrefix = accentStyle.Render("  ▸ ")
-			sentinelLabel = primaryStyle.Bold(true).Render("★ New run without task source")
+			sentinelLabel = primaryStyle.Bold(true).Render("★ Freeform run")
 		}
-		options = append(options, sentinelPrefix+sentinelLabel+dimStyle.Render("  type a brief, no task lines attached"))
+		options = append(options, sentinelPrefix+sentinelLabel+dimStyle.Render("  choose repo context next, then type a brief"))
 		for i := range m.projects {
 			p := m.projects[i]
 			prefix := "    "

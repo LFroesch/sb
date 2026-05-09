@@ -212,19 +212,22 @@ func WriteDefaultPresets(dir string) (int, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") {
-			return 0, nil
-		}
+	existing, err := existingSeedIDs(dir)
+	if err != nil {
+		return 0, err
 	}
 	seeds := defaultPresets()
+	written := 0
 	for _, p := range seeds {
-		if err := SavePreset(dir, p); err != nil {
-			return 0, err
+		if existing[p.ID] {
+			continue
 		}
+		if err := SavePreset(dir, p); err != nil {
+			return written, err
+		}
+		written++
 	}
-	return len(seeds), nil
+	return written, nil
 }
 
 // DefaultPresetCount is the number of seed presets written on first run.

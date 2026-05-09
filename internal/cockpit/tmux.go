@@ -1,11 +1,11 @@
 // Package cockpit tmux.go: thin CLI wrapper around `tmux` pinned to an
-// isolated server via `-L sb`. Every call shells out — no persistent
+// isolated server via an absolute socket path. Every call shells out — no persistent
 // control-mode connection. Tests inject a fake binary via SB_TMUX_BIN.
 //
-// Isolation rationale: by always passing `-L sb` we speak to our own
-// tmux server under $TMUX_TMPDIR/sb-*.sock, so the user's default server,
-// config, and key bindings stay untouched. No risk of surprising the
-// user's personal tmux setup.
+// Isolation rationale: by always passing `-S <state>/tmux.sock` we speak
+// to our own server, so the user's default server, config, and key
+// bindings stay untouched. Using a fixed socket path also prevents stale
+// cockpit servers from hiding behind differing TMUX_TMPDIR contexts.
 
 package cockpit
 
@@ -20,9 +20,7 @@ import (
 	"syscall"
 )
 
-// TmuxServerLabel is the -L value we pin every tmux call to. Keep in sync
-// with the bootstrap exec and any user-facing docs.
-const TmuxServerLabel = "sb"
+const envTmuxSocket = "SB_TMUX_SOCKET"
 
 // CockpitSession is the session name used by the bootstrap and runner.
 // Window 0 of this session is the sb TUI itself; windows 1..N are jobs.
@@ -51,8 +49,8 @@ func TmuxBin() string {
 	return "tmux"
 }
 
-// HasTmux reports whether tmux is available. Defined as: `tmux -L sb
-// kill-server` returns (any exit) — we only care that the binary runs,
+// HasTmux reports whether tmux is available. Defined as: `tmux
+// <socket-args> kill-server` returns (any exit) — we only care that the binary runs,
 // not that a server exists. We actually just exec `tmux -V` which is
 // the cheapest liveness probe.
 func HasTmux() bool {
@@ -76,16 +74,43 @@ func HasTmux() bool {
 // is the right UX primitive).
 func InsideTmux() bool { return os.Getenv("TMUX") != "" }
 
-// tmuxArgs prepends the -L flag to every call so we always hit our
+func tmuxSocketPath() string {
+	if v := strings.TrimSpace(os.Getenv(envTmuxSocket)); v != "" {
+		return v
+	}
+	return filepath.Join(DefaultPaths().StateDir, "tmux.sock")
+}
+
+func tmuxSocketArgs() []string {
+	socket := strings.TrimSpace(tmuxSocketPath())
+	if socket == "" {
+		return nil
+	}
+	return []string{"-S", socket}
+}
+
+func ensureTmuxSocketDir() error {
+	socket := strings.TrimSpace(tmuxSocketPath())
+	if socket == "" {
+		return fmt.Errorf("resolve tmux socket path")
+	}
+	return os.MkdirAll(filepath.Dir(socket), 0o755)
+}
+
+// tmuxArgs prepends the socket flag to every call so we always hit our
 // isolated server. All public helpers below funnel through this.
 func tmuxArgs(args ...string) []string {
-	out := make([]string, 0, len(args)+2)
-	out = append(out, "-L", TmuxServerLabel)
+	socketArgs := tmuxSocketArgs()
+	out := make([]string, 0, len(args)+len(socketArgs))
+	out = append(out, socketArgs...)
 	out = append(out, args...)
 	return out
 }
 
 func runTmux(args ...string) (string, error) {
+	if err := ensureTmuxSocketDir(); err != nil {
+		return "", err
+	}
 	full := tmuxArgs(args...)
 	cmd := exec.Command(TmuxBin(), full...)
 	cmd.Env = tmuxCmdEnv()
@@ -389,8 +414,8 @@ func setWindowOption(target, key, value string) error {
 }
 
 // ConfigureSession applies a deliberate operator-focused look/feel to the
-// isolated sb tmux session. Because the cockpit always uses its own `-L sb`
-// server, these settings never touch the user's personal tmux setup.
+// isolated sb tmux session. Because the cockpit always uses its own socket,
+// these settings never touch the user's personal tmux setup.
 func ConfigureSession(target string) error {
 	sbBin, err := os.Executable()
 	if err != nil || strings.TrimSpace(sbBin) == "" {

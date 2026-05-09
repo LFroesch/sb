@@ -205,6 +205,9 @@ func (m model) renderProviderBadge(status config.ProviderStatus) string {
 		if status.Problem == "" {
 			return warnStyle.Render("no llm provider enabled")
 		}
+		if strings.Contains(status.Problem, "public demo mode") {
+			return warnStyle.Render("demo mode") + dimStyle.Render(" (LLM features unavailable in public demo)")
+		}
 		return warnStyle.Render("llm disabled") + dimStyle.Render(" ("+status.Problem+")")
 	}
 
@@ -917,7 +920,6 @@ func (m model) helpLines() []string {
 			{"f", "Pin / unpin project (sticky at top)"},
 			{"space", "Toggle project selection (for C)"},
 			{"e", "Edit WORK.md inline"},
-			{"-", "Fix non-list lines (save in-place)"},
 			{"c", "Cleanup via model (single)"},
 			{"C", "Chain cleanup selected (or all)"},
 			{"o", "Open project directory in editor"},
@@ -956,7 +958,7 @@ func (m model) helpLines() []string {
 			{"esc", "Cancel / abort remaining"},
 		}},
 		{"Agents", []struct{ key, desc string }{
-			{"n", "New run (pick a task file or skip task lines)"},
+			{"n", "New run (task-backed or freeform)"},
 			{"m", "Open Advanced Setup (roles, prompts, hooks, engines)"},
 			{"F", "List: toggle Foreman on/off"},
 			{"ctrl+t", "New run: toggle immediate launch vs send to Foreman"},
