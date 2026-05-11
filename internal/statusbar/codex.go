@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/LFroesch/sb/internal/accounts"
 )
 
 const codexCacheTTL = 10 * time.Second
@@ -42,11 +40,6 @@ func codexCached() (Usage, bool) {
 func codexLogPath() string {
 	// Honor CODEX_HOME if set (matches Codex CLI's own lookup).
 	dir := os.Getenv("CODEX_HOME")
-	if dir == "" {
-		if activeDir, ok, err := accounts.ActiveRuntimeDir("codex"); err == nil && ok {
-			dir = activeDir
-		}
-	}
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

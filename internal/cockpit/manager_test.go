@@ -8,46 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/LFroesch/sb/internal/accounts"
 )
-
-func TestRuntimeEnvUsesActiveCodexSlot(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("CODEX_HOME", filepath.Join(home, "codex-live"))
-
-	live := filepath.Join(home, "codex-live")
-	if err := os.MkdirAll(live, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(live, "auth.json"), []byte(`{"tokens":{"account_id":"acct-a"}}`), 0o600); err != nil {
-		t.Fatalf("WriteFile auth: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(live, "logs_2.sqlite"), []byte("db"), 0o600); err != nil {
-		t.Fatalf("WriteFile db: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(live, "state_5.sqlite"), []byte("state"), 0o600); err != nil {
-		t.Fatalf("WriteFile state: %v", err)
-	}
-
-	if err := accounts.SaveCurrent("codex", "work"); err != nil {
-		t.Fatalf("SaveCurrent: %v", err)
-	}
-	if err := accounts.Use("codex", "work"); err != nil {
-		t.Fatalf("Use: %v", err)
-	}
-
-	env, err := runtimeEnv(Job{ID: "job-1", Executor: ExecutorSpec{Type: "codex"}})
-	if err != nil {
-		t.Fatalf("runtimeEnv: %v", err)
-	}
-	want := "CODEX_HOME=" + filepath.Join(home, ".config", "sb", "accounts", "codex", "work")
-	if !containsString(env, want) {
-		t.Fatalf("env = %q, want %q", env, want)
-	}
-}
 
 func TestBuildTurnCmdCodexInitialTurnUsesJSONExec(t *testing.T) {
 	t.Parallel()
@@ -64,15 +25,6 @@ func TestBuildTurnCmdCodexInitialTurnUsesJSONExec(t *testing.T) {
 	if stdinBody != "" {
 		t.Fatal("expected codex prompt as argv, not stdin replay")
 	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestBuildTurnCmdCodexResumeUsesThreadID(t *testing.T) {

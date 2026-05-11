@@ -1,8 +1,10 @@
 # sb
 
-`sb` is a terminal control plane for `WORK.md`-style project management. It is built around task-file cleanup, routing brain dumps into the right project, and launching agent-backed work from that task data.
+`sb` is a terminal control plane for `WORK.md`-style project management. It is built around cleaning task files up, routing rough thoughts into the right project, and launching agent-backed work from the same workspace.
 
 ## Install
+
+Supported platforms: Linux and macOS. On Windows, use WSL.
 
 Recommended:
 
@@ -22,7 +24,12 @@ Run:
 ```bash
 sb
 sb --version
+sb tmux-status
 ```
+
+## Media
+
+Planned README capture: one dashboard screenshot with project cleanup context visible, and one short clip showing dump routing or the agent-run flow from the same workspace.
 
 ## Main Jobs
 
@@ -33,6 +40,15 @@ sb --version
 | Agents | Start task-backed or freeform coding-agent runs |
 
 If `tmux` is available, `sb` uses a shared cockpit session for the richer agent workflow. Without `tmux`, the TUI still works, but the agent flow is more limited.
+
+## Features
+
+- Discover and browse `WORK.md`-style task files across multiple roots
+- Normalize task files into a consistent active-work format
+- Route rough brain dumps into the right project and section
+- Edit task files inline without leaving the app
+- Launch freeform or task-backed agent runs from the same workspace
+- Keep logs and workflow state under one terminal control plane
 
 ## Canonical Task File Shape
 
@@ -62,10 +78,6 @@ The important rules are simple:
 sb
 sb tmux-status
 sb audit-taskfiles
-sb account list
-sb account show
-sb account save claude work
-sb account use codex personal
 ```
 
 ## Config
@@ -82,9 +94,25 @@ Common fields:
 - `ideas_target`
 - `provider` and `providers`
 
+## Controls
+
+| Key | Action |
+|-----|--------|
+| `j/k`, `up/down` | Move |
+| `enter` | Open selected project or continue in the current flow |
+| `e` | Edit the current `WORK.md` inline |
+| `c` | Cleanup current project |
+| `C` | Chain cleanup for selected or queued projects |
+| `d` | Open brain-dump routing |
+| `a` | Open Agents |
+| `/` | Search across discovered task files |
+| `r` | Refresh project scan |
+| `,` | Open config directory |
+| `?` | Help |
+| `q`, `esc` | Back or quit depending on view |
+
 ## Notes
 
-- saved account snapshots live under `~/.config/sb/accounts/`
 - logs are written under your user data dir, usually `~/.local/share/sb/logs/`
 - repo-local workflow rules for a checkout can live in `AGENTS.md`
 

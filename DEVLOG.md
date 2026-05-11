@@ -2,10 +2,13 @@
 
 ## DevLog
 
+### 2026-05-11 — Removed the aborted account-management feature
+- Removed the `sb account` CLI surface, the `internal/accounts` package, Codex account-slot runtime injection, and the related design doc after confirming the approach was not reliable enough against current upstream Claude/Codex auth behavior. Files: `main.go`, `internal/cockpit/manager.go`, `internal/cockpit/manager_test.go`, `internal/statusbar/codex.go`, `README.md`.
+
 ### 2026-05-05 — Added V1 Claude/Codex account save/use commands
-- Added a small `sb account` CLI surface for Claude/Codex saved-login swaps: `list`, `show`, `save <provider> <name>`, and `use <provider> <name>`. The implementation stores named snapshots under `~/.config/sb/accounts/` and tracks the active slot per provider in a small registry file. Files: [`main.go`](main.go), [`internal/accounts/accounts.go`](internal/accounts/accounts.go).
-- Claude snapshots currently save and restore `.credentials.json`; Codex snapshots save and restore `auth.json` plus `logs_2.sqlite` so account swaps preserve the current login and keep per-account rate-limit context closer to accurate after switching. Files: [`internal/accounts/accounts.go`](internal/accounts/accounts.go), [`internal/statusbar/claude.go`](internal/statusbar/claude.go), [`internal/statusbar/codex.go`](internal/statusbar/codex.go).
-- Added regression coverage for Claude/Codex save/use round-trips, active-slot reporting, and missing-live-auth failures in [`internal/accounts/accounts_test.go`](internal/accounts/accounts_test.go), and documented the new commands in [`README.md`](README.md).
+- Added a small `sb account` CLI surface for Claude/Codex saved-login swaps: `list`, `show`, `save <provider> <name>`, and `use <provider> <name>`. The implementation stored named snapshots under `~/.config/sb/accounts/` and tracked the active slot per provider in a small registry file. This feature was later removed on 2026-05-11.
+- Claude snapshots saved and restored `.credentials.json`; Codex snapshots saved and restored `auth.json` plus `logs_2.sqlite` so account swaps preserved the current login and kept per-account rate-limit context closer to accurate after switching. This feature was later removed on 2026-05-11.
+- Added regression coverage for the initial Claude/Codex save/use flow and documented the commands in [`README.md`](README.md). Those tests were removed with the feature on 2026-05-11.
 
 ### 2026-05-05 — Canonical task-file schema, startup hydration split, and planner removal
 - Collapsed `sb` onto one strict task-file schema: typed H1 + summary, then `Current Phase`, `Current Tasks`, and `Backlog / Future Features`. Removed runtime support for `Workflow Rules`, `Unsorted`, `Bugs + Blockers`, `Updates + Features`, and legacy inline title metadata from the parser, cleanup prompts, and routing model. Files: [`internal/workmd/workmd.go`](internal/workmd/workmd.go), [`internal/llm/llm.go`](internal/llm/llm.go), [`internal/tui/view.go`](internal/tui/view.go).
@@ -85,7 +88,7 @@
 - Why: the UI had become much more capable, but the docs still stopped at naming roles vs engines. This fills the gap for humans or external agents that need to author valid JSON directly instead of reverse-engineering the Go structs.
 
 ### 2026-05-01 — Multi-account work narrowed into a decision doc
-- Added [`MULTI_ACCOUNT_OVERHAUL.md`](MULTI_ACCOUNT_OVERHAUL.md) to capture the current Claude/Codex multi-account design thinking before implementation: upstream auth-file reality, the simpler global saved-login swap model, the more advanced per-session isolated-account model, and the recommendation to start with the smaller saved-login CLI surface if this moves forward.
+- Added a `MULTI_ACCOUNT_OVERHAUL.md` note to capture the current Claude/Codex multi-account design thinking before implementation: upstream auth-file reality, the simpler global saved-login swap model, the more advanced per-session isolated-account model, and the recommendation to start with the smaller saved-login CLI surface if this moves forward. The note was later removed on 2026-05-11 with the feature.
 - Updated [`WORK.md`](WORK.md) to replace the vague multi-account note with an explicit pointer to that design doc so the backlog reflects that this needs a product decision before code.
 - Why: the requirement shifted during discussion from "broad multi-account support" toward "keep everything shared, only swap the login", and then surfaced the separate question of whether simultaneous multi-account tmux sessions should exist. Writing the tradeoffs down is more useful than coding the wrong model.
 

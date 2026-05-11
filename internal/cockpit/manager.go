@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LFroesch/sb/internal/accounts"
 	"github.com/LFroesch/sb/internal/statusbar"
 )
 
@@ -1029,16 +1028,6 @@ func codexRuntimeArgs(j Job) []string {
 
 func runtimeEnv(j Job) ([]string, error) {
 	env := []string{"SB_JOB_ID=" + string(j.ID)}
-	provider := strings.ToLower(strings.TrimSpace(j.Executor.Type))
-	switch provider {
-	case "", "ollama", "shell":
-		return env, nil
-	}
-	activeEnv, err := accounts.ActiveEnv(provider)
-	if err != nil {
-		return nil, err
-	}
-	env = append(env, activeEnv...)
 	return env, nil
 }
 
