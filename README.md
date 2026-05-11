@@ -2,6 +2,8 @@
 
 `sb` is a terminal control plane for `WORK.md`-style project management. It is built around cleaning task files up, routing rough thoughts into the right project, and launching agent-backed work from the same workspace.
 
+![sb hero screenshot](assets/screenshots/hero.png)
+
 ## Install
 
 Supported platforms: Linux and macOS. On Windows, use WSL.
@@ -29,7 +31,9 @@ sb tmux-status
 
 ## Media
 
-Planned README capture: one dashboard screenshot with project cleanup context visible, and one short clip showing dump routing or the agent-run flow from the same workspace.
+![sb dump screenshot](assets/screenshots/dump.png)
+
+![sb agent screenshot](assets/screenshots/agent.png)
 
 ## Main Jobs
 

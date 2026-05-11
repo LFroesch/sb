@@ -10,6 +10,79 @@ import (
 	"time"
 )
 
+func TestBeginQueuedStartClaimsOnlyOnce(t *testing.T) {
+	t.Parallel()
+
+	m := &Manager{starting: map[JobID]bool{}}
+	id := JobID("j-1")
+	if !m.beginQueuedStart(id) {
+		t.Fatal("first queued-start claim = false, want true")
+	}
+	if m.beginQueuedStart(id) {
+		t.Fatal("second queued-start claim = true, want false")
+	}
+	m.endQueuedStart(id)
+	if !m.beginQueuedStart(id) {
+		t.Fatal("claim after release = false, want true")
+	}
+}
+
+func TestClaimQueuedJobStartClaimsOnlyQueuedJobOnce(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	paths := Paths{
+		StateDir:     filepath.Join(dir, "state"),
+		JobsDir:      filepath.Join(dir, "state", "jobs"),
+		CampaignDir:  filepath.Join(dir, "state", "campaigns"),
+		ForemanFile:  filepath.Join(dir, "state", "foreman.json"),
+		Socket:       filepath.Join(dir, "state", "foreman.sock"),
+		TmuxSocket:   filepath.Join(dir, "state", "tmux.sock"),
+		PIDFile:      filepath.Join(dir, "state", "foreman.pid"),
+		LogFile:      filepath.Join(dir, "data", "logs", "foreman.log"),
+		PresetsDir:   filepath.Join(dir, "config", "presets"),
+		ProvidersDir: filepath.Join(dir, "config", "providers"),
+		PromptsDir:   filepath.Join(dir, "config", "prompts"),
+		HooksDir:     filepath.Join(dir, "config", "hooks"),
+	}
+	mgr, err := NewManager(paths)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	job, err := mgr.createQueuedJob(LaunchRequest{
+		Preset: LaunchPreset{
+			ID:       "senior-dev",
+			Executor: ExecutorSpec{Type: "codex", Runner: "exec"},
+		},
+		Repo: "/tmp/demo",
+	}, nil, "", 0, 1)
+	if err != nil {
+		t.Fatalf("createQueuedJob: %v", err)
+	}
+
+	first, claimed, err := mgr.claimQueuedJobStart(job.ID)
+	if err != nil {
+		t.Fatalf("claimQueuedJobStart(first): %v", err)
+	}
+	if !claimed {
+		t.Fatal("first claim = false, want true")
+	}
+	if first.Status != StatusRunning {
+		t.Fatalf("first claim status = %s, want running", first.Status)
+	}
+
+	second, claimed, err := mgr.claimQueuedJobStart(job.ID)
+	if err != nil {
+		t.Fatalf("claimQueuedJobStart(second): %v", err)
+	}
+	if claimed {
+		t.Fatal("second claim = true, want false")
+	}
+	if second.ID != "" {
+		t.Fatalf("second claim job id = %q, want empty zero-value job", second.ID)
+	}
+}
+
 func TestBuildTurnCmdCodexInitialTurnUsesJSONExec(t *testing.T) {
 	t.Parallel()
 

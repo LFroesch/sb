@@ -800,7 +800,7 @@ func (m model) renderFooter() string {
 				add("enter", "continue")
 			}
 			add("alt+enter", "launch")
-			add("a", "toggle advanced")
+			add("ctrl+a", "toggle advanced")
 			add("ctrl+t", "toggle Foreman")
 			if m.launchFocus == m.launchNoteFocus() {
 				inInput = true

@@ -176,16 +176,23 @@ func (m model) agentListLayout(prefixLines int) (panelHeight, listWidth, rightWi
 	if panelHeight < 3 {
 		panelHeight = 3
 	}
-	listWidth = m.width * 42 / 100
-	if listWidth < 16 {
-		listWidth = 16
+	gapWidth := lipgloss.Width("  ")
+	frameWidth := panelStyle.GetHorizontalFrameSize()
+	availableWidth := m.width - gapWidth - frameWidth*2
+	if availableWidth < 2 {
+		availableWidth = 2
 	}
-	rightWidth = m.width - listWidth - 6
-	if rightWidth < 16 {
-		rightWidth = 16
-		listWidth = m.width - rightWidth - 6
-		if listWidth < 8 {
-			listWidth = 8
+	listWidth = availableWidth * 45 / 100
+	if listWidth < 22 {
+		listWidth = 22
+	}
+	rightWidth = availableWidth - listWidth
+	if rightWidth < 24 {
+		rightWidth = 24
+		listWidth = availableWidth - rightWidth
+		if listWidth < 12 {
+			listWidth = 12
+			rightWidth = maxInt(1, availableWidth-listWidth)
 		}
 	}
 	innerHeight = panelHeight - 2
@@ -811,6 +818,9 @@ func jobPeekBody(j cockpit.Job, width int) []string {
 	text := jobPeekText(j)
 	if text == "" {
 		return []string{dimStyle.Render("  (no output yet)")}
+	}
+	if j.Runner == cockpit.RunnerTmux {
+		return strings.Split(renderTerminalActivity(text, width), "\n")
 	}
 	var out []string
 	for _, raw := range strings.Split(text, "\n") {
@@ -1797,17 +1807,32 @@ func agentRowColumnWidths(rowWidth int) (repo, advance, status, preset int) {
 	advance = 10
 	status = 9
 	preset = 12
-	if rowWidth < 60 {
+	if rowWidth < 86 {
 		preset = 10
+	}
+	if rowWidth < 76 {
+		repo = 11
+	}
+	if rowWidth < 60 {
+		preset = 8
 	}
 	if rowWidth < 70 {
 		advance = 8
 	}
+	if rowWidth < 56 {
+		advance = 7
+	}
 	if rowWidth < 52 {
-		repo = 10
+		repo = 9
 	}
 	if rowWidth < 44 {
 		status = 7
+	}
+	if rowWidth < 36 {
+		repo = 8
+		advance = 6
+		status = 6
+		preset = 6
 	}
 	return repo, advance, status, preset
 }

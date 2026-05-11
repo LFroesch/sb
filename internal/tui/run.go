@@ -3,7 +3,9 @@ package tui
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -29,6 +31,11 @@ func Run() error {
 
 	m := newModel(cfg)
 	m.cockpitDetachQuit = cockpit.ShouldDetachOnQuit()
+	if obsolete := obsoleteAccountsPath(); obsolete != "" {
+		slog.Warn("obsolete sb accounts directory detected", "path", obsolete)
+		m.statusMsg = "obsolete sb accounts data detected; current sb no longer swaps provider sign-ins"
+		m.statusExpiry = time.Now().Add(12 * time.Second)
+	}
 
 	// Cockpit: seed presets + providers, then connect to the manager.
 	// Preferred path is dial sb-foreman over the unix socket so jobs
@@ -136,4 +143,20 @@ func noColorRequested() bool {
 		return true
 	}
 	return false
+}
+
+func obsoleteAccountsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	cfgHome := os.Getenv("XDG_CONFIG_HOME")
+	if strings.TrimSpace(cfgHome) == "" {
+		cfgHome = filepath.Join(home, ".config")
+	}
+	path := filepath.Join(cfgHome, "sb", "accounts")
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return path
+	}
+	return ""
 }

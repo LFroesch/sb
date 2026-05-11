@@ -45,6 +45,7 @@ func TestUpdateAgentLaunchCtrlTTogglesForemanModeFromNote(t *testing.T) {
 	m := newModel(nil)
 	m.page = pageAgent
 	m.mode = modeAgentLaunch
+	m.cockpitForeman = cockpit.ForemanState{Enabled: true}
 	m.launchSources = []cockpit.SourceTask{{Text: "keep draft state"}}
 	m.launchFocus = m.launchNoteFocus()
 	m.launchRepo = "/tmp/demo"
@@ -57,6 +58,27 @@ func TestUpdateAgentLaunchCtrlTTogglesForemanModeFromNote(t *testing.T) {
 	}
 	if next.statusMsg != "this run will be sent to Foreman" {
 		t.Fatalf("statusMsg = %q, want Foreman toggle message", next.statusMsg)
+	}
+}
+
+func TestUpdateAgentLaunchCtrlTWarnsWhenForemanIsDisabled(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentLaunch
+	m.launchSources = []cockpit.SourceTask{{Text: "keep draft state"}}
+	m.launchFocus = m.launchNoteFocus()
+	m.launchRepo = "/tmp/demo"
+	m.launchBrief.Focus()
+	m.cockpitForeman = cockpit.ForemanState{Enabled: false}
+
+	got, _ := m.updateAgentLaunch(tea.KeyMsg{Type: tea.KeyCtrlT})
+	next := got.(model)
+	if !next.launchQueueOnly {
+		t.Fatalf("launchQueueOnly = false, want true")
+	}
+	want := "Foreman is off: this run will queue until you enable it with F"
+	if next.statusMsg != want {
+		t.Fatalf("statusMsg = %q, want %q", next.statusMsg, want)
 	}
 }
 
@@ -1161,6 +1183,42 @@ func TestUpdateAgentLaunchEnterOnRepoStepAppliesVisibleDefaultChoice(t *testing.
 	}
 	if next.launchFocus != next.launchNoteFocus() {
 		t.Fatalf("launchFocus = %d, want note focus %d", next.launchFocus, next.launchNoteFocus())
+	}
+}
+
+func TestDoLaunchExplainsDisabledForemanQueue(t *testing.T) {
+	m := newModel(nil)
+	m.mode = modeAgentLaunch
+	m.launchQueueOnly = true
+	m.cockpitForeman = cockpit.ForemanState{Enabled: false}
+	m.cockpitPresets = []cockpit.LaunchPreset{{
+		ID:          "senior-dev",
+		Name:        "Senior dev",
+		Permissions: "scoped-write",
+		Executor:    cockpit.ExecutorSpec{Type: "codex"},
+		Hooks:       cockpit.HookSpec{Iteration: cockpit.IterationPolicy{Mode: cockpit.IterationOneShot}},
+	}}
+	m.launchPresetIdx = 0
+	m.launchRepo = "/tmp/demo"
+	m.launchBrief.SetValue("tighten the launcher")
+	launchReq := cockpit.LaunchRequest{}
+	m.cockpitClient = stubCockpitClient{
+		launchJob: cockpit.Job{ID: "job-1", PresetID: "senior-dev", ForemanManaged: true, WaitForForeman: true},
+		launchReq: &launchReq,
+	}
+
+	got, _ := m.doLaunch()
+	next := got.(model)
+
+	if !launchReq.QueueOnly {
+		t.Fatalf("launchReq.QueueOnly = false, want true")
+	}
+	want := "queued for disabled Foreman: Senior dev (press F in the list to start dispatching)"
+	if next.statusMsg != want {
+		t.Fatalf("statusMsg = %q, want %q", next.statusMsg, want)
+	}
+	if next.mode != modeAgentList {
+		t.Fatalf("mode = %v, want modeAgentList", next.mode)
 	}
 }
 

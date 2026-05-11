@@ -23,16 +23,23 @@ func (m model) attachedExecDims() (width, panelHeight int) {
 }
 
 func (m model) attachedLayoutDims() (railWidth, chatWidth, panelHeight int) {
-	railWidth = m.width * 31 / 100
+	gapWidth := lipgloss.Width("  ")
+	frameWidth := panelStyle.GetHorizontalFrameSize()
+	availableWidth := m.width - gapWidth - frameWidth*2
+	if availableWidth < 2 {
+		availableWidth = 2
+	}
+	railWidth = availableWidth * 34 / 100
 	if railWidth < 12 {
 		railWidth = 12
 	}
-	chatWidth = m.width - railWidth - 5
+	chatWidth = availableWidth - railWidth
 	if chatWidth < 16 {
 		chatWidth = 16
-		railWidth = m.width - chatWidth - 5
+		railWidth = availableWidth - chatWidth
 		if railWidth < 8 {
 			railWidth = 8
+			chatWidth = maxInt(1, availableWidth-railWidth)
 		}
 	}
 	panelHeight = m.agentContentHeight() - 2
@@ -344,11 +351,7 @@ func renderTmuxLogConversation(j cockpit.Job, width int) string {
 			return "(no log output captured yet)"
 		}
 	}
-	var parts []string
-	for _, line := range strings.Split(text, "\n") {
-		parts = append(parts, wrapText(line, width))
-	}
-	return strings.Join(parts, "\n")
+	return renderTerminalActivity(text, width)
 }
 
 func tmuxActivitySourceLabel(j cockpit.Job) string {
@@ -376,6 +379,21 @@ func (m model) attachedConversationText(j cockpit.Job, width int) string {
 		parts = append(parts, renderChatConversation(m.attachedTurns, m.transcriptBuf, width, running))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func renderTerminalActivity(text string, width int) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	var parts []string
+	for _, raw := range strings.Split(text, "\n") {
+		if raw == "" {
+			parts = append(parts, "")
+			continue
+		}
+		parts = append(parts, strings.Split(wrapLine(raw, width), "\n")...)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (m model) renderAttachedRail(width, height int) string {

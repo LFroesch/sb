@@ -456,6 +456,8 @@ func ConfigureSession(target string) error {
 		key   string
 		value string
 	}{
+		{"automatic-rename", "off"},
+		{"allow-rename", "off"},
 		{"mode-keys", "vi"},
 		{"clock-mode-colour", "#0b5cad"},
 	}

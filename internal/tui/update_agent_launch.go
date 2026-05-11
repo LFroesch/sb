@@ -544,7 +544,7 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.toggleLaunchHookAtCursor()
 			return m, nil
 		}
-	case "a":
+	case "ctrl+a":
 		m.launchShowAdvanced = !m.launchShowAdvanced
 		if !m.launchShowAdvanced && !m.launchOverridesActive() {
 			m.normalizeLaunchFocus()
@@ -562,7 +562,11 @@ func (m model) updateAgentLaunch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+t":
 		m.launchQueueOnly = !m.launchQueueOnly
 		if m.launchQueueOnly {
-			m.statusMsg = "this run will be sent to Foreman"
+			if m.cockpitForeman.Enabled {
+				m.statusMsg = "this run will be sent to Foreman"
+			} else {
+				m.statusMsg = "Foreman is off: this run will queue until you enable it with F"
+			}
 		} else {
 			m.statusMsg = "this run will start immediately"
 		}
@@ -751,7 +755,11 @@ func (m model) doLaunch() (tea.Model, tea.Cmd) {
 		label = "raw run"
 	}
 	if m.launchQueueOnly {
-		m.statusMsg = "sent to Foreman: " + label
+		if m.cockpitForeman.Enabled {
+			m.statusMsg = "sent to Foreman: " + label
+		} else {
+			m.statusMsg = "queued for disabled Foreman: " + label + " (press F in the list to start dispatching)"
+		}
 	} else {
 		m.statusMsg = "launched " + label
 	}

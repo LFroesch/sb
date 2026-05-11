@@ -17,6 +17,9 @@ import (
 
 type stubCockpitClient struct {
 	jobs        map[cockpit.JobID]cockpit.Job
+	launchJob   cockpit.Job
+	launchErr   error
+	launchReq   *cockpit.LaunchRequest
 	retryResult cockpit.Job
 	retryErr    error
 	retryCalls  *int
@@ -41,8 +44,14 @@ func (s stubCockpitClient) SetForemanEnabled(enabled bool) (cockpit.ForemanState
 	return cockpit.ForemanState{Enabled: enabled}, nil
 }
 
-func (s stubCockpitClient) LaunchJob(cockpit.LaunchRequest) (cockpit.Job, error) {
-	return cockpit.Job{}, nil
+func (s stubCockpitClient) LaunchJob(req cockpit.LaunchRequest) (cockpit.Job, error) {
+	if s.launchReq != nil {
+		*s.launchReq = req
+	}
+	if s.launchErr != nil {
+		return cockpit.Job{}, s.launchErr
+	}
+	return s.launchJob, nil
 }
 
 func (s stubCockpitClient) StartJob(id cockpit.JobID) (cockpit.Job, error) {
@@ -106,11 +115,29 @@ func renderedLineCount(s string) int {
 	return len(strings.Split(strings.TrimRight(xansi.Strip(s), "\n"), "\n"))
 }
 
+func renderedMaxLineWidth(s string) int {
+	lines := strings.Split(strings.TrimRight(xansi.Strip(s), "\n"), "\n")
+	maxWidth := 0
+	for _, line := range lines {
+		if w := xansi.StringWidth(line); w > maxWidth {
+			maxWidth = w
+		}
+	}
+	return maxWidth
+}
+
 func assertViewFitsHeight(t *testing.T, m model) {
 	t.Helper()
 	out := m.View()
 	if got := renderedLineCount(out); got > m.height {
 		t.Fatalf("view rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
+	}
+}
+
+func assertViewFitsWidth(t *testing.T, rendered string, width int) {
+	t.Helper()
+	if got := renderedMaxLineWidth(rendered); got > width {
+		t.Fatalf("view rendered %d columns in %d-column terminal:\n%s", got, width, rendered)
 	}
 }
 
@@ -267,6 +294,23 @@ func TestRenderTmuxLogConversationSanitizesRawPaneBytes(t *testing.T) {
 	}
 }
 
+func TestRenderTmuxLogConversationPreservesIndentation(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tmux.log")
+	raw := "  $ make test\n    FAIL internal/tui\n"
+	if err := os.WriteFile(logPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out := renderTmuxLogConversation(cockpit.Job{LogPath: logPath}, 80)
+	if !strings.Contains(out, "  $ make test") {
+		t.Fatalf("renderTmuxLogConversation trimmed prompt indentation: %q", out)
+	}
+	if !strings.Contains(out, "    FAIL internal/tui") {
+		t.Fatalf("renderTmuxLogConversation trimmed nested indentation: %q", out)
+	}
+}
+
 func TestRenderAgentPeekShowsTaskLine(t *testing.T) {
 	m := newModel(nil)
 	out := m.renderAgentPeek(cockpit.Job{
@@ -300,6 +344,21 @@ func TestRenderAgentPeekUsesLatestActivityLabel(t *testing.T) {
 	}
 	if strings.Contains(out, "session log") {
 		t.Fatalf("renderAgentPeek kept old session log copy: %q", out)
+	}
+}
+
+func TestJobPeekBodyPreservesTmuxIndentation(t *testing.T) {
+	j := cockpit.Job{
+		Runner:  cockpit.RunnerTmux,
+		LogPath: filepath.Join(t.TempDir(), "tmux.log"),
+	}
+	if err := os.WriteFile(j.LogPath, []byte("  prompt\n    nested\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	lines := jobPeekBody(j, 80)
+	if len(lines) < 2 || lines[0] != "  prompt" || lines[1] != "    nested" {
+		t.Fatalf("jobPeekBody(tmux) = %#v, want preserved indentation", lines)
 	}
 }
 
@@ -1003,6 +1062,7 @@ func TestAgentListViewFitsShortTerminal(t *testing.T) {
 	if got := renderedLineCount(out); got > m.height {
 		t.Fatalf("agent list rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
 	}
+	assertViewFitsWidth(t, out, m.width)
 }
 
 func TestAgentAttachedViewFitsShortTerminal(t *testing.T) {
@@ -1034,6 +1094,39 @@ func TestAgentAttachedViewFitsShortTerminal(t *testing.T) {
 	if got := renderedLineCount(out); got > m.height {
 		t.Fatalf("agent attached rendered %d lines in %d-line terminal:\n%s", got, m.height, out)
 	}
+}
+
+func TestRenderAttachedTmuxFitsWidth(t *testing.T) {
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "senior-dev",
+		Runner:    cockpit.RunnerTmux,
+		Status:    cockpit.StatusRunning,
+		CreatedAt: now.Add(-2 * time.Minute),
+		TmuxTarget:"sb-cockpit:@3",
+		Sources: []cockpit.SourceTask{{
+			File: "/tmp/demo/WORK.md",
+			Line: 12,
+			Text: "fix left panel width",
+		}},
+	}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 80
+	m.height = 20
+	m.cfg = &config.Config{}
+	m.cockpitClient = stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.viewport.Width = 40
+	m.viewport.Height = 8
+	m.viewport.SetContent("line one\nline two\nline three")
+
+	out := m.renderAttachedTmux(job)
+	assertViewFitsWidth(t, out, m.width)
 }
 
 func TestAgentAttachedExecViewFitsShortTerminal(t *testing.T) {

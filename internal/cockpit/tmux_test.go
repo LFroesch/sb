@@ -109,6 +109,8 @@ exit 0
 		"set-option -g -t sb-cockpit status-right #(",
 		"set-option -g -t sb-cockpit window-status-format #[fg=#94a3b8] #W ",
 		"set-option -g -t sb-cockpit window-status-current-format #[bold,bg=#e2e8f0,fg=#0f172a] #W #[default]",
+		"set-window-option -g -t sb-cockpit automatic-rename off",
+		"set-window-option -g -t sb-cockpit allow-rename off",
 		"set-window-option -g -t sb-cockpit mode-keys vi",
 		"bind-key -T root WheelUpPane if-shell -F #{==:#{window_name},main} send-keys -M if-shell -F \"#{pane_in_mode}\" \"send-keys -M\" \"copy-mode -eu\"",
 		"bind-key -T root PageUp if-shell -F #{==:#{window_name},main} send-keys PageUp copy-mode -eu",
@@ -313,5 +315,15 @@ func TestProcessMatchesExecutableRequiresCurrentBinaryPath(t *testing.T) {
 
 	if processMatchesExecutable(cmd.Process.Pid, "sb", self) {
 		t.Fatal("expected stale process path to be rejected")
+	}
+}
+
+func TestProcessMatchesExecutablePrefersProcExeOverPaneCommand(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("Executable: %v", err)
+	}
+	if !processMatchesExecutable(os.Getpid(), "node", self) {
+		t.Fatal("expected live process path match even when pane current command differs")
 	}
 }

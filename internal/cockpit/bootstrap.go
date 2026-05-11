@@ -200,9 +200,6 @@ func ShouldDetachOnQuit() bool {
 }
 
 func processMatchesExecutable(pid int, currentCmd, self string) bool {
-	if !sameExecutableName(currentCmd, self) {
-		return false
-	}
 	if pid <= 0 {
 		return false
 	}
@@ -212,5 +209,5 @@ func processMatchesExecutable(pid int, currentCmd, self string) bool {
 		return procPath == selfPath
 	}
 	// Fall back to the looser name check when /proc resolution is unavailable.
-	return true
+	return sameExecutableName(currentCmd, self)
 }

@@ -9,6 +9,7 @@ package cockpit
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,12 @@ func (r *tmuxRunner) StartJob(j Job) error {
 	_ = appendTranscriptLine(logPath, "")
 
 	winName := windowName(j)
+	slog.Info("cockpit: tmux start",
+		"job", j.ID,
+		"window_name", winName,
+		"repo", j.Repo,
+		"executor", j.Executor.Type,
+	)
 	cmd, err := buildTmuxCommand(j)
 	if err != nil {
 		return err
@@ -84,6 +91,7 @@ func (r *tmuxRunner) StartJob(j Job) error {
 	if err != nil {
 		return fmt.Errorf("new-window: %w", err)
 	}
+	slog.Info("cockpit: tmux window created", "job", j.ID, "target", info.Target, "window_name", winName)
 
 	if err := PipePane(info.Target, logPath); err != nil {
 		// Non-fatal — the pane is running; we just lose log capture.

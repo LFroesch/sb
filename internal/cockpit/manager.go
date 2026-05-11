@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sort"
@@ -31,7 +32,9 @@ type Manager struct {
 	foreman    ForemanState
 	active     map[JobID]context.CancelFunc // cancel hook for the in-flight turn
 	activeDone map[JobID]chan struct{}      // closed when the in-flight turn fully exits
+	starting   map[JobID]bool               // set while a queued job is being claimed/launched
 	stopping   map[JobID]bool               // set when user explicitly requested stop
+	scheduleMu sync.Mutex
 
 	subsMu sync.RWMutex
 	subs   map[int]chan Event
@@ -54,6 +57,7 @@ func NewManager(paths Paths) (*Manager, error) {
 		foreman:    loadForemanState(paths),
 		active:     map[JobID]context.CancelFunc{},
 		activeDone: map[JobID]chan struct{}{},
+		starting:   map[JobID]bool{},
 		stopping:   map[JobID]bool{},
 		subs:       map[int]chan Event{},
 	}
@@ -146,6 +150,13 @@ func (m *Manager) LaunchJob(req LaunchRequest) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
+	slog.Info("cockpit: launch queued",
+		"job", job.ID,
+		"preset", job.PresetID,
+		"runner", job.Runner,
+		"repo", job.Repo,
+		"queue_only", job.WaitForForeman,
+	)
 	m.maybeStartQueuedJobs()
 	final, _ := m.Registry.Get(job.ID)
 	return final, nil
@@ -255,20 +266,25 @@ func (m *Manager) createQueuedJob(req LaunchRequest, sources []SourceTask, campa
 }
 
 func (m *Manager) startQueuedJob(id JobID) error {
-	j, ok := m.Registry.Get(id)
-	if !ok {
-		return fmt.Errorf("unknown job %s", id)
-	}
-	if j.Status != StatusQueued {
+	if !m.beginQueuedStart(id) {
+		slog.Info("cockpit: skip duplicate queued start", "job", id)
 		return nil
 	}
-	if j.WaitForForeman {
-		_ = m.Registry.Update(j.ID, func(jj *Job) {
-			jj.WaitForForeman = false
-			jj.Note = "started by Foreman"
-		})
-		j, _ = m.Registry.Get(j.ID)
+	defer m.endQueuedStart(id)
+
+	j, claimed, err := m.claimQueuedJobStart(id)
+	if err != nil {
+		return err
 	}
+	if !claimed {
+		return nil
+	}
+	slog.Info("cockpit: dispatch queued job",
+		"job", j.ID,
+		"runner", j.Runner,
+		"repo", j.Repo,
+		"wait_for_foreman", j.WaitForForeman,
+	)
 	if j.Runner == RunnerTmux {
 		if err := m.runPreHooks(&j); err != nil {
 			return nil
@@ -288,6 +304,53 @@ func (m *Manager) startQueuedJob(id JobID) error {
 	return nil
 }
 
+func (m *Manager) claimQueuedJobStart(id JobID) (Job, bool, error) {
+	now := time.Now()
+	claimed := false
+	if err := m.Registry.Update(id, func(jj *Job) {
+		if jj.Status != StatusQueued {
+			return
+		}
+		if jj.WaitForForeman {
+			jj.WaitForForeman = false
+			jj.Note = "started by Foreman"
+		} else {
+			jj.Note = ""
+		}
+		jj.Status = StatusRunning
+		if jj.StartedAt.IsZero() {
+			jj.StartedAt = now
+		}
+		claimed = true
+	}); err != nil {
+		return Job{}, false, err
+	}
+	if !claimed {
+		return Job{}, false, nil
+	}
+	j, ok := m.Registry.Get(id)
+	if !ok {
+		return Job{}, false, fmt.Errorf("unknown job %s", id)
+	}
+	return j, true, nil
+}
+
+func (m *Manager) beginQueuedStart(id JobID) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.starting[id] {
+		return false
+	}
+	m.starting[id] = true
+	return true
+}
+
+func (m *Manager) endQueuedStart(id JobID) {
+	m.mu.Lock()
+	delete(m.starting, id)
+	m.mu.Unlock()
+}
+
 // maybeStartQueuedJobs is the historical name for tickScheduler; kept so
 // callers (tmux runner callback, post-approve / post-skip / post-delete
 // triggers, tests) don't need to change.
@@ -298,6 +361,9 @@ func (m *Manager) maybeStartQueuedJobs() { m.tickScheduler() }
 // concurrency cap, near rate limit). Idempotent — safe to call from
 // event handlers and from the background ticker.
 func (m *Manager) tickScheduler() {
+	m.scheduleMu.Lock()
+	defer m.scheduleMu.Unlock()
+
 	jobs := orderQueuedJobs(m.ListJobs())
 	state := m.GetForemanState()
 	maxConcurrent := state.MaxConcurrent
