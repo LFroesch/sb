@@ -12,6 +12,14 @@ import (
 	"github.com/LFroesch/sb/internal/llm"
 )
 
+var appVersion = "dev"
+
+func SetVersion(v string) {
+	if strings.TrimSpace(v) != "" {
+		appVersion = v
+	}
+}
+
 func truncate(s string, max int) string {
 	if max < 4 {
 		return ""
@@ -134,7 +142,7 @@ func (m model) renderHeader() string {
 		// Agent page owns its own status rows; no global llm/project stats here.
 	case m.page == pageProject && m.selected < len(m.projects):
 		p := m.projects[m.selected]
-		parts := []string{m.renderProviderBadge(m.cfg.ActiveProviderStatus())}
+		parts := []string{dimStyle.Render(appVersion), m.renderProviderBadge(m.cfg.ActiveProviderStatus())}
 		parts = append(parts, panelHeaderStyle.Render(p.Name))
 		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", p.CurrentCount)))
 		parts = append(parts, backlogStyle.Render(fmt.Sprintf("%d backlog", p.BacklogCount)))
@@ -145,7 +153,7 @@ func (m model) renderHeader() string {
 			totalCur += p.CurrentCount
 			totalBacklog += p.BacklogCount
 		}
-		parts := []string{m.renderProviderBadge(m.cfg.ActiveProviderStatus())}
+		parts := []string{dimStyle.Render(appVersion), m.renderProviderBadge(m.cfg.ActiveProviderStatus())}
 		parts = append(parts, dimStyle.Render(fmt.Sprintf("%d files", len(m.projects))))
 		parts = append(parts, currentStyle.Render(fmt.Sprintf("%d current", totalCur)))
 		parts = append(parts, backlogStyle.Render(fmt.Sprintf("%d backlog", totalBacklog)))

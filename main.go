@@ -61,6 +61,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	tui.SetVersion(version)
 	if err := tui.Run(); err != nil {
 		fmt.Fprintf(stderr, "sb: %v\n", err)
 		return 1
