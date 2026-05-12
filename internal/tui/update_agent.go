@@ -74,6 +74,7 @@ func (m model) handleCockpitEvent(msg cockpitEventMsg) (tea.Model, tea.Cmd) {
 			m.refreshAttachedViewport(true)
 		}
 	case cockpit.EventStatusChanged:
+		m.applyCockpitEventStatus(msg.event)
 		if msg.event.JobID == m.attachedJobID {
 			m.syncAttachedJobState()
 			m.refreshAttachedViewport(false)
@@ -81,6 +82,31 @@ func (m model) handleCockpitEvent(msg cockpitEventMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *model) updateCockpitJobLocal(id cockpit.JobID, mutate func(*cockpit.Job)) {
+	for i := range m.cockpitJobs {
+		if m.cockpitJobs[i].ID != id {
+			continue
+		}
+		mutate(&m.cockpitJobs[i])
+		return
+	}
+}
+
+func (m *model) applyCockpitEventStatus(e cockpit.Event) {
+	payload, ok := e.Payload.(map[string]any)
+	if !ok {
+		return
+	}
+	m.updateCockpitJobLocal(e.JobID, func(j *cockpit.Job) {
+		if raw, ok := payload["status"].(string); ok && strings.TrimSpace(raw) != "" {
+			j.Status = cockpit.Status(raw)
+		}
+		if raw, ok := payload["note"].(string); ok {
+			j.Note = raw
+		}
+	})
 }
 
 func (m model) orderedAgentJobs() []cockpit.Job {
@@ -360,6 +386,10 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err := m.cockpitClient.SoftStopJob(jobs[m.agentCursor].ID); err != nil {
 				m.statusMsg = "soft stop: " + err.Error()
 			} else {
+				id := jobs[m.agentCursor].ID
+				m.updateCockpitJobLocal(id, func(j *cockpit.Job) {
+					j.Note = "sent Esc"
+				})
 				m.statusMsg = "sent Esc"
 			}
 			m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -369,6 +399,11 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err := m.cockpitClient.StopJob(jobs[m.agentCursor].ID); err != nil {
 				m.statusMsg = "interrupt: " + err.Error()
 			} else {
+				id := jobs[m.agentCursor].ID
+				m.updateCockpitJobLocal(id, func(j *cockpit.Job) {
+					j.Status = cockpit.StatusIdle
+					j.Note = "interrupted"
+				})
 				m.statusMsg = "sent Ctrl+C"
 			}
 			m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -378,6 +413,10 @@ func (m model) updateAgentList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err := m.cockpitClient.ContinueJob(jobs[m.agentCursor].ID); err != nil {
 				m.statusMsg = "continue: " + err.Error()
 			} else {
+				id := jobs[m.agentCursor].ID
+				m.updateCockpitJobLocal(id, func(j *cockpit.Job) {
+					j.Note = "sent continue"
+				})
 				m.statusMsg = "sent continue"
 			}
 			m.statusExpiry = time.Now().Add(2 * time.Second)

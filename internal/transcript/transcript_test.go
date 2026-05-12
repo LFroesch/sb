@@ -28,3 +28,12 @@ func TestSanitizePreservesMeaningfulIndentation(t *testing.T) {
 		t.Fatalf("Sanitize() = %q, want %q", got, want)
 	}
 }
+
+func TestSanitizePreservesIndentedFirstLine(t *testing.T) {
+	raw := "\n  $ make test\n    FAIL internal/tui\n\n"
+	got := Sanitize(raw)
+	want := "  $ make test\n    FAIL internal/tui"
+	if got != want {
+		t.Fatalf("Sanitize() = %q, want %q", got, want)
+	}
+}

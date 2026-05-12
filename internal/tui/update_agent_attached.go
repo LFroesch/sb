@@ -52,6 +52,8 @@ func (m *model) refreshAttachedViewport(forceBottom bool) {
 	}
 	m.recalcAttachedViewportLayout()
 	oldOffset := m.viewport.YOffset
+	oldHeight := m.viewport.Height
+	oldTotal := m.viewport.TotalLineCount()
 	follow := forceBottom || m.viewport.AtBottom()
 	if m.cockpitClient != nil {
 		if j, ok := m.cockpitClient.GetJob(m.attachedJobID); ok {
@@ -64,7 +66,15 @@ func (m *model) refreshAttachedViewport(forceBottom bool) {
 				m.viewport.GotoBottom()
 				return
 			}
-			m.viewport.SetYOffset(oldOffset)
+			distanceFromBottom := oldTotal - (oldOffset + oldHeight)
+			if distanceFromBottom < 0 {
+				distanceFromBottom = 0
+			}
+			newOffset := m.viewport.TotalLineCount() - m.viewport.Height - distanceFromBottom
+			if newOffset < 0 {
+				newOffset = 0
+			}
+			m.viewport.SetYOffset(newOffset)
 			return
 		}
 	}
@@ -192,7 +202,7 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "i":
 		j, ok := m.cockpitClient.GetJob(m.attachedJobID)
 		if ok && j.Runner == cockpit.RunnerTmux {
-			m.statusMsg = "live tmux runs stay native; this panel is for output and review"
+			m.statusMsg = "tmux run stays native; esc leaves this view, s sends Escape to the run"
 			m.statusExpiry = time.Now().Add(3 * time.Second)
 			return m, nil
 		}
@@ -213,6 +223,10 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if err := m.cockpitClient.SoftStopJob(m.attachedJobID); err != nil {
 			m.statusMsg = "soft stop: " + err.Error()
 		} else {
+			m.updateCockpitJobLocal(m.attachedJobID, func(j *cockpit.Job) {
+				j.Note = "sent Esc"
+			})
+			m.refreshAttachedViewport(false)
 			m.statusMsg = "sent Esc"
 		}
 		m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -221,6 +235,11 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if err := m.cockpitClient.StopJob(m.attachedJobID); err != nil {
 			m.statusMsg = "interrupt: " + err.Error()
 		} else {
+			m.updateCockpitJobLocal(m.attachedJobID, func(j *cockpit.Job) {
+				j.Status = cockpit.StatusIdle
+				j.Note = "interrupted"
+			})
+			m.refreshAttachedViewport(false)
 			m.statusMsg = "sent Ctrl+C"
 		}
 		m.statusExpiry = time.Now().Add(2 * time.Second)
@@ -232,6 +251,10 @@ func (m model) updateAgentAttached(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusExpiry = time.Now().Add(2 * time.Second)
 			return m, nil
 		}
+		m.updateCockpitJobLocal(m.attachedJobID, func(j *cockpit.Job) {
+			j.Note = "sent continue"
+		})
+		m.refreshAttachedViewport(false)
 		m.statusMsg = "sent continue"
 		m.statusExpiry = time.Now().Add(2 * time.Second)
 		return m, nil

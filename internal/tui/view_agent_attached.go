@@ -302,7 +302,8 @@ func (m model) renderAttachedTmux(j cockpit.Job) string {
 	m.attachedInput.SetWidth(m.attachedInputWidth())
 	var footerLines []string
 	if isLive {
-		footerLines = append(footerLines, truncate(accentStyle.Render("  live tmux run"), lineWidth))
+		hint := "  esc/q leave view  ·  s send Escape to run  ·  S send Ctrl+C"
+		footerLines = append(footerLines, wrapLines(dimStyle.Render(hint), lineWidth)...)
 	} else {
 		footerLines = append(footerLines, truncate(dimStyle.Render("  run ended"), lineWidth))
 	}
@@ -391,9 +392,36 @@ func renderTerminalActivity(text string, width int) string {
 			parts = append(parts, "")
 			continue
 		}
-		parts = append(parts, strings.Split(wrapLine(raw, width), "\n")...)
+		parts = append(parts, wrapTerminalLine(raw, width)...)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func wrapTerminalLine(raw string, width int) []string {
+	if raw == "" {
+		return []string{""}
+	}
+	indentWidth := 0
+	for indentWidth < len(raw) && (raw[indentWidth] == ' ' || raw[indentWidth] == '\t') {
+		indentWidth++
+	}
+	indent := raw[:indentWidth]
+	body := raw[indentWidth:]
+	if body == "" {
+		return []string{raw}
+	}
+	if indent == "" {
+		return strings.Split(wrapLine(raw, width), "\n")
+	}
+	bodyWidth := width - lipgloss.Width(indent)
+	if bodyWidth < 4 {
+		bodyWidth = 4
+	}
+	wrapped := strings.Split(wrapLine(body, bodyWidth), "\n")
+	for i := range wrapped {
+		wrapped[i] = indent + wrapped[i]
+	}
+	return wrapped
 }
 
 func (m model) renderAttachedRail(width, height int) string {

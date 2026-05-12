@@ -23,6 +23,9 @@ type stubCockpitClient struct {
 	retryResult cockpit.Job
 	retryErr    error
 	retryCalls  *int
+	softStopErr error
+	stopErr     error
+	continueErr error
 }
 
 func (s stubCockpitClient) ListJobs() []cockpit.Job {
@@ -62,11 +65,11 @@ func (s stubCockpitClient) StartJob(id cockpit.JobID) (cockpit.Job, error) {
 	return job, nil
 }
 
-func (s stubCockpitClient) SoftStopJob(cockpit.JobID) error { return nil }
+func (s stubCockpitClient) SoftStopJob(cockpit.JobID) error { return s.softStopErr }
 
-func (s stubCockpitClient) ContinueJob(cockpit.JobID) error { return nil }
+func (s stubCockpitClient) ContinueJob(cockpit.JobID) error { return s.continueErr }
 
-func (s stubCockpitClient) StopJob(cockpit.JobID) error { return nil }
+func (s stubCockpitClient) StopJob(cockpit.JobID) error { return s.stopErr }
 
 func (s stubCockpitClient) SkipJob(cockpit.JobID) error { return nil }
 

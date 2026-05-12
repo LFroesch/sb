@@ -2105,3 +2105,148 @@ func TestDashboardCondensedPinnedKeepsCursorVisible(t *testing.T) {
 		t.Fatalf("renderDashboard should keep cursor row visible when pinned condenses: %q", out)
 	}
 }
+
+func TestRefreshAttachedViewportKeepsBottomDistanceWhenContentGrows(t *testing.T) {
+	now := time.Now()
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "ollama-qwen",
+		Status:    cockpit.StatusIdle,
+		CreatedAt: now.Add(-2 * time.Minute),
+		Turns: []cockpit.Turn{
+			{Role: cockpit.TurnUser, Content: "show me the full reply"},
+			{Role: cockpit.TurnAssistant, Content: strings.Join([]string{
+				"line 01", "line 02", "line 03", "line 04", "line 05",
+				"line 06", "line 07", "line 08", "line 09", "line 10",
+				"line 11", "line 12", "line 13", "line 14", "line 15",
+			}, "\n")},
+		},
+	}
+
+	client := stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 72
+	m.height = 14
+	m.cockpitClient = client
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.attachedTurns = append([]cockpit.Turn(nil), job.Turns...)
+	m.refreshAttachedViewport(true)
+
+	m.viewport.LineUp(2)
+	beforeOffset := m.viewport.YOffset
+	beforeDistance := m.viewport.TotalLineCount() - (m.viewport.YOffset + m.viewport.Height)
+
+	job.Turns[1].Content += "\nline 16\nline 17\nline 18"
+	client.jobs[job.ID] = job
+	m.cockpitClient = client
+	m.cockpitJobs[0] = job
+	m.attachedTurns = append([]cockpit.Turn(nil), job.Turns...)
+	m.refreshAttachedViewport(false)
+
+	afterDistance := m.viewport.TotalLineCount() - (m.viewport.YOffset + m.viewport.Height)
+	if afterDistance != beforeDistance {
+		t.Fatalf("bottom distance = %d, want %d", afterDistance, beforeDistance)
+	}
+	if m.viewport.YOffset <= beforeOffset {
+		t.Fatalf("expected offset to advance with new lines; got %d <= %d", m.viewport.YOffset, beforeOffset)
+	}
+}
+
+func TestUpdateAgentAttachedInterruptUpdatesLocalDashboardStatus(t *testing.T) {
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "senior-dev",
+		Runner:    cockpit.RunnerTmux,
+		Status:    cockpit.StatusRunning,
+		CreatedAt: time.Now().Add(-1 * time.Minute),
+	}
+	client := stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.cockpitClient = client
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+
+	got, _ := m.updateAgentAttached(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	next := got.(model)
+
+	if next.cockpitJobs[0].Status != cockpit.StatusIdle {
+		t.Fatalf("status = %s, want idle", next.cockpitJobs[0].Status)
+	}
+	if next.cockpitJobs[0].Note != "interrupted" {
+		t.Fatalf("note = %q, want interrupted", next.cockpitJobs[0].Note)
+	}
+}
+
+func TestUpdateAgentListSoftStopUpdatesLocalDashboardNote(t *testing.T) {
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "senior-dev",
+		Runner:    cockpit.RunnerTmux,
+		Status:    cockpit.StatusRunning,
+		CreatedAt: time.Now().Add(-1 * time.Minute),
+	}
+	client := stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentList
+	m.cockpitClient = client
+	m.cockpitJobs = []cockpit.Job{job}
+
+	got, _ := m.updateAgent(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	next := got.(model)
+
+	if next.cockpitJobs[0].Note != "sent Esc" {
+		t.Fatalf("note = %q, want sent Esc", next.cockpitJobs[0].Note)
+	}
+}
+
+func TestRenderFooterClarifiesAttachedViewVsRunControls(t *testing.T) {
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.attachedFocus = 0
+
+	out := m.renderFooter()
+	if !strings.Contains(out, "leave view") {
+		t.Fatalf("renderFooter missing leave-view hint: %q", out)
+	}
+	if !strings.Contains(out, "send Escape to run") {
+		t.Fatalf("renderFooter missing run Escape hint: %q", out)
+	}
+}
+
+func TestRenderAgentAttachedTmuxShowsControlHint(t *testing.T) {
+	job := cockpit.Job{
+		ID:        "job-1",
+		PresetID:  "senior-dev",
+		Runner:    cockpit.RunnerTmux,
+		Status:    cockpit.StatusRunning,
+		CreatedAt: time.Now().Add(-1 * time.Minute),
+	}
+	client := stubCockpitClient{jobs: map[cockpit.JobID]cockpit.Job{job.ID: job}}
+
+	m := newModel(nil)
+	m.page = pageAgent
+	m.mode = modeAgentAttached
+	m.width = 120
+	m.height = 30
+	m.cockpitClient = client
+	m.cockpitJobs = []cockpit.Job{job}
+	m.attachedJobID = job.ID
+	m.refreshAttachedViewport(true)
+
+	out := m.renderAgentAttached()
+	if !strings.Contains(out, "leave view") {
+		t.Fatalf("renderAgentAttached missing leave-view hint: %q", out)
+	}
+	if !strings.Contains(out, "send Escape to run") {
+		t.Fatalf("renderAgentAttached missing run Escape hint: %q", out)
+	}
+}

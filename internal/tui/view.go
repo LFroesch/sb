@@ -814,11 +814,12 @@ func (m model) renderFooter() string {
 				add("pgup/pgdn", "scroll")
 				inInput = true
 			} else {
-				add("tab/i", "type")
-				add("ctrl+c", "back to jobs")
-				add("s", "send Esc")
-				add("S", "send Ctrl+C")
+				add("esc/q", "leave view")
+				add("tab/i", "open composer")
+				add("s", "send Escape to run")
+				add("S", "interrupt run")
 				add("c", "send continue")
+				add("ctrl+c", "back to jobs")
 			}
 		case modeAgentManage:
 			if m.agentManageHookEditing {

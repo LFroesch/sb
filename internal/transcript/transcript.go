@@ -70,7 +70,13 @@ func cleanLines(lines []string) string {
 		lastBlank = false
 		out = append(out, line)
 	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
+	for len(out) > 0 && strings.TrimSpace(out[0]) == "" {
+		out = out[1:]
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
 }
 
 // isChromeLine reports whether s is a line that contains only box-drawing
