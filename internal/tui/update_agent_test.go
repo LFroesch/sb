@@ -1930,11 +1930,12 @@ func TestUpdateAgentManagePagesAndScrollsFieldList(t *testing.T) {
 
 func TestHeaderTabAtFindsTopNavTabs(t *testing.T) {
 	m := newModel(nil)
+	headerX := lipgloss.Width(m.headerTitle()) + 2
 
-	if got, ok := m.headerTabAt(lipgloss.Width(titleStyle.Render("sb"))+2, 0); !ok || got != pageDashboard {
+	if got, ok := m.headerTabAt(headerX, 0); !ok || got != pageDashboard {
 		t.Fatalf("dashboard hit = (%v, %v), want (%v, true)", got, ok, pageDashboard)
 	}
-	if got, ok := m.headerTabAt(lipgloss.Width(titleStyle.Render("sb"))+2+len("Dashboard")+len(" │ "), 0); !ok || got != pageDump {
+	if got, ok := m.headerTabAt(headerX+len("Dashboard")+len(" │ "), 0); !ok || got != pageDump {
 		t.Fatalf("dump hit = (%v, %v), want (%v, true)", got, ok, pageDump)
 	}
 	if _, ok := m.headerTabAt(0, 1); ok {
@@ -1957,7 +1958,7 @@ func TestMouseClickOnHeaderSwitchesPages(t *testing.T) {
 	m.mode = modeEdit
 	m.projects = []workmd.Project{{Name: "demo", Content: "# demo"}}
 
-	dumpX := lipgloss.Width(titleStyle.Render("sb")) + 2 + len("Dashboard") + len(" │ ")
+	dumpX := lipgloss.Width(m.headerTitle()) + 2 + len("Dashboard") + len(" │ ")
 	got, cmd := m.Update(tea.MouseMsg{
 		X:      dumpX,
 		Y:      0,
