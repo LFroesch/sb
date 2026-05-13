@@ -21,7 +21,7 @@ detect_platform() {
   case "$(uname -s)" in
     Linux*) os="linux" ;;
     Darwin*) os="darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) error "install.sh supports macOS and Linux only; use 'go install github.com/LFroesch/sb@latest' on Windows" ;;
+    MINGW*|MSYS*|CYGWIN*) error "install.sh supports Linux and macOS only." ;;
     *) error "Unsupported OS: $(uname -s)" ;;
   esac
 
@@ -69,13 +69,8 @@ main() {
   version="${VERSION:-$(get_latest_version)}"
   [ -n "$version" ] || error "Unable to resolve release version"
 
-  if [[ "$platform" == windows* ]]; then
-    binary_file="${BINARY_NAME}-${platform}.exe"
-    foreman_binary_file="${FOREMAN_BINARY_NAME}-${platform}.exe"
-  else
-    binary_file="${BINARY_NAME}-${platform}"
-    foreman_binary_file="${FOREMAN_BINARY_NAME}-${platform}"
-  fi
+  binary_file="${BINARY_NAME}-${platform}"
+  foreman_binary_file="${FOREMAN_BINARY_NAME}-${platform}"
 
   base_url="https://github.com/${REPO}/releases/download/${version}"
 

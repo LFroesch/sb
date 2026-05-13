@@ -8,10 +8,9 @@
 
 ## Install
 
-Supported platforms: Linux and macOS, with partial native Windows support.
+Supported platforms: Linux and macOS.
 
-`sb` also compiles on native Windows, but the tmux-backed cockpit and agent workflow are still partial there.
-For the full agent workflow, use Linux, macOS, or WSL.
+Native Windows is not supported yet.
 
 Recommended:
 
@@ -24,16 +23,6 @@ Or install with Go:
 ```bash
 go install github.com/LFroesch/sb@latest
 go install github.com/LFroesch/sb/cmd/foreman@latest
-```
-
-Windows:
-
-```powershell
-./install.ps1
-```
-
-```bat
-install.cmd
 ```
 
 Run:
@@ -59,7 +48,6 @@ sb tmux-status
 | Agents | Start task-backed or freeform coding-agent runs |
 
 If `tmux` is available, `sb` uses a shared cockpit session for the richer agent workflow. Without `tmux`, the TUI still works, but the agent flow is more limited.
-On native Windows, expect the core TUI and task-file workflows to work more reliably than the tmux/cockpit stack.
 
 ## Features
 

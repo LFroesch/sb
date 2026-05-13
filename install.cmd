@@ -1,8 +1,5 @@
 @echo off
 setlocal
-where pwsh >nul 2>nul
-if %errorlevel%==0 (
-  pwsh -NoLogo -NoProfile -Command "irm https://raw.githubusercontent.com/LFroesch/sb/main/install.ps1 | iex"
-) else (
-  powershell -NoLogo -NoProfile -Command "irm https://raw.githubusercontent.com/LFroesch/sb/main/install.ps1 | iex"
-)
+echo sb does not support native Windows yet.
+echo Use WSL, or run it on Linux or macOS.
+exit /b 1
