@@ -3,7 +3,6 @@ module github.com/LFroesch/sb
 go 1.23.3
 
 require (
-	github.com/LFroesch/tui-suite/suitechrome v0.0.0
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.3.4
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -30,5 +29,3 @@ require (
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 )
-
-replace github.com/LFroesch/tui-suite/suitechrome => ../suitechrome

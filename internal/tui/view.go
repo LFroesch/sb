@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LFroesch/tui-suite/suitechrome"
+	"github.com/LFroesch/sb/suitechrome"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 

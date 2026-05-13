@@ -12,8 +12,8 @@ import (
 
 	"github.com/LFroesch/sb/internal/cockpit"
 	"github.com/LFroesch/sb/internal/config"
-	"github.com/LFroesch/tui-suite/suitechrome"
 	"github.com/LFroesch/sb/internal/workmd"
+	"github.com/LFroesch/sb/suitechrome"
 )
 
 func TestUpdateAllowsQuestionMarkInAgentLaunchBrief(t *testing.T) {
