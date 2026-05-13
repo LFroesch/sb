@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/LFroesch/sb/internal/userdirs"
 )
 
 const (
@@ -107,14 +109,7 @@ func rotatedPath(path string, n int) string {
 }
 
 func xdgDataHome() string {
-	if v := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share")
+	return userdirs.DataHome()
 }
 
 func parseLevel(level string) slog.Level {

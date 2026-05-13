@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/LFroesch/sb/internal/userdirs"
 )
 
 // Paths resolves the on-disk layout described in the RFC. Everything is
@@ -28,10 +30,9 @@ type Paths struct {
 // DefaultPaths returns the standard layout. Directories are *not* created
 // here — callers that need them should call EnsureDirs first.
 func DefaultPaths() Paths {
-	home, _ := os.UserHomeDir()
-	state := xdgStateHome(home)
-	data := xdgDataHome(home)
-	config := xdgConfigHome(home)
+	state := xdgStateHome("")
+	data := xdgDataHome("")
+	config := xdgConfigHome("")
 	sbState := filepath.Join(state, "sb")
 	sbData := filepath.Join(data, "sb")
 	sbConfig := filepath.Join(config, "sb")
@@ -68,33 +69,18 @@ func (p Paths) EnsureDirs() error {
 func (p Paths) JobDir(id JobID) string { return filepath.Join(p.JobsDir, string(id)) }
 
 func xdgStateHome(home string) string {
-	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" {
-		return v
-	}
-	if strings.TrimSpace(home) == "" {
-		return ""
-	}
-	return filepath.Join(home, ".local", "state")
+	_ = home
+	return userdirs.StateHome()
 }
 
 func xdgDataHome(home string) string {
-	if v := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); v != "" {
-		return v
-	}
-	if strings.TrimSpace(home) == "" {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share")
+	_ = home
+	return userdirs.DataHome()
 }
 
 func xdgConfigHome(home string) string {
-	if v := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); v != "" {
-		return v
-	}
-	if strings.TrimSpace(home) == "" {
-		return ""
-	}
-	return filepath.Join(home, ".config")
+	_ = home
+	return userdirs.ConfigHome()
 }
 
 // ExpandHome replaces a leading ~ with $HOME.

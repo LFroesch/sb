@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/LFroesch/sb/internal/config"
@@ -16,15 +15,10 @@ import (
 // fileKey returns a device:inode string that uniquely identifies a file,
 // catching both symlinks and hard links pointing to the same data.
 func fileKey(path string) string {
-	info, err := os.Stat(path)
-	if err != nil {
-		return path // fallback to path if stat fails
+	if key, ok := statFileKey(path); ok {
+		return key
 	}
-	sys, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return path
-	}
-	return fmt.Sprintf("%d:%d", sys.Dev, sys.Ino)
+	return path // fallback to path if stat fails or the platform has no inode/device key
 }
 
 type Task struct {

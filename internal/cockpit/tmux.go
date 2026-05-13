@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 const envTmuxSocket = "SB_TMUX_SOCKET"
@@ -331,11 +330,7 @@ func ListWindows(session string) ([]WindowInfo, error) {
 }
 
 func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	return processAlivePID(pid)
 }
 
 // BindKey binds a key at the `root` table (no prefix needed) so F1 etc.

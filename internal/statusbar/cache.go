@@ -5,18 +5,15 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/LFroesch/sb/internal/userdirs"
 )
 
 // cacheDir resolves <state>/sb/cache, creating it on demand. Follows
 // the same XDG convention as cockpit.Paths but kept local to avoid an
 // import cycle.
 func cacheDir() string {
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			state = filepath.Join(home, ".local", "state")
-		}
-	}
+	state := userdirs.StateHome()
 	if strings.TrimSpace(state) == "" {
 		return ""
 	}

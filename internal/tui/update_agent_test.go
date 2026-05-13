@@ -12,6 +12,7 @@ import (
 
 	"github.com/LFroesch/sb/internal/cockpit"
 	"github.com/LFroesch/sb/internal/config"
+	"github.com/LFroesch/tui-suite/suitechrome"
 	"github.com/LFroesch/sb/internal/workmd"
 )
 
@@ -1935,7 +1936,8 @@ func TestHeaderTabAtFindsTopNavTabs(t *testing.T) {
 	if got, ok := m.headerTabAt(headerX, 0); !ok || got != pageDashboard {
 		t.Fatalf("dashboard hit = (%v, %v), want (%v, true)", got, ok, pageDashboard)
 	}
-	if got, ok := m.headerTabAt(headerX+len("Dashboard")+len(" │ "), 0); !ok || got != pageDump {
+	dumpX := headerX + lipgloss.Width(topNavTabLabel(0, "Dashboard")) + lipgloss.Width(suitechrome.Dim("  │  "))
+	if got, ok := m.headerTabAt(dumpX, 0); !ok || got != pageDump {
 		t.Fatalf("dump hit = (%v, %v), want (%v, true)", got, ok, pageDump)
 	}
 	if _, ok := m.headerTabAt(0, 1); ok {
@@ -1958,7 +1960,7 @@ func TestMouseClickOnHeaderSwitchesPages(t *testing.T) {
 	m.mode = modeEdit
 	m.projects = []workmd.Project{{Name: "demo", Content: "# demo"}}
 
-	dumpX := lipgloss.Width(m.headerTitle()) + 2 + len("Dashboard") + len(" │ ")
+	dumpX := lipgloss.Width(m.headerTitle()) + 2 + lipgloss.Width(topNavTabLabel(0, "Dashboard")) + lipgloss.Width(suitechrome.Dim("  │  "))
 	got, cmd := m.Update(tea.MouseMsg{
 		X:      dumpX,
 		Y:      0,

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LFroesch/tui-suite/suitechrome"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 
@@ -122,19 +123,12 @@ func (m model) contentViewportHeight(prefixLines int) int {
 func (m model) renderHeader() string {
 	title := m.headerTitle()
 
-	var tabs []string
+	var tabs []suitechrome.Tab
 	for i, pg := range topNavPages() {
-		if i > 0 {
-			tabs = append(tabs, dimStyle.Render(" │ "))
-		}
-		if pg.p == m.page {
-			tabs = append(tabs, activeTabStyle.Render(pg.name))
-		} else {
-			tabs = append(tabs, dimStyle.Render(pg.name))
-		}
+		tabs = append(tabs, suitechrome.Tab{Label: topNavTabLabel(i, pg.name), Active: pg.p == m.page})
 	}
 
-	left := title + "  " + strings.Join(tabs, "")
+	left := title + "  " + suitechrome.RenderTabs(tabs)
 
 	var right string
 	switch {
@@ -171,11 +165,11 @@ func (m model) renderHeader() string {
 		gap = 2
 	}
 
-	return left + strings.Repeat(" ", gap) + right
+	return suitechrome.JoinHeader(m.width, left, right)
 }
 
 func (m model) headerTitle() string {
-	return titleStyle.Render("sb") + " " + dimStyle.Render(appVersion)
+	return suitechrome.RenderTitle("sb", appVersion)
 }
 
 func topNavPages() []struct {
@@ -192,18 +186,23 @@ func topNavPages() []struct {
 	}
 }
 
+func topNavTabLabel(index int, name string) string {
+	return fmt.Sprintf("%d %s", index+1, name)
+}
+
 func (m model) headerTabAt(x, y int) (page, bool) {
 	if y != 0 {
 		return 0, false
 	}
 
 	cursor := lipgloss.Width(m.headerTitle()) + 2
-	sepWidth := lipgloss.Width(dimStyle.Render(" │ "))
+	sepWidth := lipgloss.Width(suitechrome.Dim("  │  "))
 	for i, tab := range topNavPages() {
+		label := topNavTabLabel(i, tab.name)
 		if i > 0 {
 			cursor += sepWidth
 		}
-		tabWidth := lipgloss.Width(tab.name)
+		tabWidth := lipgloss.Width(label)
 		if x >= cursor && x < cursor+tabWidth {
 			return tab.p, true
 		}
@@ -742,12 +741,9 @@ func isDumpSkipped(item llm.RouteItem, skipped []llm.RouteItem) bool {
 // --- Footer ---
 
 func (m model) renderFooter() string {
-	var parts []string
+	var actions []suitechrome.Action
 	add := func(key, action string) {
-		if len(parts) > 0 {
-			parts = append(parts, dimStyle.Render(" · "))
-		}
-		parts = append(parts, keyStyle.Render(key), " ", actionStyle.Render(action))
+		actions = append(actions, suitechrome.Action{Key: key, Label: action})
 	}
 
 	// inInput is true when the focused widget accepts text (q/esc would be typed, not navigation).
@@ -895,7 +891,7 @@ func (m model) renderFooter() string {
 		}
 	}
 
-	return " " + strings.Join(parts, "")
+	return " " + suitechrome.RenderActions(actions)
 }
 
 // --- Help ---

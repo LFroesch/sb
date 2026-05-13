@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/LFroesch/sb/internal/userdirs"
 )
 
 // Target names a special routing destination — a "catch-all" or "ideas bucket"
@@ -616,9 +618,9 @@ func Dir() (string, error) {
 
 // configPath returns the path to the config file, creating the dir if needed.
 func configPath() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil || strings.TrimSpace(base) == "" {
-		return "", fmt.Errorf("resolve user config dir: %w", err)
+	base := userdirs.ConfigHome()
+	if strings.TrimSpace(base) == "" {
+		return "", fmt.Errorf("resolve user config dir")
 	}
 	dir := filepath.Join(base, "sb")
 	if err := os.MkdirAll(dir, 0755); err != nil {
